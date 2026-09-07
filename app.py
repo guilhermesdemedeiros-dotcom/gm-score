@@ -83,6 +83,36 @@ FD_STATS = {
     "Vermelhos": ("HR", "AR"),
 }
 
+# Quantidade mínima de clubes esperada na competição vigente.
+# Serve para impedir que uma fonte parcial seja aceita silenciosamente.
+MIN_TEAMS = {
+    "Inglaterra - Premier League": 20, "Espanha - La Liga": 20,
+    "Itália - Serie A": 20, "Alemanha - Bundesliga": 18,
+    "França - Ligue 1": 18, "Portugal - Liga Portugal": 18,
+    "Holanda - Eredivisie": 18, "Escócia - Premiership": 12,
+    "Turquia - Süper Lig": 18, "Brasil - Série A": 20,
+    "Brasil - Série B": 20, "Arábia Saudita - Saudi Pro League": 18,
+    "Estados Unidos - MLS": 30, "Argentina - Liga Profesional": 30,
+    "México - Liga MX": 18, "Colômbia - Primera A": 20,
+    "CONMEBOL Libertadores": 32, "CONMEBOL Sul-Americana": 32,
+    "UEFA Champions League": 36, "UEFA Europa League": 36,
+    "UEFA Conference League": 36,
+}
+
+def ensure_team_coverage(df, competition_name, tolerance=0):
+    expected = MIN_TEAMS.get(competition_name)
+    if not expected or df is None:
+        return df
+    if isinstance(df, pd.DataFrame) and "Time" in df.columns:
+        count = int(df["Time"].dropna().astype(str).nunique())
+    elif isinstance(df, pd.DataFrame) and {"HomeTeam", "AwayTeam"}.issubset(df.columns):
+        count = len(set(df["HomeTeam"].dropna().astype(str)) | set(df["AwayTeam"].dropna().astype(str)))
+    else:
+        return df
+    if count < expected - tolerance:
+        raise RuntimeError(f"fonte incompleta: {count}/{expected} equipes encontradas")
+    return df
+
 DISPLAY_METRICS = [
     "Jogos",
     "Gols pró",
@@ -544,6 +574,20 @@ def parse_openfootball_txt(text):
 # de recuar para uma temporada antiga, usamos páginas públicas da competição
 # vigente para recuperar a lista de equipes e os totais atuais de gols.
 LIVESCORE_SEASON_URLS = {
+    # Fallback de cobertura para TODAS as ligas domésticas. O Football-Data
+    # continua prioritário onde oferece estatísticas detalhadas; estas páginas
+    # entram apenas quando a fonte principal falhar ou vier incompleta.
+    "Inglaterra - Premier League": ["https://www.livescore.mobi/football/england/premier-league/"],
+    "Espanha - La Liga": ["https://www.livescore.mobi/football/spain/laliga/"],
+    "Itália - Serie A": ["https://www.livescore.mobi/football/italy/serie-a/"],
+    "Alemanha - Bundesliga": ["https://www.livescore.mobi/football/germany/bundesliga/"],
+    "França - Ligue 1": ["https://www.livescore.mobi/football/france/ligue-1/"],
+    "Portugal - Liga Portugal": ["https://www.livescore.mobi/football/portugal/primeira-liga/"],
+    "Holanda - Eredivisie": ["https://www.livescore.mobi/football/holland/eredivisie/"],
+    "Escócia - Premiership": ["https://www.livescore.mobi/football/scotland/scotland-premiership/"],
+    "Turquia - Süper Lig": ["https://www.livescore.mobi/football/turkey/super-lig/"],
+    "Brasil - Série A": ["https://www.livescore.mobi/football/brazil/serie-a/"],
+    "CONMEBOL Libertadores": ["https://www.livescore.mobi/football/copa-libertadores/"],
     "Brasil - Série B": [
         "https://www.livescore.mobi/football/brazil/serie-b/",
     ],
@@ -752,12 +796,22 @@ def load_livescore_season(competition_name, year):
     urls = LIVESCORE_SEASON_URLS.get(competition_name, [])
     if not urls:
         raise RuntimeError("sem fonte alternativa configurada")
-    r = request_first(urls, timeout=25)
-    html = r.text
+    # Algumas competições são divididas em grupos/conferências/fases e uma única
+    # URL pode trazer só parte dos clubes. Lemos todas as páginas configuradas e
+    # unimos as tabelas antes de validar a cobertura.
+    html_pages = []
+    errors = []
+    for url in urls:
+        try:
+            html_pages.append(request_first([url], timeout=25).text)
+        except Exception as exc:
+            errors.append(str(exc))
+    if not html_pages:
+        raise RuntimeError("fontes alternativas indisponíveis: " + " | ".join(errors[-2:]))
 
-    # Preferimos a tabela da própria competição porque ela representa a temporada
-    # vigente inteira, não apenas os resultados visíveis na primeira página.
-    standings = _standings_rows_from_html(html)
+    standings = []
+    for html in html_pages:
+        standings.extend(_standings_rows_from_html(html))
     if standings:
         merged = {}
         for item in standings:
@@ -781,17 +835,27 @@ def load_livescore_season(competition_name, year):
         out.attrs["updated_until"] = None
         out.attrs["matches"] = []
         out.attrs["season_source"] = "current_standings"
+        out.attrs["metric_coverage"] = {
+            "Gols": True, "Escanteios": False, "Cartões": False,
+            "Faltas": False, "Finalizações": False, "Chutes no alvo": False,
+        }
         if len(out) >= 2:
+            ensure_team_coverage(out, competition_name)
             return out
 
     # Torneios mata-mata podem não ter classificação geral. Nesse caso usamos
     # apenas resultados que a página atual realmente fornece, sem inventar zeros.
-    matches = _completed_matches_from_html(html)
+    matches = []
+    for html in html_pages:
+        matches.extend(_completed_matches_from_html(html))
     if matches:
+        # averages_open_matches naturalmente consolida os clubes; a validação abaixo
+        # evita aceitar uma fase/página que represente apenas parte da competição.
         out = averages_open_matches(matches)
         out.attrs["updated_until"] = None
         out.attrs["season_source"] = "current_results"
         if len(out) >= 2:
+            ensure_team_coverage(out, competition_name)
             return out
 
     raise RuntimeError("a página atual da competição ainda não trouxe equipes/resultados suficientes")
@@ -1731,8 +1795,27 @@ if st.sidebar.button("🔄 Atualizar dados", type="primary"):
 
 def load_current_season():
     if config["kind"] == "football_data":
-        games = load_football_data(config["code"], used_year)
-        return averages_football_data(games, period)
+        # Fonte principal: Football-Data, porque entrega gols + estatísticas de jogo
+        # (escanteios, cartões, faltas, finalizações etc. quando disponíveis).
+        # Se estiver fora do ar ou incompleta, usa tabela vigente como fallback,
+        # sem recuar para temporada anterior e sem inventar métricas ausentes.
+        errors = []
+        try:
+            games = load_football_data(config["code"], used_year)
+            # Valida a lista de participantes no bruto, inclusive nos períodos curtos.
+            ensure_team_coverage(games, league_name)
+            out = averages_football_data(games, period)
+            out.attrs["season_source"] = "football_data_detailed"
+            return out
+        except Exception as exc:
+            errors.append(str(exc))
+        try:
+            out = load_livescore_season(league_name, used_year)
+            out.attrs["season_source"] = "current_standings_fallback"
+            return out
+        except Exception as exc:
+            errors.append(str(exc))
+        raise RuntimeError("fontes da temporada atual indisponíveis: " + " | ".join(errors[-2:]))
 
     errors = []
     if config["kind"] == "hybrid_extra":
@@ -1741,11 +1824,16 @@ def load_current_season():
         # da competição. Nunca recua silenciosamente para o ano anterior.
         try:
             games = load_extra_football_data(config["extra_code"], used_year)
-            return averages_football_data(games, period)
+            # Rejeita CSV parcial antes de transformá-lo em médias.
+            ensure_team_coverage(games, league_name)
+            out = averages_football_data(games, period)
+            return out
         except Exception as exc:
             errors.append(str(exc))
         try:
-            return load_open_results(config["id"], used_year, config["season"])
+            out = load_open_results(config["id"], used_year, config["season"])
+            ensure_team_coverage(out, league_name)
+            return out
         except Exception as exc:
             errors.append(str(exc))
         try:
@@ -1760,7 +1848,9 @@ def load_current_season():
     # Competições que antes dependiam apenas de caminhos OpenFootball inexistentes
     # em 2026 agora têm fallback para a própria página da temporada atual.
     try:
-        return load_open_results(config["id"], used_year, config["season"])
+        out = load_open_results(config["id"], used_year, config["season"])
+        ensure_team_coverage(out, league_name)
+        return out
     except Exception as exc:
         errors.append(str(exc))
     try:
