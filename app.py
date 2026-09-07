@@ -1,0 +1,1673 @@
+import io
+import math
+import re
+import time
+import unicodedata
+from html.parser import HTMLParser
+from datetime import datetime, date, timedelta
+from zoneinfo import ZoneInfo
+
+import pandas as pd
+import requests
+import streamlit as st
+import streamlit.components.v1 as components
+
+# ============================================================
+# CONFIGURAÇÃO
+# ============================================================
+st.set_page_config(
+    page_title="GM SCORE",
+    page_icon="⚽",
+    layout="wide",
+)
+
+st.markdown("""
+<div style="margin:0 0 1.15rem 0">
+  <div style="display:flex;align-items:center;gap:.65rem;line-height:1">
+    <span style="font-size:2.35rem">⚽</span>
+    <span style="font-size:2.35rem;font-weight:800;letter-spacing:-.04em;color:#172033">GM SCORE</span>
+  </div>
+  <div style="margin-top:.55rem;font-size:.82rem;font-weight:700;letter-spacing:.08em;color:#64748b">ANÁLISE • ESTATÍSTICAS • PROBABILIDADES</div>
+  <div style="margin-top:.25rem;font-size:.78rem;color:#94a3b8">CRIADO E VALIDADO POR GUILHERME MEDEIROS</div>
+</div>
+""", unsafe_allow_html=True)
+
+st.markdown("""
+<style>
+/* Identidade clara e discreta do GM SCORE */
+[data-testid="stSidebar"] { background:#f5f7fa; border-right:1px solid #e5e7eb; }
+[data-testid="stSidebar"] .stButton > button { border-radius:10px; }
+.stButton > button { border-radius:10px; }
+[data-testid="stMetric"] { background:transparent; }
+div[data-baseweb="select"] > div { border-radius:10px; }
+hr { border-color:#eef1f5 !important; }
+</style>
+""", unsafe_allow_html=True)
+
+# Competições com estatísticas detalhadas em CSV público.
+EUROPE_LEAGUES = {
+    "Inglaterra - Premier League": "E0",
+    "Espanha - La Liga": "SP1",
+    "Itália - Serie A": "I1",
+    "Alemanha - Bundesliga": "D1",
+    "França - Ligue 1": "F1",
+    "Portugal - Liga Portugal": "P1",
+    "Holanda - Eredivisie": "N1",
+    "Escócia - Premiership": "SC0",
+    "Turquia - Süper Lig": "T1",
+}
+
+COMPETITIONS = {
+    **{name: {"kind": "football_data", "code": code, "season": "europe"}
+       for name, code in EUROPE_LEAGUES.items()},
+    "Brasil - Série A": {"kind": "hybrid_extra", "id": "br1", "extra_code": "BRA", "season": "calendar"},
+    "Brasil - Série B": {"kind": "open_results", "id": "br2", "season": "calendar"},
+    "Arábia Saudita - Saudi Pro League": {"kind": "open_results", "id": "saudi", "season": "europe"},
+    "Estados Unidos - MLS": {"kind": "hybrid_extra", "id": "mls", "extra_code": "USA", "season": "calendar"},
+    "Argentina - Liga Profesional": {"kind": "hybrid_extra", "id": "argentina", "extra_code": "ARG", "season": "calendar"},
+    "México - Liga MX": {"kind": "hybrid_extra", "id": "mexico", "extra_code": "MEX", "season": "calendar"},
+    "Colômbia - Primera A": {"kind": "open_results", "id": "colombia", "season": "calendar"},
+    "CONMEBOL Libertadores": {"kind": "open_results", "id": "libertadores", "season": "calendar"},
+    "CONMEBOL Sul-Americana": {"kind": "open_results", "id": "sudamericana", "season": "calendar"},
+    "UEFA Champions League": {"kind": "open_results", "id": "champions", "season": "europe"},
+    "UEFA Europa League": {"kind": "open_results", "id": "europa", "season": "europe"},
+    "UEFA Conference League": {"kind": "open_results", "id": "conference", "season": "europe"},
+}
+
+FD_STATS = {
+    "Finalizações": ("HS", "AS"),
+    "Chutes no alvo": ("HST", "AST"),
+    "Escanteios": ("HC", "AC"),
+    "Faltas": ("HF", "AF"),
+    "Amarelos": ("HY", "AY"),
+    "Vermelhos": ("HR", "AR"),
+}
+
+DISPLAY_METRICS = [
+    "Jogos",
+    "Gols pró",
+    "Gols contra",
+    "Escanteios",
+    "Amarelos",
+    "Vermelhos",
+    "Faltas",
+    "Finalizações",
+    "Chutes no alvo",
+    "Posse (%)",
+    "Impedimentos",
+    "Passes",
+    "Precisão passes (%)",
+]
+
+
+BRASILIA_TZ = ZoneInfo("America/Sao_Paulo")
+
+COMPETITION_TIMEZONES = {
+    "Inglaterra - Premier League": "Europe/London",
+    "Espanha - La Liga": "Europe/Madrid",
+    "Itália - Serie A": "Europe/Rome",
+    "Alemanha - Bundesliga": "Europe/Berlin",
+    "França - Ligue 1": "Europe/Paris",
+    "Portugal - Liga Portugal": "Europe/Lisbon",
+    "Holanda - Eredivisie": "Europe/Amsterdam",
+    "Escócia - Premiership": "Europe/London",
+    "Turquia - Süper Lig": "Europe/Istanbul",
+    "Brasil - Série A": "America/Sao_Paulo",
+    "Brasil - Série B": "America/Sao_Paulo",
+    "Arábia Saudita - Saudi Pro League": "Asia/Riyadh",
+    "Estados Unidos - MLS": "America/New_York",
+    "Argentina - Liga Profesional": "America/Argentina/Buenos_Aires",
+    "México - Liga MX": "America/Mexico_City",
+    "Colômbia - Primera A": "America/Bogota",
+    "CONMEBOL Libertadores": "America/Sao_Paulo",
+    "CONMEBOL Sul-Americana": "America/Sao_Paulo",
+    "UEFA Champions League": "Europe/Paris",
+    "UEFA Europa League": "Europe/Paris",
+    "UEFA Conference League": "Europe/Paris",
+}
+
+def fixture_time_brasilia(raw_time, competition, fixture_date=None, source_tz=None):
+    """Converte HH:MM da fonte para horário de Brasília; preserva status como FT/AO VIVO."""
+    if raw_time is None:
+        return "", None
+    txt = str(raw_time).strip()
+    m = re.fullmatch(r"([01]?\d|2[0-3]):([0-5]\d)", txt)
+    if not m:
+        return txt, None
+    if fixture_date is None:
+        fixture_date = datetime.now(BRASILIA_TZ).date()
+    if isinstance(fixture_date, pd.Timestamp):
+        fixture_date = fixture_date.date()
+    tz_name = source_tz or COMPETITION_TIMEZONES.get(competition, "UTC")
+    try:
+        src = datetime(fixture_date.year, fixture_date.month, fixture_date.day, int(m.group(1)), int(m.group(2)), tzinfo=ZoneInfo(tz_name))
+        brt = src.astimezone(BRASILIA_TZ)
+        return brt.strftime("%H:%M"), brt.date()
+    except Exception:
+        return txt, fixture_date
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36",
+    "Accept": "text/csv,text/plain,application/json,*/*",
+}
+
+
+def season_label(year, season_type):
+    if season_type == "europe":
+        return f"{year}/{str(year + 1)[-2:]}"
+    return str(year)
+
+
+def season_options(season_type):
+    now = datetime.now()
+    if season_type == "europe":
+        current = now.year if now.month >= 7 else now.year - 1
+    else:
+        current = now.year
+    return list(range(current, 2015, -1))
+
+
+def current_season_year(season_type):
+    """Retorna exclusivamente a temporada vigente; nunca recua silenciosamente."""
+    now = datetime.now()
+    if season_type == "europe":
+        return now.year if now.month >= 7 else now.year - 1
+    return now.year
+
+
+def season_code(year):
+    return f"{year % 100:02d}{(year + 1) % 100:02d}"
+
+
+def request_first(urls, timeout=30):
+    """Tenta múltiplas URLs e retentativas sem depender de serviços protegidos por 403."""
+    errors = []
+    for url in urls:
+        for attempt in range(3):
+            try:
+                r = requests.get(url, headers=HEADERS, timeout=timeout)
+                if r.status_code == 200 and r.content:
+                    return r
+                errors.append(f"HTTP {r.status_code}")
+                if r.status_code not in (429, 500, 502, 503, 504):
+                    break
+            except requests.RequestException as exc:
+                errors.append(str(exc))
+            time.sleep(0.5 * (attempt + 1))
+    raise RuntimeError(errors[-1] if errors else "fonte indisponível")
+
+
+def read_csv_bytes(content):
+    last = None
+    for enc in ("utf-8-sig", "utf-8", "latin-1"):
+        for sep in (",", ";"):
+            try:
+                df = pd.read_csv(io.BytesIO(content), encoding=enc, sep=sep)
+                if len(df.columns) > 1:
+                    return df
+            except Exception as exc:
+                last = exc
+    raise RuntimeError(f"não foi possível ler o arquivo: {last}")
+
+
+def clean_col(text):
+    text = str(text).strip().lower()
+    text = "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
+    return re.sub(r"[^a-z0-9]+", "_", text).strip("_")
+
+
+def to_num(value):
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    if isinstance(value, str):
+        value = value.replace("%", "").replace(",", ".").strip()
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def empty_team(name):
+    return {
+        "Time": name,
+        "Jogos": 0,
+        "Gols pró": 0.0,
+        "Gols contra": 0.0,
+        **{m: 0.0 for m in DISPLAY_METRICS if m not in ("Jogos", "Gols pró", "Gols contra")},
+        **{f"_n_{m}": 0 for m in DISPLAY_METRICS if m not in ("Jogos", "Gols pró", "Gols contra")},
+    }
+
+
+def add_metric(team, metric, value):
+    value = to_num(value)
+    if value is not None:
+        team[metric] += value
+        team[f"_n_{metric}"] += 1
+
+
+def finish_averages(acc):
+    rows = []
+    for item in acc.values():
+        games = item["Jogos"]
+        if not games:
+            continue
+        row = {"Time": item["Time"], "Jogos": games}
+        row["Gols pró"] = round(item["Gols pró"] / games, 2)
+        row["Gols contra"] = round(item["Gols contra"] / games, 2)
+        for metric in DISPLAY_METRICS:
+            if metric in ("Jogos", "Gols pró", "Gols contra"):
+                continue
+            n = item.get(f"_n_{metric}", 0)
+            row[metric] = round(item[metric] / n, 2) if n else None
+        rows.append(row)
+    return pd.DataFrame(rows).sort_values("Time").reset_index(drop=True) if rows else pd.DataFrame()
+
+
+# ============================================================
+# EUROPA - FOOTBALL-DATA
+# ============================================================
+@st.cache_data(ttl=21600, show_spinner=False)
+def load_football_data(code, year):
+    sc = season_code(year)
+    r = request_first([
+        f"https://www.football-data.co.uk/mmz4281/{sc}/{code}.csv",
+        f"https://football-data.co.uk/mmz4281/{sc}/{code}.csv",
+    ])
+    df = read_csv_bytes(r.content)
+    required = {"HomeTeam", "AwayTeam", "FTHG", "FTAG"}
+    if not required.issubset(df.columns):
+        raise RuntimeError("arquivo sem resultados reconhecíveis")
+
+    for c in ["FTHG", "FTAG", "HTHG", "HTAG", *{x for pair in FD_STATS.values() for x in pair}]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    df = df.dropna(subset=["HomeTeam", "AwayTeam", "FTHG", "FTAG"]).copy()
+    if "Date" in df.columns:
+        parsed_dates = pd.to_datetime(df["Date"], dayfirst=True, errors="coerce")
+        df.attrs["updated_until"] = parsed_dates.max() if parsed_dates.notna().any() else None
+    else:
+        df.attrs["updated_until"] = None
+    return df
+
+
+def averages_football_data(df, last_games_per_team=0):
+    teams = sorted(set(df["HomeTeam"]).union(df["AwayTeam"]))
+    acc = {t: empty_team(t) for t in teams}
+
+    # Limite por equipe, não por liga: mais intuitivo para comparação.
+    selected_indices = None
+    if last_games_per_team:
+        selected_indices = set()
+        for team in teams:
+            mask = (df["HomeTeam"] == team) | (df["AwayTeam"] == team)
+            selected_indices.update(df[mask].tail(last_games_per_team).index.tolist())
+
+    for idx, g in df.iterrows():
+        if selected_indices is not None and idx not in selected_indices:
+            continue
+        home, away = g["HomeTeam"], g["AwayTeam"]
+        hg, ag = float(g["FTHG"]), float(g["FTAG"])
+        H, A = acc[home], acc[away]
+        H["Jogos"] += 1; A["Jogos"] += 1
+        H["Gols pró"] += hg; H["Gols contra"] += ag
+        A["Gols pró"] += ag; A["Gols contra"] += hg
+        for metric, (hc, ac) in FD_STATS.items():
+            if hc in df.columns: add_metric(H, metric, g.get(hc))
+            if ac in df.columns: add_metric(A, metric, g.get(ac))
+    out = finish_averages(acc)
+    out.attrs["updated_until"] = df.attrs.get("updated_until")
+    raw_matches = []
+    for _, g in df.iterrows():
+        dt = None
+        if "Date" in df.columns:
+            parsed = pd.to_datetime(g.get("Date"), dayfirst=True, errors="coerce")
+            dt = None if pd.isna(parsed) else parsed
+        raw_matches.append({
+            "home": str(g["HomeTeam"]), "away": str(g["AwayTeam"]),
+            "hg": float(g["FTHG"]), "ag": float(g["FTAG"]), "date": dt,
+            "ht_hg": None if "HTHG" not in df.columns or pd.isna(g.get("HTHG")) else float(g.get("HTHG")),
+            "ht_ag": None if "HTAG" not in df.columns or pd.isna(g.get("HTAG")) else float(g.get("HTAG")),
+        })
+    out.attrs["matches"] = raw_matches
+    return out
+
+
+# ============================================================
+# BRASILEIRÃO SÉRIE A - DATASET ESTÁTICO CONSOLIDADO
+# ============================================================
+BR_MATCH_URLS = [
+    "https://raw.githubusercontent.com/leeofernandes1980/brasileirao-dataset/main/campeonato-brasileiro-full.csv",
+    "https://github.com/leeofernandes1980/brasileirao-dataset/raw/refs/heads/main/campeonato-brasileiro-full.csv",
+]
+BR_STATS_URLS = [
+    "https://raw.githubusercontent.com/leeofernandes1980/brasileirao-dataset/main/campeonato-brasileiro-estatisticas-full.csv",
+    "https://github.com/leeofernandes1980/brasileirao-dataset/raw/refs/heads/main/campeonato-brasileiro-estatisticas-full.csv",
+]
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def load_brasileirao_dataset(year):
+    matches = read_csv_bytes(request_first(BR_MATCH_URLS).content)
+    stats = read_csv_bytes(request_first(BR_STATS_URLS).content)
+
+    matches.columns = [clean_col(c) for c in matches.columns]
+    stats.columns = [clean_col(c) for c in stats.columns]
+
+    # Localiza nomes de colunas tolerando pequenas mudanças no dataset.
+    id_col = next((c for c in ["id", "partida_id"] if c in matches.columns), None)
+    date_col = next((c for c in ["data", "date"] if c in matches.columns), None)
+    home_col = next((c for c in ["mandante", "home_team"] if c in matches.columns), None)
+    away_col = next((c for c in ["visitante", "away_team"] if c in matches.columns), None)
+    hg_col = next((c for c in ["mandante_placar", "gols_mandante", "home_goals"] if c in matches.columns), None)
+    ag_col = next((c for c in ["visitante_placar", "gols_visitante", "away_goals"] if c in matches.columns), None)
+    sid_col = next((c for c in ["partida_id", "id"] if c in stats.columns), None)
+    club_col = next((c for c in ["clube", "time", "team"] if c in stats.columns), None)
+
+    if not all([id_col, date_col, home_col, away_col, hg_col, ag_col, sid_col, club_col]):
+        raise RuntimeError("estrutura do dataset brasileiro mudou")
+
+    matches["_date"] = pd.to_datetime(matches[date_col], dayfirst=True, errors="coerce")
+    matches = matches[matches["_date"].dt.year == year].copy()
+    matches[hg_col] = pd.to_numeric(matches[hg_col], errors="coerce")
+    matches[ag_col] = pd.to_numeric(matches[ag_col], errors="coerce")
+    matches = matches.dropna(subset=[home_col, away_col, hg_col, ag_col])
+    if matches.empty:
+        raise RuntimeError("sem partidas disponíveis para esta temporada")
+
+    ids = set(matches[id_col].astype(str))
+    stats["_id"] = stats[sid_col].astype(str)
+    stats = stats[stats["_id"].isin(ids)].copy()
+
+    mapping = {
+        "Chutes": "Finalizações",
+        "Chutes a gol": "Chutes no alvo",
+        "Posse de bola": "Posse (%)",
+        "Passes": "Passes",
+        "precisao_passes": "Precisão passes (%)",
+        "Faltas": "Faltas",
+        "cartao_amarelo": "Amarelos",
+        "cartao_vermelho": "Vermelhos",
+        "Impedimentos": "Impedimentos",
+        "Escanteios": "Escanteios",
+    }
+    mapping = {clean_col(k): v for k, v in mapping.items()}
+
+    teams = sorted(set(matches[home_col]).union(matches[away_col]))
+    acc = {t: empty_team(t) for t in teams}
+
+    for _, g in matches.iterrows():
+        h, a = str(g[home_col]), str(g[away_col])
+        hg, ag = float(g[hg_col]), float(g[ag_col])
+        H, A = acc[h], acc[a]
+        H["Jogos"] += 1; A["Jogos"] += 1
+        H["Gols pró"] += hg; H["Gols contra"] += ag
+        A["Gols pró"] += ag; A["Gols contra"] += hg
+
+    for _, s in stats.iterrows():
+        club = str(s[club_col])
+        if club not in acc:
+            continue
+        for raw, metric in mapping.items():
+            if raw in stats.columns:
+                add_metric(acc[club], metric, s.get(raw))
+
+    out = finish_averages(acc)
+    out.attrs["updated_until"] = matches["_date"].max() if matches["_date"].notna().any() else None
+    out.attrs["matches"] = [
+        {"home": str(g[home_col]), "away": str(g[away_col]),
+         "hg": float(g[hg_col]), "ag": float(g[ag_col]), "date": g["_date"]}
+        for _, g in matches.iterrows()
+    ]
+    return out
+
+
+# ============================================================
+# COMPETIÇÕES ABERTAS - RESULTADOS (SEM INVENTAR STATS AUSENTES)
+# ============================================================
+def score_ft(score):
+    if isinstance(score, list) and len(score) >= 2:
+        return score[0], score[1]
+    if isinstance(score, dict):
+        ft = score.get("ft")
+        if isinstance(ft, list) and len(ft) >= 2:
+            return ft[0], ft[1]
+    return None, None
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def load_open_json(urls):
+    r = request_first(urls)
+    try:
+        return r.json()
+    except ValueError as exc:
+        raise RuntimeError("JSON público inválido") from exc
+
+
+def averages_open_matches(matches):
+    acc = {}
+    match_dates = []
+    standardized = []
+    for m in matches:
+        h = m.get("team1") or m.get("home")
+        a = m.get("team2") or m.get("away")
+        hg, ag = score_ft(m.get("score"))
+        if not h or not a or hg is None or ag is None:
+            continue
+        try:
+            hg, ag = float(hg), float(ag)
+        except (TypeError, ValueError):
+            continue
+
+        raw_date = m.get("date") or m.get("datetime") or m.get("played_at")
+        if raw_date:
+            dt = pd.to_datetime(raw_date, errors="coerce", dayfirst=True)
+            if not pd.isna(dt):
+                match_dates.append(dt)
+
+        standardized.append({"home": str(h), "away": str(a), "hg": hg, "ag": ag, "date": dt if raw_date and not pd.isna(dt) else None})
+        acc.setdefault(h, empty_team(h)); acc.setdefault(a, empty_team(a))
+        H, A = acc[h], acc[a]
+        H["Jogos"] += 1; A["Jogos"] += 1
+        H["Gols pró"] += hg; H["Gols contra"] += ag
+        A["Gols pró"] += ag; A["Gols contra"] += hg
+
+    out = finish_averages(acc)
+    out.attrs["updated_until"] = max(match_dates) if match_dates else None
+    out.attrs["matches"] = standardized
+    return out
+
+
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def load_extra_football_data(code, year):
+    """Carrega ligas extras do Football-Data (arquivo único com várias temporadas).
+    Usa nomes de colunas flexíveis e mantém apenas partidas do ano vigente.
+    """
+    urls = [
+        f"https://www.football-data.co.uk/new/{code}.csv",
+        f"https://www.football-data.co.uk/{code.lower()}/new/{code}.csv",
+    ]
+    r = request_first(urls)
+    df = read_csv_bytes(r.content)
+    if df.empty:
+        raise RuntimeError("arquivo sem partidas")
+
+    # Normaliza os nomes usados historicamente pelas ligas extras.
+    aliases = {
+        "Home": "HomeTeam", "Home Team": "HomeTeam", "HomeTeam": "HomeTeam",
+        "Away": "AwayTeam", "Away Team": "AwayTeam", "AwayTeam": "AwayTeam",
+        "HG": "FTHG", "Home Goals": "FTHG", "FTHG": "FTHG",
+        "AG": "FTAG", "Away Goals": "FTAG", "FTAG": "FTAG",
+    }
+    rename = {c: aliases[c] for c in df.columns if c in aliases}
+    df = df.rename(columns=rename)
+    required = {"HomeTeam", "AwayTeam", "FTHG", "FTAG"}
+    if not required.issubset(df.columns):
+        raise RuntimeError("formato de dados não reconhecido")
+
+    date_col = next((c for c in ["Date", "DATE", "MatchDate"] if c in df.columns), None)
+    if date_col:
+        dt = pd.to_datetime(df[date_col], dayfirst=True, errors="coerce")
+        current = df[dt.dt.year == year].copy()
+        current["Date"] = dt[dt.dt.year == year]
+    else:
+        current = df.copy()
+
+    current["FTHG"] = pd.to_numeric(current["FTHG"], errors="coerce")
+    current["FTAG"] = pd.to_numeric(current["FTAG"], errors="coerce")
+    current = current.dropna(subset=["HomeTeam", "AwayTeam", "FTHG", "FTAG"])
+    if current.empty:
+        raise RuntimeError(f"sem partidas de {year} nesta fonte")
+    return current
+
+def parse_openfootball_txt(text):
+    matches = []
+    # Formato mais comum: Time A v Time B 2-1 ...
+    pattern = re.compile(r"^(?:\s*\d{1,2}:\d{2}\s+)?(.+?)\s+v\s+(.+?)\s+(\d+)\s*-\s*(\d+)(?:\s|$)")
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith(("#", "=", "▪")) or "[cancelled]" in line:
+            continue
+        m = pattern.search(line)
+        if m:
+            matches.append({
+                "team1": m.group(1).strip(),
+                "team2": m.group(2).strip(),
+                "score": {"ft": [int(m.group(3)), int(m.group(4))]},
+            })
+    return matches
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def load_open_results(comp_id, year, season_type):
+    if comp_id in {"br1", "br2", "mls", "saudi", "argentina", "mexico", "colombia"}:
+        if comp_id == "br1":
+            candidates = [(str(year), "br.1.json")]
+        elif comp_id == "br2":
+            candidates = [(str(year), "br.2.json")]
+        elif comp_id == "mls":
+            candidates = [(str(year), "mls.json"), (str(year), "us.1.json"), (str(year), "usa.1.json")]
+        elif comp_id == "argentina":
+            candidates = [(str(year), "ar.1.json"), (str(year), "arg.1.json"), (str(year), "ar-liga.json")]
+        elif comp_id == "mexico":
+            candidates = [(str(year), "mx.1.json"), (str(year), "mex.1.json"), (str(year), "liga-mx.json")]
+        elif comp_id == "colombia":
+            candidates = [(str(year), "co.1.json"), (str(year), "col.1.json"), (str(year), "colombia.1.json")]
+        else:
+            # Saudi Pro League segue calendário europeu. Mantemos vários nomes
+            # públicos possíveis para tolerar mudanças de nomenclatura do dataset.
+            folder = f"{year}-{str(year + 1)[-2:]}"
+            candidates = [
+                (folder, "sa.1.json"),
+                (folder, "ksa.1.json"),
+                (folder, "saudi.1.json"),
+                (folder, "saudi-pro-league.json"),
+            ]
+
+        urls = []
+        for folder, filename in candidates:
+            urls.extend([
+                f"https://raw.githubusercontent.com/openfootball/football.json/master/{folder}/{filename}",
+                f"https://github.com/openfootball/football.json/raw/refs/heads/master/{folder}/{filename}",
+            ])
+        data = load_open_json(urls)
+        matches = data.get("matches", [])
+        if not matches:
+            raise RuntimeError("sem partidas disponíveis para a temporada atual")
+        return averages_open_matches(matches)
+
+    if comp_id == "libertadores":
+        urls = [
+            f"https://raw.githubusercontent.com/openfootball/south-america/master/copa-libertadores/{year}_copal.txt",
+            f"https://github.com/openfootball/south-america/raw/refs/heads/master/copa-libertadores/{year}_copal.txt",
+        ]
+    elif comp_id == "sudamericana":
+        urls = [
+            f"https://raw.githubusercontent.com/openfootball/south-america/master/copa-sudamericana/{year}_copas.txt",
+            f"https://raw.githubusercontent.com/openfootball/south-america/master/copa-sudamericana/{year}_copa_sudamericana.txt",
+            f"https://github.com/openfootball/south-america/raw/refs/heads/master/copa-sudamericana/{year}_copas.txt",
+        ]
+    else:
+        yy = str(year + 1)[-2:]
+        folder = f"{year}-{yy}"
+        if comp_id == "champions":
+            names = ["cl.txt", "champions.txt"]
+        elif comp_id == "europa":
+            names = ["el.txt", "europa.txt", "europa-league.txt"]
+        else:
+            names = ["conf.txt", "conference.txt", "conference-league.txt", "ecl.txt"]
+        urls = []
+        for name in names:
+            urls.extend([
+                f"https://raw.githubusercontent.com/openfootball/champions-league/master/{folder}/{name}",
+                f"https://raw.githubusercontent.com/openfootball/champions-league/master/{year}/{name}",
+                f"https://github.com/openfootball/champions-league/raw/refs/heads/master/{folder}/{name}",
+            ])
+
+    text = request_first(urls).text
+    matches = parse_openfootball_txt(text)
+    if not matches:
+        raise RuntimeError("sem resultados estruturados disponíveis para esta temporada")
+    return averages_open_matches(matches)
+
+
+# ============================================================
+# OPORTUNIDADES ESTATÍSTICAS
+# ============================================================
+def poisson_cdf(k, lam):
+    """P(X <= k) para Poisson, sem scipy."""
+    if lam is None or pd.isna(lam) or lam < 0:
+        return None
+    term = math.exp(-lam)
+    total = term
+    for i in range(1, k + 1):
+        term *= lam / i
+        total += term
+    return min(max(total, 0.0), 1.0)
+
+
+def prob_over_half_line(lam, line):
+    # Para linha n+0,5, over significa X >= n+1.
+    if lam is None or pd.isna(lam):
+        return None
+    k = int(math.floor(line))
+    cdf = poisson_cdf(k, lam)
+    return None if cdf is None else 1 - cdf
+
+
+def prob_under_half_line(lam, line):
+    # Para linha n+0,5, under significa X <= n.
+    if lam is None or pd.isna(lam):
+        return None
+    k = int(math.floor(line))
+    return poisson_cdf(k, lam)
+
+
+def metric_value(row, name):
+    if name not in row.index:
+        return None
+    value = row[name]
+    if pd.isna(value):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def add_candidate(items, emoji, market, probability, basis, category, direction="over"):
+    if probability is None:
+        return
+    pct = probability * 100
+
+    # Priorizamos mercados com sustentação razoável. Para "menos de", exigimos
+    # uma confiança bem maior, porque a tela deve privilegiar linhas de "mais de".
+    min_pct = 58 if direction != "under" else 82
+    if min_pct <= pct <= 95:
+        if pct >= 80:
+            level = "🟢 Forte"
+        elif pct >= 70:
+            level = "🟡 Boa"
+        else:
+            level = "🟠 Moderada"
+        items.append({
+            "Mercado": f"{emoji} {market}",
+            "Chance": round(pct, 1),
+            "Leitura": level,
+            "Base": basis,
+            "Categoria": category,
+            "Direcao": direction,
+        })
+
+
+def build_opportunities(a, b, team_a, team_b):
+    """Seleciona somente a linha mais útil por mercado.
+
+    Regra: entre os overs, prefere a LINHA MAIS ALTA que ainda mantenha 80%+.
+    Se nenhuma chegar a 80%, escolhe a de maior probabilidade com pelo menos 70%.
+    Isso evita sequências repetitivas (+15,5 e +17,5 do mesmo mercado) e linhas
+    excessivamente fáceis quando existe uma alternativa mais ajustada ao jogo.
+    """
+    candidates = []
+
+    def add_market(group, emoji, label, lam, lines, basis, min_good=70):
+        opts = []
+        for line in lines:
+            pct = prob_over_half_line(max(float(lam), 0.05), line) * 100
+            if pct >= min_good:
+                opts.append((line, pct))
+        if not opts:
+            return
+        strong = [(line, pct) for line, pct in opts if pct >= 80]
+        # Maior linha ainda forte; se não houver 80%+, usa a opção mais provável.
+        if strong:
+            line, pct = max(strong, key=lambda x: x[0])
+        else:
+            line, pct = max(opts, key=lambda x: x[1])
+        level = "🟢 Forte" if pct >= 80 else "🟡 Boa"
+        candidates.append({
+            "Mercado": f"{emoji} Mais de {str(line).replace('.', ',')} {label}",
+            "Chance": round(pct, 1),
+            "Leitura": level,
+            "Base": basis,
+            "Categoria": group,
+            "Direcao": "over",
+            "Linha": line,
+        })
+
+    # Gols totais.
+    a_gf = metric_value(a, "Gols pró"); a_ga = metric_value(a, "Gols contra")
+    b_gf = metric_value(b, "Gols pró"); b_ga = metric_value(b, "Gols contra")
+    if None not in (a_gf, a_ga, b_gf, b_ga):
+        lam_a = max(((a_gf + b_ga) / 2) * 1.08, 0.05)
+        lam_b = max(((b_gf + a_ga) / 2) / 1.08, 0.05)
+        lam_total = lam_a + lam_b
+        add_market("Gols", "⚽", "gols", lam_total, (0.5, 1.5, 2.5, 3.5, 4.5), f"Média projetada: {lam_total:.2f} gols")
+
+    specs = [
+        ("Escanteios", "⛳", "escanteios", (4.5, 5.5, 6.5, 7.5, 8.5, 9.5, 10.5, 11.5)),
+        ("Cartões", "🟨", "cartões", (1.5, 2.5, 3.5, 4.5, 5.5, 6.5)),
+        ("Faltas", "🚫", "faltas", (13.5, 15.5, 17.5, 19.5, 21.5, 23.5, 25.5, 27.5)),
+        ("Finalizações", "🎯", "finalizações", (13.5, 15.5, 17.5, 19.5, 21.5, 23.5, 25.5)),
+        ("Chutes no alvo", "🥅", "chutes no alvo", (3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5)),
+    ]
+    for metric, emoji, label, lines in specs:
+        # Cartões usa amarelos + vermelhos e substitui a antiga duplicidade Amarelos/Cartões.
+        if metric == "Cartões":
+            ay, by = metric_value(a, "Amarelos"), metric_value(b, "Amarelos")
+            ar, br = metric_value(a, "Vermelhos"), metric_value(b, "Vermelhos")
+            if ay is None or by is None:
+                continue
+            lam = ay + by + (ar or 0) + (br or 0)
+        else:
+            av, bv = metric_value(a, metric), metric_value(b, metric)
+            if av is None or bv is None:
+                continue
+            lam = av + bv
+        add_market(metric, emoji, label, lam, lines, f"Média combinada: {lam:.2f}")
+
+    # Exibe primeiro as linhas fortes; uma única sugestão por categoria.
+    candidates.sort(key=lambda x: (-x["Chance"], x["Categoria"]))
+    return candidates[:6]
+
+
+def match_expectations(a, b):
+    """Projeções a partir das médias atuais; só retorna mercados realmente disponíveis."""
+    out = {}
+    a_gf, a_ga = metric_value(a, "Gols pró"), metric_value(a, "Gols contra")
+    b_gf, b_ga = metric_value(b, "Gols pró"), metric_value(b, "Gols contra")
+    if None not in (a_gf, a_ga, b_gf, b_ga):
+        lam_a = max(((a_gf + b_ga) / 2) * 1.08, 0.05)
+        lam_b = max(((b_gf + a_ga) / 2) / 1.08, 0.05)
+        out["Gols"] = {"total": lam_a + lam_b, "home": lam_a, "away": lam_b}
+    ac, bc = metric_value(a, "Escanteios"), metric_value(b, "Escanteios")
+    if ac is not None and bc is not None:
+        out["Escanteios"] = {"total": max(ac + bc, 0.05), "home": max(ac, 0.01), "away": max(bc, 0.01)}
+    ay, by = metric_value(a, "Amarelos"), metric_value(b, "Amarelos")
+    ar, br = metric_value(a, "Vermelhos"), metric_value(b, "Vermelhos")
+    if ay is not None and by is not None:
+        home_cards, away_cards = ay + (ar or 0), by + (br or 0)
+        out["Cartões"] = {"total": max(home_cards + away_cards, 0.05), "home": max(home_cards, 0.01), "away": max(away_cards, 0.01)}
+    sa, sb = metric_value(a, "Finalizações"), metric_value(b, "Finalizações")
+    if sa is not None and sb is not None:
+        out["Finalizações"] = {"total": sa + sb, "home": sa, "away": sb}
+    ta, tb = metric_value(a, "Chutes no alvo"), metric_value(b, "Chutes no alvo")
+    if ta is not None and tb is not None:
+        out["Chutes no alvo"] = {"total": ta + tb, "home": ta, "away": tb}
+    return out
+
+
+def expected_goals_by_half(team_a, team_b, matches, total_expected):
+    """Usa apenas placares reais de intervalo; não divide a projeção ao meio artificialmente."""
+    samples = []
+    for m in reversed(matches or []):
+        if m.get("home") not in (team_a, team_b) and m.get("away") not in (team_a, team_b):
+            continue
+        hthg, htag = m.get("ht_hg"), m.get("ht_ag")
+        if hthg is None or htag is None:
+            continue
+        try:
+            ht = float(hthg) + float(htag)
+            ft = float(m.get("hg", 0)) + float(m.get("ag", 0))
+        except (TypeError, ValueError):
+            continue
+        samples.append((ht, ft))
+        if len(samples) >= 30:
+            break
+    if len(samples) < 6:
+        return None
+    ft_total = sum(ft for _, ft in samples)
+    if ft_total <= 0:
+        return None
+    share = max(0.30, min(0.58, sum(ht for ht, _ in samples) / ft_total))
+    first = total_expected * share
+    return {"first": first, "second": max(total_expected - first, 0), "games": len(samples)}
+
+
+def _prob_color(pct):
+    if pct >= 80:
+        return "#16a34a", "#f0fdf4"
+    if pct >= 65:
+        return "#d97706", "#fffbeb"
+    return "#dc2626", "#fef2f2"
+
+
+def _prob_circle(pct):
+    border, bg = _prob_color(pct)
+    return f'<div style="width:46px;height:46px;border-radius:50%;border:3px solid {border};background:{bg};display:flex;align-items:center;justify-content:center;font-weight:750;font-size:12px;color:#172033;margin:auto">{pct:.0f}%</div>'
+
+
+def render_probability_matrix(title, emoji, rows, lines):
+    line_headers = "".join(
+        f'<div style="text-align:center;font-size:11px;color:#64748b;font-weight:650">+{str(line).replace(".", ",")}</div>'
+        for line in lines
+    )
+    html = (
+        f'<div style="background:#ffffff;border:1px solid #e5e7eb;border-radius:13px;padding:13px 14px 11px;margin:7px 0 14px;box-shadow:0 1px 2px rgba(15,23,42,.03)">'
+        f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:11px">'
+        f'<div style="font-weight:700;color:#172033;font-size:14px">{emoji} {title}</div>'
+        f'<div style="font-size:10px;color:#94a3b8">probabilidade estimada</div></div>'
+        f'<div style="display:grid;grid-template-columns:minmax(105px,1.45fr) repeat({len(lines)},minmax(52px,1fr));gap:7px;align-items:center"><div></div>{line_headers}'
+    )
+    for label, lam in rows:
+        html += f'<div style="font-size:11px;color:#334155;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="{label}">{label}</div>'
+        for line in lines:
+            pct = prob_over_half_line(max(float(lam), 0.01), line) * 100
+            html += _prob_circle(pct)
+    html += '</div><div style="margin-top:9px;font-size:10px;color:#94a3b8">🟢 80%+ &nbsp; • &nbsp; 🟡 65–79% &nbsp; • &nbsp; 🔴 abaixo de 65%</div></div>'
+    st.markdown(html, unsafe_allow_html=True)
+
+
+def render_match_probability_dashboard(a, b, team_a, team_b, df):
+    ex = match_expectations(a, b)
+    if not ex:
+        return ex
+    st.markdown("### 📈 Expectativa da partida")
+    cards = []
+    if "Gols" in ex: cards.append(("⚽ Gols esperados", ex["Gols"]["total"]))
+    if "Escanteios" in ex: cards.append(("⛳ Escanteios esperados", ex["Escanteios"]["total"]))
+    if "Cartões" in ex: cards.append(("🟨 Cartões esperados", ex["Cartões"]["total"]))
+    if "Finalizações" in ex: cards.append(("🎯 Finalizações", ex["Finalizações"]["total"]))
+    if "Chutes no alvo" in ex: cards.append(("🥅 No alvo", ex["Chutes no alvo"]["total"]))
+    if cards:
+        cols = st.columns(len(cards))
+        for col, (label, value) in zip(cols, cards):
+            col.metric(label, f"{value:.1f}".replace(".", ","))
+    if "Gols" in ex:
+        split = expected_goals_by_half(team_a, team_b, df.attrs.get("matches", []), ex["Gols"]["total"])
+        if split:
+            st.markdown("#### ⏱️ Distribuição esperada de gols")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("1º tempo", f"{split['first']:.2f}".replace(".", ","))
+            c2.metric("Jogo todo", f"{ex['Gols']['total']:.2f}".replace(".", ","))
+            c3.metric("2º tempo", f"{split['second']:.2f}".replace(".", ","))
+            st.caption(f"Distribuição baseada em {split['games']} partidas com placar de intervalo disponível.")
+        else:
+            st.caption("⏱️ Separação por 1º/2º tempo indisponível nesta fonte — o app não divide a média artificialmente.")
+    st.markdown("#### 🎯 Probabilidades — Mais de")
+    tab_names = []
+    if "Gols" in ex: tab_names.append("⚽ Gols")
+    if "Escanteios" in ex: tab_names.append("⛳ Escanteios")
+    if "Cartões" in ex: tab_names.append("🟨 Cartões")
+    if not tab_names:
+        return ex
+    tabs = st.tabs(tab_names)
+    i = 0
+    if "Gols" in ex:
+        with tabs[i]:
+            render_probability_matrix("Frequência de gols", "⚽", [("Partida", ex["Gols"]["total"]), (team_a, ex["Gols"]["home"]), (team_b, ex["Gols"]["away"])], [0.5, 1.5, 2.5, 3.5, 4.5])
+        i += 1
+    if "Escanteios" in ex:
+        with tabs[i]:
+            render_probability_matrix("Frequência de escanteios", "⛳", [("Partida", ex["Escanteios"]["total"]), (team_a, ex["Escanteios"]["home"]), (team_b, ex["Escanteios"]["away"])], [2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5])
+        i += 1
+    if "Cartões" in ex:
+        with tabs[i]:
+            render_probability_matrix("Frequência de cartões", "🟨", [("Partida", ex["Cartões"]["total"]), (team_a, ex["Cartões"]["home"]), (team_b, ex["Cartões"]["away"])], [0.5, 1.5, 2.5, 3.5, 4.5, 5.5])
+    return ex
+
+
+def _team_form(team, matches, n=5):
+    pts = 0.0
+    gd = 0.0
+    used = 0
+    for m in reversed(matches):
+        if m["home"] != team and m["away"] != team:
+            continue
+        gf = m["hg"] if m["home"] == team else m["ag"]
+        ga = m["ag"] if m["home"] == team else m["hg"]
+        pts += 3 if gf > ga else 1 if gf == ga else 0
+        gd += gf - ga
+        used += 1
+        if used >= n:
+            break
+    if not used:
+        return 0.5, 0.0
+    return pts / (3 * used), gd / used
+
+
+def _season_strength(team, matches):
+    pts = gf = ga = games = 0.0
+    for m in matches:
+        if m["home"] != team and m["away"] != team:
+            continue
+        tg = m["hg"] if m["home"] == team else m["ag"]
+        ta = m["ag"] if m["home"] == team else m["hg"]
+        gf += tg; ga += ta; games += 1
+        pts += 3 if tg > ta else 1 if tg == ta else 0
+    if not games:
+        return 0.5, 0.0
+    return pts / (3 * games), (gf - ga) / games
+
+
+def _h2h(home, away, matches, n=6):
+    pts_h = pts_a = games = 0
+    for m in reversed(matches):
+        if {m["home"], m["away"]} != {home, away}:
+            continue
+        hg, ag = m["hg"], m["ag"]
+        if hg == ag:
+            pts_h += 1; pts_a += 1
+        else:
+            winner = m["home"] if hg > ag else m["away"]
+            if winner == home: pts_h += 3
+            else: pts_a += 3
+        games += 1
+        if games >= n: break
+    if not games:
+        return 0.5, 0.5, 0
+    total = max(pts_h + pts_a, 1)
+    return pts_h / total, pts_a / total, games
+
+
+def _home_away_rates(team, matches, as_home=True):
+    gf = ga = games = 0.0
+    for m in matches:
+        if as_home and m.get("home") == team:
+            gf += float(m.get("hg", 0)); ga += float(m.get("ag", 0)); games += 1
+        elif not as_home and m.get("away") == team:
+            gf += float(m.get("ag", 0)); ga += float(m.get("hg", 0)); games += 1
+    if not games:
+        return None
+    return gf / games, ga / games, int(games)
+
+
+def _poisson_result_probs(lambda_home, lambda_away, max_goals=8):
+    ph = pd = pa = 0.0
+    for hg in range(max_goals + 1):
+        p_hg = math.exp(-lambda_home) * (lambda_home ** hg) / math.factorial(hg)
+        for ag in range(max_goals + 1):
+            p_ag = math.exp(-lambda_away) * (lambda_away ** ag) / math.factorial(ag)
+            p = p_hg * p_ag
+            if hg > ag: ph += p
+            elif hg == ag: pd += p
+            else: pa += p
+    total = ph + pd + pa
+    if total <= 0:
+        return .40, .29, .31
+    return ph / total, pd / total, pa / total
+
+
+def victory_probabilities(home, away, df):
+    """Probabilidade 1X2 calibrada para evitar favoritismos exagerados.
+
+    Combina força ofensiva/defensiva da temporada, desempenho casa/fora,
+    fase recente e H2H com peso pequeno. O resultado final sofre regressão
+    à média e limites conservadores, especialmente quando a amostra é curta.
+    """
+    matches = df.attrs.get("matches", [])
+    if not matches:
+        return None
+
+    # Médias da liga por equipe/jogo.
+    valid = [m for m in matches if m.get("hg") is not None and m.get("ag") is not None]
+    if not valid:
+        return None
+    league_home = sum(float(m["hg"]) for m in valid) / len(valid)
+    league_away = sum(float(m["ag"]) for m in valid) / len(valid)
+    league_team = max((league_home + league_away) / 2, 0.65)
+
+    # Força geral da temporada.
+    home_row = df[df["Time"] == home]
+    away_row = df[df["Time"] == away]
+    if home_row.empty or away_row.empty:
+        return None
+    hr, ar = home_row.iloc[0], away_row.iloc[0]
+    hgf = metric_value(hr, "Gols pró") or league_team
+    hga = metric_value(hr, "Gols contra") or league_team
+    agf = metric_value(ar, "Gols pró") or league_team
+    aga = metric_value(ar, "Gols contra") or league_team
+
+    # Casa/fora específico quando há amostra; caso contrário recua à média geral.
+    hsplit = _home_away_rates(home, matches, True)
+    asplit = _home_away_rates(away, matches, False)
+    h_games = hsplit[2] if hsplit else 0
+    a_games = asplit[2] if asplit else 0
+    h_home_gf, h_home_ga = (hsplit[0], hsplit[1]) if hsplit else (hgf, hga)
+    a_away_gf, a_away_ga = (asplit[0], asplit[1]) if asplit else (agf, aga)
+
+    # Shrink de amostra: em poucos jogos, aproxima os números da média da liga.
+    shrink_h = min(h_games / 8.0, 1.0)
+    shrink_a = min(a_games / 8.0, 1.0)
+    h_home_gf = shrink_h * h_home_gf + (1 - shrink_h) * hgf
+    h_home_ga = shrink_h * h_home_ga + (1 - shrink_h) * hga
+    a_away_gf = shrink_a * a_away_gf + (1 - shrink_a) * agf
+    a_away_ga = shrink_a * a_away_ga + (1 - shrink_a) * aga
+
+    # Expectativa de gols: mistura geral + casa/fora e limita extremos.
+    lam_h = 0.55 * ((hgf + aga) / 2) + 0.45 * ((h_home_gf + a_away_ga) / 2)
+    lam_a = 0.55 * ((agf + hga) / 2) + 0.45 * ((a_away_gf + h_home_ga) / 2)
+    lam_h *= max(0.90, min(1.12, league_home / league_team))
+    lam_a *= max(0.90, min(1.08, league_away / league_team))
+
+    # Fase recente ajusta pouco (máx. ~8%), evitando supervalorizar 3-5 jogos.
+    hf, _ = _team_form(home, matches, 6)
+    af, _ = _team_form(away, matches, 6)
+    form_delta = max(-0.08, min(0.08, (hf - af) * 0.12))
+    lam_h *= 1 + form_delta
+    lam_a *= 1 - form_delta
+
+    # H2H tem influência mínima e apenas com amostra razoável.
+    hh, ah, h2n = _h2h(home, away, matches, 6)
+    if h2n >= 3:
+        h2_delta = max(-0.025, min(0.025, (hh - ah) * 0.04))
+        lam_h *= 1 + h2_delta
+        lam_a *= 1 - h2_delta
+
+    lam_h = max(0.35, min(lam_h, 2.75))
+    lam_a = max(0.30, min(lam_a, 2.55))
+    ph, pd_, pa = _poisson_result_probs(lam_h, lam_a)
+
+    # Regressão à distribuição-base. Mais forte no início da temporada.
+    sample = min(int(hr.get("Jogos", 0) or 0), int(ar.get("Jogos", 0) or 0))
+    model_weight = min(0.84, 0.58 + sample * 0.018)
+    baseline = (0.43, 0.28, 0.29)
+    ph = model_weight * ph + (1 - model_weight) * baseline[0]
+    pd_ = model_weight * pd_ + (1 - model_weight) * baseline[1]
+    pa = model_weight * pa + (1 - model_weight) * baseline[2]
+
+    # Evita 1X2 artificialmente extremos com bases gratuitas/parciais.
+    floor = 0.07
+    probs = [max(floor, ph), max(floor, pd_), max(floor, pa)]
+    total = sum(probs)
+    probs = [p / total for p in probs]
+    max_idx = max(range(3), key=lambda i: probs[i])
+    if probs[max_idx] > 0.72:
+        excess = probs[max_idx] - 0.72
+        probs[max_idx] = 0.72
+        others = [i for i in range(3) if i != max_idx]
+        denom = probs[others[0]] + probs[others[1]]
+        if denom > 0:
+            probs[others[0]] += excess * probs[others[0]] / denom
+            probs[others[1]] += excess * probs[others[1]] / denom
+
+    return {
+        "home": probs[0] * 100,
+        "draw": probs[1] * 100,
+        "away": probs[2] * 100,
+        "home_form": hf * 100,
+        "away_form": af * 100,
+        "h2h_games": h2n,
+        "expected_home_goals": lam_h,
+        "expected_away_goals": lam_a,
+    }
+
+
+def parse_today_from_openfootball_text(text, target_date, competition):
+    month_map = {"Jan":1,"Feb":2,"Mar":3,"Apr":4,"May":5,"Jun":6,"Jul":7,"Aug":8,"Sep":9,"Oct":10,"Nov":11,"Dec":12}
+    current = None
+    found = []
+    date_re = re.compile(r"^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+([A-Z][a-z]{2})\s+(\d{1,2})(?:\s+(\d{4}))?$")
+    match_re = re.compile(r"^(?:(\d{1,2}:\d{2})\s+)?(.+?)\s+v\s+(.+?)(?:\s+\d+\s*-\s*\d+.*)?$")
+    for raw in text.splitlines():
+        line = raw.strip()
+        dm = date_re.match(line)
+        if dm:
+            mon = month_map.get(dm.group(1)); day = int(dm.group(2)); yr = int(dm.group(3) or target_date.year)
+            # Temporadas europeias atravessam o ano: Sep-Dec usam ano inicial; Jan-Jun podem usar o seguinte.
+            if not dm.group(3) and mon and target_date.month <= 6 and mon >= 7:
+                yr -= 1
+            try: current = date(yr, mon, day)
+            except Exception: current = None
+            continue
+        if current is None or abs((current - target_date).days) > 1 or not line or line.startswith(("#","=","▪")):
+            continue
+        mm = match_re.match(line)
+        if not mm: continue
+        home = re.sub(r"\s+\([A-Z]{3}\)$", "", mm.group(2)).strip()
+        away = re.sub(r"\s+\([A-Z]{3}\)$", "", mm.group(3)).strip()
+        br_time, br_date = fixture_time_brasilia(mm.group(1) or "", competition, current)
+        if br_date not in (None, target_date):
+            continue
+        found.append({"competition":competition,"home":home,"away":away,"time":br_time})
+    return found
+
+
+
+class _DailyFixtureLinkParser(HTMLParser):
+    """Extrai links de partidas de uma página diária sem depender de BeautifulSoup."""
+    def __init__(self):
+        super().__init__()
+        self.links = []
+        self._href = None
+        self._parts = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag.lower() == "a":
+            self._href = dict(attrs).get("href")
+            self._parts = []
+
+    def handle_data(self, data):
+        if self._href is not None:
+            txt = str(data).strip()
+            if txt:
+                self._parts.append(txt)
+
+    def handle_endtag(self, tag):
+        if tag.lower() == "a" and self._href is not None:
+            self.links.append((self._href, " ".join(self._parts).strip()))
+            self._href = None
+            self._parts = []
+
+
+def _competition_from_livescore_path(path):
+    p = path.lower().strip("/")
+    checks = [
+        (("england", "premier-league"), "Inglaterra - Premier League"),
+        (("spain", "laliga"), "Espanha - La Liga"),
+        (("italy", "serie-a"), "Itália - Serie A"),
+        (("germany", "bundesliga"), "Alemanha - Bundesliga"),
+        (("france", "ligue-1"), "França - Ligue 1"),
+        (("portugal", "primeira-liga"), "Portugal - Liga Portugal"),
+        (("netherlands", "eredivisie"), "Holanda - Eredivisie"),
+        (("scotland", "premiership"), "Escócia - Premiership"),
+        (("turkiye", "super-lig"), "Turquia - Süper Lig"),
+        (("turkey", "super-lig"), "Turquia - Süper Lig"),
+        (("saudi-arabia", "saudi-professional-league"), "Arábia Saudita - Saudi Pro League"),
+        (("saudi-arabia", "pro-league"), "Arábia Saudita - Saudi Pro League"),
+        (("brazil", "serie-a"), "Brasil - Série A"),
+        (("brazil", "serie-b"), "Brasil - Série B"),
+        (("usa", "major-league-soccer"), "Estados Unidos - MLS"),
+        (("usa", "mls"), "Estados Unidos - MLS"),
+        (("argentina", "liga-profesional"), "Argentina - Liga Profesional"),
+        (("argentina", "primera-division"), "Argentina - Liga Profesional"),
+        (("mexico", "liga-mx"), "México - Liga MX"),
+        (("colombia", "primera-a"), "Colômbia - Primera A"),
+    ]
+    for parts, comp in checks:
+        if all(part in p for part in parts):
+            return comp
+    if "copa-libertadores" in p:
+        return "CONMEBOL Libertadores"
+    if "copa-sudamericana" in p:
+        return "CONMEBOL Sul-Americana"
+    if "champions-league" in p and "women" not in p:
+        return "UEFA Champions League"
+    if "europa-league" in p:
+        return "UEFA Europa League"
+    if "conference-league" in p:
+        return "UEFA Conference League"
+    return None
+
+
+def _pretty_slug_team(slug):
+    special = {"fc":"FC", "cf":"CF", "ac":"AC", "sc":"SC", "afc":"AFC", "psg":"PSG", "rb":"RB", "neom":"NEOM"}
+    words = []
+    for w in slug.split("-"):
+        words.append(special.get(w.lower(), w.capitalize()))
+    return " ".join(words)
+
+
+def _is_allowed_daily_fixture_path(path, competition):
+    """Evita feminino e divisões secundárias acidentais no calendário diário.
+
+    A Série B do Brasil é mantida porque é uma competição explicitamente
+    disponível no app. As demais divisões inferiores não são aceitas.
+    """
+    p = str(path or "").lower()
+    blocked_women = ("women", "womens", "feminino", "feminina", "femenino", "femenina", "frauen", "femminile")
+    if any(token in p for token in blocked_women):
+        return False
+
+    # Divisões inferiores que podem aparecer em páginas agregadas.
+    lower_tier_tokens = (
+        "championship", "league-one", "league-two", "segunda-division",
+        "segunda-liga", "serie-b", "2-bundesliga", "ligue-2",
+        "eerste-divisie", "segunda-division-profesional", "primera-b",
+        "liga-de-expansion", "ascenso", "segunda-division"
+    )
+    if competition == "Brasil - Série B":
+        return True
+    return not any(token in p for token in lower_tier_tokens)
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def load_livescore_today(source_date):
+    """Fonte diária complementar. Horários são normalizados para Brasília (America/Sao_Paulo)."""
+    url = f"https://www.livescore.mobi/football/{source_date:%Y-%m-%d}/"
+    r = request_first([url], timeout=20)
+    parser = _DailyFixtureLinkParser()
+    parser.feed(r.text)
+    fixtures = []
+    for href, label in parser.links:
+        if not href or "-vs-" not in href:
+            continue
+        comp = _competition_from_livescore_path(href)
+        if not comp or comp not in COMPETITIONS:
+            continue
+        if not _is_allowed_daily_fixture_path(href, comp):
+            continue
+        m = re.search(r"/([^/]+-vs-[^/]+)/\d+/?(?:\?.*)?$", href)
+        if not m:
+            continue
+        matchup = m.group(1)
+        home_slug, away_slug = matchup.split("-vs-", 1)
+        home, away = _pretty_slug_team(home_slug), _pretty_slug_team(away_slug)
+        tm = re.search(r"\b([0-2]?\d:[0-5]\d)\b", label or "")
+        if tm:
+            # O LiveScore.mobi entrega os horários da listagem diária em UTC.
+            # Interpretar esse valor como horário local da competição deslocava
+            # partidas europeias várias horas para trás (ex.: 19:30 UTC ->
+            # 14:30 ao tratá-lo incorretamente como Europe/Madrid). Convertemos
+            # sempre de UTC para America/Sao_Paulo (horário de Brasília).
+            status, br_date = fixture_time_brasilia(
+                tm.group(1), comp, source_date, source_tz="UTC"
+            )
+        elif re.search(r"\bFT\b", label or "", re.I):
+            status, br_date = "FT", source_date
+        elif re.search(r"\d+'", label or ""):
+            status, br_date = "AO VIVO", source_date
+        else:
+            status, br_date = "", source_date
+        fixtures.append({"competition": comp, "home": home, "away": away, "time": status, "br_date": br_date})
+    return fixtures
+
+
+def fixture_team_key(name):
+    """Normaliza nomes equivalentes vindos de fontes diferentes para deduplicação."""
+    raw = clean_col(str(name or ""))
+    tokens = [t for t in raw.split("_") if t and t not in {
+        "fc","cf","ec","ac","sc","afc","fbpa","club","clube","de","da","do","dos","das",
+        "football","futebol","calcio","soccer","cd","ud","ad","se","aa"
+    }]
+    # Pequenos aliases frequentes entre calendários públicos.
+    alias = {
+        "vitoria_bahia": "vitoria", "esporte_vitoria": "vitoria",
+        "gremio_porto_alegrense": "gremio", "gremio_rs": "gremio",
+        "internacional_porto_alegre": "internacional",
+        "atletico_mineiro": "atletico_mg", "athletico_paranaense": "athletico_pr",
+    }
+    key = "_".join(tokens)
+    return alias.get(key, key)
+
+
+def _fixture_quality(f):
+    home, away = str(f.get("home") or ""), str(f.get("away") or "")
+    tm = str(f.get("time") or "")
+    has_time = bool(re.fullmatch(r"\d{2}:\d{2}", tm))
+    accents = sum(ord(ch) > 127 for ch in home + away)
+    return (100 if has_time else 0) + accents * 3 + len(home) + len(away)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_today_fixtures():
+    today = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
+    fixtures = []
+
+    # Fonte diária abrangente: consulta também o dia UTC seguinte para não perder jogos
+    # que ainda pertencem ao dia de Brasília após a conversão de fuso.
+    for source_date in (today, today + timedelta(days=1)):
+        try:
+            for f in load_livescore_today(source_date):
+                if f.get("br_date") in (None, today):
+                    fixtures.append(f)
+        except Exception:
+            pass
+
+    # Ligas europeias: arquivo público de fixtures semanais.
+    try:
+        r = request_first(["https://www.football-data.co.uk/matches/resources/fixtures.csv"])
+        fdf = read_csv_bytes(r.content)
+        if {"Div", "Date", "HomeTeam", "AwayTeam"}.issubset(fdf.columns):
+            dates = pd.to_datetime(fdf["Date"], dayfirst=True, errors="coerce").dt.date
+            reverse_codes = {v: k for k, v in EUROPE_LEAGUES.items()}
+            # Considera datas locais próximas e filtra somente depois de converter para Brasília.
+            for idx, g in fdf.iterrows():
+                fixture_date = dates.loc[idx]
+                if pd.isna(fixture_date) or abs((fixture_date - today).days) > 1:
+                    continue
+                comp = reverse_codes.get(str(g["Div"]))
+                if comp:
+                    br_time, br_date = fixture_time_brasilia(str(g.get("Time", "")), comp, fixture_date, source_tz="UTC")
+                    if br_date not in (None, today):
+                        continue
+                    fixtures.append({"competition": comp, "home": str(g["HomeTeam"]), "away": str(g["AwayTeam"]), "time": br_time})
+    except Exception:
+        pass
+
+    # Competições em JSON aberto com calendário da temporada.
+    json_comps = [
+        ("Brasil - Série A", str(today.year), ["br.1.json"]),
+        ("Brasil - Série B", str(today.year), ["br.2.json"]),
+        ("Estados Unidos - MLS", str(today.year), ["mls.json", "us.1.json", "usa.1.json"]),
+        ("Argentina - Liga Profesional", str(today.year), ["ar.1.json", "arg.1.json", "ar-liga.json"]),
+        ("México - Liga MX", str(today.year), ["mx.1.json", "mex.1.json", "liga-mx.json"]),
+        ("Colômbia - Primera A", str(today.year), ["co.1.json", "col.1.json", "colombia.1.json"]),
+    ]
+    saudi_folder = f"{current_season_year('europe')}-{str(current_season_year('europe') + 1)[-2:]}"
+    json_comps.append(("Arábia Saudita - Saudi Pro League", saudi_folder, ["sa.1.json", "ksa.1.json", "saudi.1.json", "saudi-pro-league.json"]))
+
+    for comp, folder, filenames in json_comps:
+        try:
+            urls = []
+            for filename in filenames:
+                urls.extend([
+                    f"https://raw.githubusercontent.com/openfootball/football.json/master/{folder}/{filename}",
+                    f"https://github.com/openfootball/football.json/raw/refs/heads/master/{folder}/{filename}",
+                ])
+            data = load_open_json(urls)
+            for m in data.get("matches", []):
+                d = pd.to_datetime(m.get("date"), errors="coerce")
+                if pd.isna(d) or abs((d.date() - today).days) > 1:
+                    continue
+                br_time, br_date = fixture_time_brasilia(m.get("time", ""), comp, d.date())
+                if br_date not in (None, today):
+                    continue
+                fixtures.append({"competition": comp, "home": m.get("team1"), "away": m.get("team2"), "time": br_time})
+        except Exception:
+            pass
+
+    # Torneios continentais em calendários públicos OpenFootball.
+    yy = str(today.year + 1)[-2:]
+    cup_sources = [
+        ("CONMEBOL Libertadores", [
+            f"https://raw.githubusercontent.com/openfootball/south-america/master/copa-libertadores/{today.year}_copal.txt",
+            f"https://github.com/openfootball/south-america/raw/refs/heads/master/copa-libertadores/{today.year}_copal.txt",
+        ]),
+        ("CONMEBOL Sul-Americana", [
+            f"https://raw.githubusercontent.com/openfootball/south-america/master/copa-sudamericana/{today.year}_copas.txt",
+            f"https://raw.githubusercontent.com/openfootball/south-america/master/copa-sudamericana/{today.year}_copa_sudamericana.txt",
+        ]),
+        ("UEFA Champions League", [
+            f"https://raw.githubusercontent.com/openfootball/champions-league/master/{today.year}-{yy}/cl.txt",
+            f"https://raw.githubusercontent.com/openfootball/champions-league/master/{today.year}/cl.txt",
+        ]),
+        ("UEFA Europa League", [
+            f"https://raw.githubusercontent.com/openfootball/champions-league/master/{today.year}-{yy}/el.txt",
+            f"https://raw.githubusercontent.com/openfootball/champions-league/master/{today.year}-{yy}/europa.txt",
+        ]),
+        ("UEFA Conference League", [
+            f"https://raw.githubusercontent.com/openfootball/champions-league/master/{today.year}-{yy}/conf.txt",
+            f"https://raw.githubusercontent.com/openfootball/champions-league/master/{today.year}-{yy}/conference.txt",
+            f"https://raw.githubusercontent.com/openfootball/champions-league/master/{today.year}-{yy}/ecl.txt",
+        ]),
+    ]
+    for comp, urls in cup_sources:
+        try:
+            txt = request_first(urls).text
+            fixtures.extend(parse_today_from_openfootball_text(txt, today, comp))
+        except Exception:
+            pass
+
+    # Remove duplicados mesmo quando as fontes usam nomes diferentes
+    # (ex.: "Vitoria" x "EC Vitória"; "Gremio" x "Grêmio FBPA").
+    best = {}
+    order = []
+    for f in fixtures:
+        if not f.get("home") or not f.get("away"):
+            continue
+        key = (f["competition"], fixture_team_key(f["home"]), fixture_team_key(f["away"]))
+        if key not in best:
+            best[key] = f
+            order.append(key)
+        elif _fixture_quality(f) > _fixture_quality(best[key]):
+            best[key] = f
+    return [best[k] for k in order]
+
+def validate_current_data(df, season_type, competition_name):
+    """Impede que uma base antiga seja apresentada como temporada atual."""
+    if df is None or df.empty:
+        raise RuntimeError("sem dados da temporada vigente")
+
+    updated = df.attrs.get("updated_until")
+    if updated is None or pd.isna(updated):
+        return df
+
+    updated = pd.Timestamp(updated)
+    now = pd.Timestamp.now()
+    # Para ligas em andamento, uma defasagem grande normalmente indica dataset abandonado.
+    # 35 dias tolera pausas internacionais e intervalos de calendário.
+    if updated.year < now.year - 1:
+        raise RuntimeError(f"base desatualizada (último jogo em {updated:%d/%m/%Y})")
+    if season_type == "calendar" and updated.year != now.year:
+        raise RuntimeError(f"a fonte não contém a temporada {now.year}")
+    if season_type == "europe":
+        expected = current_season_year("europe")
+        if updated.year < expected:
+            raise RuntimeError(f"a fonte não contém a temporada {season_label(expected, 'europe')}")
+    return df
+
+
+# ============================================================
+# INTERFACE
+# ============================================================
+if "_goto_comp" in st.session_state:
+    st.session_state.selected_competition = st.session_state.pop("_goto_comp")
+    st.session_state.selected_home = st.session_state.pop("_goto_home", None)
+    st.session_state.selected_away = st.session_state.pop("_goto_away", None)
+    st.session_state.league_widget = st.session_state.selected_competition
+
+if "selected_competition" not in st.session_state:
+    st.session_state.selected_competition = list(COMPETITIONS.keys())[0]
+if "selected_home" not in st.session_state:
+    st.session_state.selected_home = None
+if "selected_away" not in st.session_state:
+    st.session_state.selected_away = None
+st.sidebar.markdown("### ⚽ GM SCORE")
+st.sidebar.caption("Configurar análise")
+league_name = st.sidebar.selectbox(
+    "🏆 Competição", list(COMPETITIONS.keys()),
+    index=list(COMPETITIONS.keys()).index(st.session_state.selected_competition)
+    if st.session_state.selected_competition in COMPETITIONS else 0,
+    key="league_widget",
+)
+st.session_state.selected_competition = league_name
+config = COMPETITIONS[league_name]
+used_year = current_season_year(config["season"])
+st.sidebar.caption(f"📅 Temporada atual: {season_label(used_year, config['season'])}")
+period = st.sidebar.selectbox(
+    "📊 Período", [5, 10, 20, 0], index=1,
+    format_func=lambda n: "Temporada" if n == 0 else f"Últimos {n} jogos",
+)
+if st.sidebar.button("🔄 Atualizar dados", type="primary"):
+    st.cache_data.clear(); st.rerun()
+
+
+def load_current_season():
+    if config["kind"] == "football_data":
+        games = load_football_data(config["code"], used_year)
+        return averages_football_data(games, period)
+    if config["kind"] == "hybrid_extra":
+        # Primeiro tenta o CSV amplo do Football-Data; se o servidor estiver
+        # indisponível, usa OpenFootball da mesma temporada sem recuar o ano.
+        errors = []
+        try:
+            games = load_extra_football_data(config["extra_code"], used_year)
+            return averages_football_data(games, period)
+        except Exception as exc:
+            errors.append(str(exc))
+        try:
+            return load_open_results(config["id"], used_year, config["season"])
+        except Exception as exc:
+            errors.append(str(exc))
+        raise RuntimeError("fontes da temporada atual indisponíveis: " + " | ".join(errors[-2:]))
+    if config["kind"] == "brasileirao_stats":
+        return load_brasileirao_dataset(used_year)
+    return load_open_results(config["id"], used_year, config["season"])
+
+
+
+def resolve_team_name(candidate, teams):
+    if candidate in teams:
+        return candidate
+    if not candidate:
+        return None
+    c = clean_col(candidate)
+    exact = {clean_col(t): t for t in teams}
+    if c in exact:
+        return exact[c]
+    c_tokens = set(c.split("_")) - {"fc","cf","ac","sc","ec","club","de","da","do"}
+    best, best_score = None, 0.0
+    for t in teams:
+        tt = set(clean_col(t).split("_")) - {"fc","cf","ac","sc","ec","club","de","da","do"}
+        if not c_tokens or not tt:
+            continue
+        score = len(c_tokens & tt) / len(c_tokens | tt)
+        if score > best_score:
+            best, best_score = t, score
+    return best if best_score >= 0.45 else None
+
+
+def render_share_button(team_a, team_b, league_name, probs, opportunities):
+    """Gera uma imagem no navegador e abre o compartilhamento nativo (WhatsApp no celular)."""
+    lines = []
+    if probs:
+        lines.extend([
+            f"🏠 Vitória {team_a}: {probs['home']:.0f}%",
+            f"🤝 Empate: {probs['draw']:.0f}%",
+            f"✈️ Vitória {team_b}: {probs['away']:.0f}%",
+        ])
+    for item in opportunities[:6]:
+        lines.append(f"{item['Mercado']} — {item['Chance']:.0f}%")
+    payload = "\n".join(lines)
+    # JSON quoting seguro para JavaScript sem nova dependência.
+    import json as _json
+    js_title = _json.dumps(f"{team_a} × {team_b}", ensure_ascii=False)
+    js_league = _json.dumps(league_name, ensure_ascii=False)
+    js_payload = _json.dumps(payload, ensure_ascii=False)
+    html = f"""
+    <div style='font-family:Arial,sans-serif'>
+      <button id='shareBtn' style='width:100%;padding:12px 16px;border:0;border-radius:9px;background:#25D366;color:white;font-size:16px;font-weight:700;cursor:pointer'>📲 Compartilhar análise</button>
+      <div id='msg' style='font-size:12px;color:#6b7280;margin-top:6px'></div>
+    </div>
+    <script>
+    const title = {js_title};
+    const league = {js_league};
+    const body = {js_payload};
+    function wrap(ctx, text, x, y, maxWidth, lineHeight) {{
+      const words = text.split(' '); let line = ''; let yy = y;
+      for (let n=0;n<words.length;n++) {{
+        const test = line + words[n] + ' ';
+        if (ctx.measureText(test).width > maxWidth && n>0) {{ ctx.fillText(line, x, yy); line=words[n]+' '; yy += lineHeight; }}
+        else line=test;
+      }}
+      ctx.fillText(line, x, yy); return yy;
+    }}
+    document.getElementById('shareBtn').onclick = async () => {{
+      const canvas=document.createElement('canvas'); canvas.width=1080; canvas.height=1350;
+      const ctx=canvas.getContext('2d'); ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,1080,1350);
+      ctx.fillStyle='#111827'; ctx.font='bold 52px Arial'; ctx.fillText('⚽ GM SCORE',70,90);
+      ctx.font='bold 46px Arial'; wrap(ctx,title,70,175,940,58);
+      ctx.fillStyle='#6b7280'; ctx.font='30px Arial'; wrap(ctx,league,70,235,940,42);
+      let y=330; const arr=body.split('\\n');
+      arr.forEach((line,i)=>{{
+        const pm=line.match(/(\\d+)%/); const pct=pm?parseInt(pm[1]):0;
+        ctx.fillStyle = pct>=80 ? '#16a34a' : '#111827';
+        ctx.font = pct>=80 ? 'bold 36px Arial' : '34px Arial';
+        y = wrap(ctx,line,70,y,940,50)+64;
+      }});
+      ctx.fillStyle='#6b7280'; ctx.font='25px Arial'; wrap(ctx,'Estimativas estatísticas; não garantem resultado.',70,1270,940,35);
+      canvas.toBlob(async blob=>{{
+        const file=new File([blob],'analise-futebol.png',{{type:'image/png'}});
+        try {{
+          if (navigator.share && (!navigator.canShare || navigator.canShare({{files:[file]}}))) {{
+            await navigator.share({{title:title,text:'Análise estatística',files:[file]}});
+            document.getElementById('msg').innerText='Escolha o WhatsApp na tela de compartilhamento.';
+          }} else {{
+            const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='analise-futebol.png'; a.click();
+            document.getElementById('msg').innerText='Seu navegador não permite anexar direto. A imagem foi salva para você compartilhar no WhatsApp.';
+          }}
+        }} catch(e) {{ if(e.name!=='AbortError') document.getElementById('msg').innerText='Não foi possível abrir o compartilhamento neste navegador.'; }}
+      }},'image/png');
+    }};
+    </script>
+    """
+    components.html(html, height=82)
+
+
+def render_analysis():
+    with st.spinner("Carregando a temporada atual..."):
+        try:
+            df = validate_current_data(load_current_season(), config["season"], league_name)
+        except Exception as exc:
+            st.error(f"Não foi possível carregar dados confiáveis da temporada atual ({season_label(used_year, config['season'])}).")
+            st.caption(f"Detalhe: {exc}")
+            st.info("Esta competição não usa temporada antiga como substituta.")
+            return
+
+    updated_until = df.attrs.get("updated_until")
+    teams = df["Time"].dropna().tolist()
+    if len(teams) < 2:
+        st.warning("Ainda não há equipes suficientes para análise.")
+        return
+
+    resolved_home = resolve_team_name(st.session_state.selected_home, teams)
+    resolved_away = resolve_team_name(st.session_state.selected_away, teams)
+    default_home = resolved_home or teams[0]
+    default_away = resolved_away or (teams[1] if len(teams) > 1 else teams[0])
+    c1, c2 = st.columns(2)
+    with c1:
+        team_a = st.selectbox("🏠 Time da casa", teams, index=teams.index(default_home), key="home_widget")
+    with c2:
+        team_b = st.selectbox("✈️ Time visitante", teams, index=teams.index(default_away), key="away_widget")
+    st.session_state.selected_home, st.session_state.selected_away = team_a, team_b
+    if team_a == team_b:
+        st.warning("Selecione duas equipes diferentes."); return
+
+    a = df[df["Time"] == team_a].iloc[0]
+    b = df[df["Time"] == team_b].iloc[0]
+    st.subheader(f"{team_a} × {team_b}")
+    season_text = season_label(used_year, config["season"])
+    if updated_until is not None and not pd.isna(updated_until):
+        st.caption(f"{league_name} · {season_text} · Dados até {pd.Timestamp(updated_until):%d/%m/%Y}")
+    else:
+        st.caption(f"{league_name} · {season_text}")
+
+    probs = victory_probabilities(team_a, team_b, df)
+    if probs:
+        st.markdown("### 🏆 Chance de resultado")
+        x, y, z = st.columns(3)
+        x.metric(f"🏠 Vitória {team_a}", f"{probs['home']:.0f}%")
+        y.metric("🤝 Empate", f"{probs['draw']:.0f}%")
+        z.metric(f"✈️ Vitória {team_b}", f"{probs['away']:.0f}%")
+        st.caption("Estimativa calibrada por força ofensiva/defensiva, desempenho casa/fora, fase recente, tamanho da amostra e confronto direto com peso reduzido.")
+
+    expectations = render_match_probability_dashboard(a, b, team_a, team_b, df)
+
+    opportunities = build_opportunities(a, b, team_a, team_b)
+    st.markdown("#### ⭐ Melhores linhas para observar")
+    if opportunities:
+        for item in opportunities:
+            c1, c2, c3 = st.columns([4.8, 1.3, 1.5])
+            c1.markdown(f"**{item['Mercado']}**  \n<small>{item['Base']}</small>", unsafe_allow_html=True)
+            chance = item["Chance"]
+            chance_color = "#16a34a" if chance >= 80 else "#111827"
+            c2.markdown(f'<div style="text-align:center"><div style="font-size:.85rem;color:#6b7280">Chance</div><div style="font-size:2rem;font-weight:800;color:{chance_color}">{chance:.0f}%</div></div>', unsafe_allow_html=True)
+            c3.markdown(f"**{item['Leitura']}**")
+            st.divider()
+    else:
+        st.info("Ainda não há dados suficientes para destacar uma oportunidade.")
+
+    st.markdown("### 📲 Compartilhar")
+    render_share_button(team_a, team_b, league_name, probs, opportunities)
+
+    with st.expander("📊 Ver médias usadas na análise"):
+        metric_emojis = {"Gols pró":"⚽","Gols contra":"🥅","Escanteios":"⛳","Amarelos":"🟨","Vermelhos":"🟥","Faltas":"🚫","Finalizações":"🎯","Chutes no alvo":"🥅","Posse (%)":"⚪","Impedimentos":"🚩"}
+        rows=[]
+        for metric in DISPLAY_METRICS:
+            if metric == "Jogos" or metric not in a.index or metric not in b.index: continue
+            av,bv=a[metric],b[metric]
+            if pd.isna(av) and pd.isna(bv): continue
+            rows.append({"Dado":f"{metric_emojis.get(metric,'📌')} {metric}",team_a:"N/D" if pd.isna(av) else round(float(av),2),team_b:"N/D" if pd.isna(bv) else round(float(bv),2)})
+        if rows: st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
+
+
+def render_sidebar_today():
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 📅 Jogos de hoje")
+    st.sidebar.caption("🕒 Horário de Brasília")
+
+    try:
+        with st.spinner("Buscando jogos do dia..."):
+            fixtures = [f for f in load_today_fixtures() if f.get("competition") == league_name]
+    except Exception:
+        fixtures = []
+
+    # Segurança extra: somente a competição selecionada e confrontos válidos.
+    fixtures = [
+        f for f in fixtures
+        if f.get("competition") == league_name and f.get("home") and f.get("away")
+    ]
+    fixtures = sorted(fixtures, key=lambda f: str(f.get("time") or "99:99"))
+
+    if not fixtures:
+        st.sidebar.info("Nenhum jogo desta competição hoje.")
+        return
+
+    st.sidebar.caption(f"{len(fixtures)} jogo(s) encontrado(s)")
+    for i, f in enumerate(fixtures):
+        time_text = str(f.get("time") or "").strip()
+        if time_text and time_text.lower() != "nan":
+            st.sidebar.markdown(f"**⚽ {f['home']} × {f['away']}**  \n🕒 {time_text}")
+        else:
+            st.sidebar.markdown(f"**⚽ {f['home']} × {f['away']}**")
+        if st.sidebar.button("🔎 Analisar", key=f"side_today_{i}_{clean_col(f['home'])}_{clean_col(f['away'])}", use_container_width=True):
+            st.session_state["_goto_comp"] = f["competition"]
+            st.session_state["_goto_home"] = f["home"]
+            st.session_state["_goto_away"] = f["away"]
+            st.rerun()
+
+
+render_sidebar_today()
+render_analysis()
+
+st.caption("As chances são estimativas estatísticas da temporada vigente e não garantem resultado. Use como apoio à análise e aposte com responsabilidade.")
+
