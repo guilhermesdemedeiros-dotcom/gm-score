@@ -99,7 +99,13 @@ MIN_TEAMS = {
     "UEFA Conference League": 36,
 }
 
-def ensure_team_coverage(df, competition_name, tolerance=0):
+def ensure_team_coverage(df, competition_name, tolerance=0, strict=False):
+    """Registra cobertura sem invalidar dados atuais legítimos.
+
+    Arquivos de resultados, especialmente no início da temporada, naturalmente
+    contêm apenas clubes que já disputaram partidas. Portanto cobertura de clubes
+    é um sinal para complementar a lista, e não motivo para derrubar a competição.
+    """
     expected = MIN_TEAMS.get(competition_name)
     if not expected or df is None:
         return df
@@ -109,7 +115,11 @@ def ensure_team_coverage(df, competition_name, tolerance=0):
         count = len(set(df["HomeTeam"].dropna().astype(str)) | set(df["AwayTeam"].dropna().astype(str)))
     else:
         return df
-    if count < expected - tolerance:
+    try:
+        df.attrs["team_coverage"] = {"found": count, "expected": expected, "complete": count >= expected - tolerance}
+    except Exception:
+        pass
+    if strict and count < expected - tolerance:
         raise RuntimeError(f"fonte incompleta: {count}/{expected} equipes encontradas")
     return df
 
