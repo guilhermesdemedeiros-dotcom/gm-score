@@ -1904,6 +1904,9 @@ if "_goto_comp" in st.session_state:
     st.session_state.selected_competition = st.session_state.pop("_goto_comp")
     st.session_state.selected_home = st.session_state.pop("_goto_home", None)
     st.session_state.selected_away = st.session_state.pop("_goto_away", None)
+    st.session_state.loaded_home = st.session_state.selected_home
+    st.session_state.loaded_away = st.session_state.selected_away
+    st.session_state.loaded_competition = st.session_state.selected_competition
     st.session_state.league_widget = st.session_state.selected_competition
 
 if "selected_competition" not in st.session_state:
@@ -2133,6 +2136,12 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
 
 
 def render_analysis():
+    # Não reaproveita uma partida carregada de outra competição.
+    if st.session_state.get("loaded_competition") != league_name:
+        st.session_state.loaded_home = None
+        st.session_state.loaded_away = None
+        st.session_state.loaded_competition = league_name
+
     with st.spinner("Carregando a temporada atual..."):
         try:
             df = validate_current_data(load_current_season(), config["season"], league_name)
@@ -2157,9 +2166,34 @@ def render_analysis():
         team_a = st.selectbox("🏠 Time da casa", teams, index=teams.index(default_home), key="home_widget")
     with c2:
         team_b = st.selectbox("✈️ Time visitante", teams, index=teams.index(default_away), key="away_widget")
-    st.session_state.selected_home, st.session_state.selected_away = team_a, team_b
+    # A seleção só passa a valer quando o usuário confirma. Isso evita que
+    # uma análise antiga permaneça na tela enquanto os seletores já mostram
+    # outras equipes (especialmente no celular).
     if team_a == team_b:
-        st.warning("Selecione duas equipes diferentes."); return
+        st.warning("Selecione duas equipes diferentes.")
+        return
+
+    if st.button("⚽ Carregar equipes", type="primary", use_container_width=True, key="load_teams_btn"):
+        st.session_state.selected_home = team_a
+        st.session_state.selected_away = team_b
+        st.session_state.loaded_home = team_a
+        st.session_state.loaded_away = team_b
+        st.rerun()
+
+    loaded_home = resolve_team_name(st.session_state.get("loaded_home"), teams)
+    loaded_away = resolve_team_name(st.session_state.get("loaded_away"), teams)
+
+    # Na primeira abertura da competição, não exibe uma partida aleatória.
+    # Depois do clique, a análise abaixo sempre corresponde exatamente aos
+    # dois clubes confirmados no botão Carregar equipes.
+    if not loaded_home or not loaded_away:
+        st.info("Selecione os dois times e toque em **⚽ Carregar equipes** para gerar a análise.")
+        return
+
+    team_a, team_b = loaded_home, loaded_away
+    if team_a == team_b:
+        st.warning("Selecione duas equipes diferentes.")
+        return
 
     a = df[df["Time"] == team_a].iloc[0]
     b = df[df["Time"] == team_b].iloc[0]
