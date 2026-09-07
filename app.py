@@ -99,6 +99,89 @@ MIN_TEAMS = {
     "UEFA Conference League": 36,
 }
 
+
+# Participantes oficiais/conferidos da temporada vigente para competições cujas
+# fontes de resultados podem trazer apenas os clubes que já entraram em campo.
+# Estes elencos COMPLETAM a lista de seleção; estatísticas continuam vindo das
+# fontes reais e nunca são inventadas para um clube sem amostra.
+CURRENT_TEAM_ROSTERS = {
+    "Brasil - Série B": [
+        "América-MG", "Athletic-MG", "Atlético-GO", "Avaí", "Botafogo-SP",
+        "Ceará", "CRB", "Criciúma", "Cuiabá", "Fortaleza", "Goiás",
+        "Juventude", "Londrina", "Náutico", "Novorizontino", "Operário-PR",
+        "Ponte Preta", "São Bernardo", "Sport", "Vila Nova",
+    ],
+    "Estados Unidos - MLS": [
+        "Atlanta United", "Austin FC", "Charlotte FC", "Chicago Fire FC",
+        "FC Cincinnati", "Colorado Rapids", "Columbus Crew", "D.C. United",
+        "FC Dallas", "Houston Dynamo FC", "Inter Miami CF", "LA Galaxy",
+        "Los Angeles FC", "Minnesota United FC", "CF Montréal", "Nashville SC",
+        "New England Revolution", "New York City FC", "Orlando City SC",
+        "Philadelphia Union", "Portland Timbers", "Real Salt Lake",
+        "Red Bull New York", "San Diego FC", "San Jose Earthquakes",
+        "Seattle Sounders FC", "Sporting Kansas City", "St. Louis CITY SC",
+        "Toronto FC", "Vancouver Whitecaps FC",
+    ],
+    "Argentina - Liga Profesional": [
+        "Aldosivi", "Argentinos Juniors", "Atlético Tucumán", "Banfield",
+        "Barracas Central", "Belgrano", "Boca Juniors", "Central Córdoba",
+        "Defensa y Justicia", "Deportivo Riestra", "Estudiantes",
+        "Estudiantes de Río Cuarto", "Gimnasia La Plata", "Gimnasia de Mendoza",
+        "Huracán", "Independiente", "Independiente Rivadavia", "Instituto",
+        "Lanús", "Newell's Old Boys", "Platense", "Racing Club", "River Plate",
+        "Rosario Central", "San Lorenzo", "Sarmiento", "Talleres", "Tigre",
+        "Unión", "Vélez Sarsfield",
+    ],
+    "México - Liga MX": [
+        "América", "Atlas", "Atlante", "Atlético de San Luis", "Cruz Azul",
+        "FC Juárez", "Guadalajara", "León", "Monterrey", "Necaxa", "Pachuca",
+        "Puebla", "Pumas UNAM", "Querétaro", "Santos Laguna", "Tigres UANL",
+        "Tijuana", "Toluca",
+    ],
+    "Colômbia - Primera A": [
+        "Águilas Doradas", "Alianza FC", "América de Cali", "Atlético Bucaramanga",
+        "Atlético Nacional", "Boyacá Chicó", "Cúcuta Deportivo", "Deportivo Cali",
+        "Deportivo Pasto", "Deportivo Pereira", "Deportes Tolima", "Fortaleza CEIF",
+        "Independiente Medellín", "Independiente Santa Fe", "Internacional de Bogotá",
+        "Jaguares de Córdoba", "Junior", "Llaneros", "Millonarios", "Once Caldas",
+    ],
+    "UEFA Champions League": [
+        "AEK Athens", "Arsenal", "Aston Villa", "Atlético de Madrid", "Barcelona",
+        "Bayern München", "Bodø/Glimt", "Borussia Dortmund", "Club Brugge", "Como",
+        "Fenerbahçe", "Feyenoord", "Galatasaray", "Inter", "LASK", "Leipzig",
+        "Lens", "Lille", "Liverpool", "Manchester City", "Manchester United",
+        "Napoli", "Paris Saint-Germain", "Porto", "PSV", "Real Betis", "Real Madrid",
+        "Roma", "Sabah", "Shakhtar Donetsk", "Slavia Praha", "Slovan Bratislava",
+        "Sporting CP", "Stuttgart", "Viking", "Villarreal",
+    ],
+    "UEFA Europa League": [
+        "Anderlecht", "Ararat-Armenia", "AZ Alkmaar", "Benfica", "Beşiktaş",
+        "Bournemouth", "Celje", "Celtic", "Crystal Palace", "Celta", "Ferencváros",
+        "GNK Dinamo", "Hapoel Beer-Sheva", "Hoffenheim", "Jagiellonia", "Juventus",
+        "Lech Poznań", "Leverkusen", "Levski Sofia", "Lillestrøm", "Lyon", "Marseille",
+        "Milan", "N.E.C.", "OFI Crete", "Olympiacos", "Omonia", "Real Sociedad",
+        "Rennes", "Salzburg", "Sparta Praha", "Sturm Graz", "Sunderland", "Torreense",
+        "Union SG", "Viktoria Plzeň",
+    ],
+}
+
+COMPETITION_ICONS = {
+    "Inglaterra - Premier League": "🇬🇧", "Espanha - La Liga": "🇪🇸",
+    "Itália - Serie A": "🇮🇹", "Alemanha - Bundesliga": "🇩🇪",
+    "França - Ligue 1": "🇫🇷", "Portugal - Liga Portugal": "🇵🇹",
+    "Holanda - Eredivisie": "🇳🇱", "Escócia - Premiership": "🏴",
+    "Turquia - Süper Lig": "🇹🇷", "Brasil - Série A": "🇧🇷",
+    "Brasil - Série B": "🇧🇷", "Arábia Saudita - Saudi Pro League": "🇸🇦",
+    "Estados Unidos - MLS": "🇺🇸", "Argentina - Liga Profesional": "🇦🇷",
+    "México - Liga MX": "🇲🇽", "Colômbia - Primera A": "🇨🇴",
+    "CONMEBOL Libertadores": "🏆", "CONMEBOL Sul-Americana": "🏆",
+    "UEFA Champions League": "🏆", "UEFA Europa League": "🏆",
+    "UEFA Conference League": "🏆",
+}
+
+def competition_display_name(name):
+    return f"{COMPETITION_ICONS.get(name, '🏆')} {name}"
+
 def ensure_team_coverage(df, competition_name, tolerance=0, strict=False):
     """Registra cobertura sem invalidar dados atuais legítimos.
 
@@ -599,6 +682,7 @@ LIVESCORE_SEASON_URLS = {
     "Brasil - Série A": ["https://www.livescore.mobi/football/brazil/serie-a/"],
     "CONMEBOL Libertadores": ["https://www.livescore.mobi/football/copa-libertadores/"],
     "Brasil - Série B": [
+        "https://www.cbf.com.br/futebol-brasileiro/tabelas/campeonato-brasileiro/serie-b/2026",
         "https://www.livescore.mobi/football/brazil/serie-b/",
     ],
     "Arábia Saudita - Saudi Pro League": [
@@ -613,10 +697,12 @@ LIVESCORE_SEASON_URLS = {
         "https://www.livescore.mobi/football/argentina/liga-profesional/",
     ],
     "México - Liga MX": [
+        "https://www.foxsports.com/soccer/liga-mx/standings",
         "https://www.livescore.mobi/football/mexico/liga-mx-apertura/",
         "https://www.livescore.mobi/football/mexico/liga-mx/",
     ],
     "Colômbia - Primera A": [
+        "https://www.colombia.com/futbol/liga-colombiana/tabla-de-posiciones",
         "https://www.livescore.mobi/football/colombia/primera-a-clausura/",
         "https://www.livescore.mobi/football/colombia/primera-a/",
     ],
@@ -736,10 +822,10 @@ def _standings_rows_from_html(html):
         for i, row in enumerate(table[:5]):
             low_cells = [str(x).strip().lower() for x in row]
             joined = " | ".join(low_cells)
-            has_team = any(("team name" in x) or x in {"team", "club"} for x in low_cells)
-            has_played = any(("played" in x) or x == "p" for x in low_cells)
-            has_for = any(("goals for" in x) or x == "f" or x == "gf" for x in low_cells)
-            has_against = any(("goals against" in x) or x == "a" or x == "ga" for x in low_cells)
+            has_team = any(("team name" in x) or x in {"team", "club", "equipo", "equipe", "classificação", "clasificacion"} for x in low_cells)
+            has_played = any(("played" in x) or x in {"p", "j", "pj"} or "jogos" in x or "partidos jugados" in x for x in low_cells)
+            has_for = any(("goals for" in x) or x in {"f", "gf", "gp"} or "gols pr" in x or "goles a favor" in x for x in low_cells)
+            has_against = any(("goals against" in x) or x in {"a", "ga", "gc"} or "gols contr" in x or "goles en contra" in x for x in low_cells)
             if has_team and has_played and has_for and has_against:
                 header_idx, header = i, row
                 break
@@ -753,11 +839,13 @@ def _standings_rows_from_html(html):
                     return idx
             return None
 
-        team_i = find_col(["team name", "team", "club"])
-        played_i = find_col(["p played", "played", "p"])
-        gf_i = find_col(["f goals for", "goals for", "gf", "f"])
-        ga_i = find_col(["a goals against", "goals against", "ga", "a"])
-        pts_i = find_col(["pts points", "points", "pts"])
+        team_i = find_col(["team name", "team", "club", "equipo", "equipe", "classificação", "clasificacion"])
+        played_i = find_col(["p played", "played", "partidos jugados", "jogos", "pj", "j"])
+        gf_i = find_col(["f goals for", "goals for", "goles a favor", "gols pr", "gf", "gp"])
+        ga_i = find_col(["a goals against", "goals against", "goles en contra", "gols contr", "ga", "gc"])
+        pts_i = find_col(["pts points", "points", "pontos", "pts"])
+        yc_i = find_col(["cartões amarelos", "cartoes amarelos", "yellow cards", "ca"])
+        rc_i = find_col(["cartões vermelhos", "cartoes vermelhos", "red cards", "cv"])
         if None in (team_i, played_i, gf_i, ga_i):
             continue
 
@@ -769,9 +857,11 @@ def _standings_rows_from_html(html):
             gf = to_num(row[gf_i])
             ga = to_num(row[ga_i])
             pts = to_num(row[pts_i]) if pts_i is not None and pts_i < len(row) else None
+            yc = to_num(row[yc_i]) if yc_i is not None and yc_i < len(row) else None
+            rc = to_num(row[rc_i]) if rc_i is not None and rc_i < len(row) else None
             if not team or games is None or gf is None or ga is None:
                 continue
-            rows_out.append({"team": team, "games": int(games), "gf": float(gf), "ga": float(ga), "pts": pts})
+            rows_out.append({"team": team, "games": int(games), "gf": float(gf), "ga": float(ga), "pts": pts, "yc": yc, "rc": rc})
     return rows_out
 
 
@@ -839,14 +929,17 @@ def load_livescore_season(competition_name, year):
                 "Jogos": games,
                 "Gols pró": round(item["gf"] / games, 2) if games else None,
                 "Gols contra": round(item["ga"] / games, 2) if games else None,
-                **{m: None for m in DISPLAY_METRICS if m not in ("Jogos", "Gols pró", "Gols contra")},
+                "Amarelos": round(float(item.get("yc")) / games, 2) if games and item.get("yc") is not None else None,
+                "Vermelhos": round(float(item.get("rc")) / games, 2) if games and item.get("rc") is not None else None,
+                **{m: None for m in DISPLAY_METRICS if m not in ("Jogos", "Gols pró", "Gols contra", "Amarelos", "Vermelhos")},
             })
         out = pd.DataFrame(rows).sort_values("Time").reset_index(drop=True)
         out.attrs["updated_until"] = None
         out.attrs["matches"] = []
         out.attrs["season_source"] = "current_standings"
+        has_cards = any((x.get("yc") is not None or x.get("rc") is not None) for x in merged.values())
         out.attrs["metric_coverage"] = {
-            "Gols": True, "Escanteios": False, "Cartões": False,
+            "Gols": True, "Escanteios": False, "Cartões": has_cards,
             "Faltas": False, "Finalizações": False, "Chutes no alvo": False,
         }
         if len(out) >= 2:
@@ -1621,6 +1714,42 @@ def fixture_team_key(name):
     return alias.get(key, key)
 
 
+def complete_current_roster(df, competition_name):
+    """Completa apenas a lista de clubes oficiais, preservando dados reais já coletados."""
+    roster = CURRENT_TEAM_ROSTERS.get(competition_name)
+    if not roster or df is None:
+        return df
+    attrs = dict(getattr(df, "attrs", {}))
+    out = df.copy()
+    if "Time" not in out.columns:
+        return df
+    existing = {fixture_team_key(x): x for x in out["Time"].dropna().astype(str)}
+    missing = []
+    for team in roster:
+        key = fixture_team_key(team)
+        # equivalência flexível para nomes abreviados/FC/Club etc.
+        if key in existing:
+            continue
+        resolved = resolve_team_name(team, list(existing.values())) if existing else None
+        if resolved and fixture_team_key(resolved) == key:
+            continue
+        row = {c: None for c in out.columns}
+        row["Time"] = team
+        if "Jogos" in row:
+            row["Jogos"] = 0
+        missing.append(row)
+    if missing:
+        out = pd.concat([out, pd.DataFrame(missing)], ignore_index=True)
+    # Ordenação estável pelo elenco oficial; eventuais clubes extras ficam ao final.
+    order = {fixture_team_key(t): i for i, t in enumerate(roster)}
+    out["__ord"] = out["Time"].map(lambda x: order.get(fixture_team_key(x), 9999))
+    out = out.sort_values(["__ord", "Time"]).drop(columns="__ord").reset_index(drop=True)
+    out.attrs.update(attrs)
+    out.attrs["official_roster"] = roster
+    out.attrs["roster_completed"] = True
+    return out
+
+
 def _fixture_quality(f):
     home, away = str(f.get("home") or ""), str(f.get("away") or "")
     tm = str(f.get("time") or "")
@@ -1790,6 +1919,7 @@ league_name = st.sidebar.selectbox(
     index=list(COMPETITIONS.keys()).index(st.session_state.selected_competition)
     if st.session_state.selected_competition in COMPETITIONS else 0,
     key="league_widget",
+    format_func=competition_display_name,
 )
 st.session_state.selected_competition = league_name
 config = COMPETITIONS[league_name]
@@ -1804,6 +1934,21 @@ if st.sidebar.button("🔄 Atualizar dados", type="primary"):
 
 
 def load_current_season():
+    def roster_only_fallback(errors):
+        roster = CURRENT_TEAM_ROSTERS.get(league_name)
+        if not roster:
+            return None
+        rows = []
+        for team in roster:
+            row = {m: None for m in DISPLAY_METRICS}
+            row["Time"] = team; row["Jogos"] = 0
+            rows.append(row)
+        out = pd.DataFrame(rows)
+        out.attrs["updated_until"] = None
+        out.attrs["matches"] = []
+        out.attrs["season_source"] = "official_roster_only"
+        out.attrs["load_warnings"] = list(errors)
+        return out
     if config["kind"] == "football_data":
         # Fonte principal: Football-Data, porque entrega gols + estatísticas de jogo
         # (escanteios, cartões, faltas, finalizações etc. quando disponíveis).
@@ -1816,15 +1961,18 @@ def load_current_season():
             ensure_team_coverage(games, league_name)
             out = averages_football_data(games, period)
             out.attrs["season_source"] = "football_data_detailed"
-            return out
+            return complete_current_roster(out, league_name)
         except Exception as exc:
             errors.append(str(exc))
         try:
             out = load_livescore_season(league_name, used_year)
             out.attrs["season_source"] = "current_standings_fallback"
-            return out
+            return complete_current_roster(out, league_name)
         except Exception as exc:
             errors.append(str(exc))
+        fallback = roster_only_fallback(errors)
+        if fallback is not None:
+            return fallback
         raise RuntimeError("fontes da temporada atual indisponíveis: " + " | ".join(errors[-2:]))
 
     errors = []
@@ -1837,19 +1985,22 @@ def load_current_season():
             # Rejeita CSV parcial antes de transformá-lo em médias.
             ensure_team_coverage(games, league_name)
             out = averages_football_data(games, period)
-            return out
+            return complete_current_roster(out, league_name)
         except Exception as exc:
             errors.append(str(exc))
         try:
             out = load_open_results(config["id"], used_year, config["season"])
             ensure_team_coverage(out, league_name)
-            return out
+            return complete_current_roster(out, league_name)
         except Exception as exc:
             errors.append(str(exc))
         try:
-            return load_livescore_season(league_name, used_year)
+            return complete_current_roster(load_livescore_season(league_name, used_year), league_name)
         except Exception as exc:
             errors.append(str(exc))
+        fallback = roster_only_fallback(errors)
+        if fallback is not None:
+            return fallback
         raise RuntimeError("fontes da temporada atual indisponíveis: " + " | ".join(errors[-3:]))
 
     if config["kind"] == "brasileirao_stats":
@@ -1860,13 +2011,16 @@ def load_current_season():
     try:
         out = load_open_results(config["id"], used_year, config["season"])
         ensure_team_coverage(out, league_name)
-        return out
+        return complete_current_roster(out, league_name)
     except Exception as exc:
         errors.append(str(exc))
     try:
-        return load_livescore_season(league_name, used_year)
+        return complete_current_roster(load_livescore_season(league_name, used_year), league_name)
     except Exception as exc:
         errors.append(str(exc))
+    fallback = roster_only_fallback(errors)
+    if fallback is not None:
+        return fallback
     raise RuntimeError("fontes da temporada atual indisponíveis: " + " | ".join(errors[-2:]))
 
 
@@ -1892,65 +2046,84 @@ def resolve_team_name(candidate, teams):
     return best if best_score >= 0.45 else None
 
 
-def render_share_button(team_a, team_b, league_name, probs, opportunities):
-    """Gera uma imagem no navegador e abre o compartilhamento nativo (WhatsApp no celular)."""
-    lines = []
-    if probs:
-        lines.extend([
-            f"🏠 Vitória {team_a}: {probs['home']:.0f}%",
-            f"🤝 Empate: {probs['draw']:.0f}%",
-            f"✈️ Vitória {team_b}: {probs['away']:.0f}%",
-        ])
-    for item in opportunities[:6]:
-        lines.append(f"{item['Mercado']} — {item['Chance']:.0f}%")
-    payload = "\n".join(lines)
-    # JSON quoting seguro para JavaScript sem nova dependência.
+def render_share_button(team_a, team_b, league_name, probs, opportunities, expectations, a, b):
+    """Cria uma imagem longa com os dados da análise e marca d'água GM SCORE."""
     import json as _json
-    js_title = _json.dumps(f"{team_a} × {team_b}", ensure_ascii=False)
-    js_league = _json.dumps(league_name, ensure_ascii=False)
-    js_payload = _json.dumps(payload, ensure_ascii=False)
+
+    result_lines = []
+    if probs:
+        result_lines = [
+            [f"Vitória {team_a}", f"{probs['home']:.0f}%"],
+            ["Empate", f"{probs['draw']:.0f}%"],
+            [f"Vitória {team_b}", f"{probs['away']:.0f}%"],
+        ]
+
+    exp_lines = []
+    for key, label in [("Gols","Gols esperados"),("Escanteios","Escanteios esperados"),("Cartões","Cartões esperados"),("Finalizações","Finalizações"),("Chutes no alvo","Chutes no alvo")]:
+        item = (expectations or {}).get(key)
+        if item:
+            exp_lines.append([label, f"{item['total']:.1f}"])
+
+    opp_lines = [[x["Mercado"], f"{x['Chance']:.0f}%", x["Base"]] for x in (opportunities or [])]
+    metric_labels = ["Jogos","Gols pró","Gols contra","Escanteios","Amarelos","Vermelhos","Faltas","Finalizações","Chutes no alvo","Posse (%)","Impedimentos"]
+    avg_lines = []
+    for metric in metric_labels:
+        if metric not in a.index or metric not in b.index:
+            continue
+        av, bv = a[metric], b[metric]
+        if pd.isna(av) and pd.isna(bv):
+            continue
+        def fmt(v):
+            if pd.isna(v): return "N/D"
+            try:
+                return str(int(v)) if metric == "Jogos" else f"{float(v):.2f}"
+            except Exception:
+                return str(v)
+        avg_lines.append([metric, fmt(av), fmt(bv)])
+
+    data = _json.dumps({
+        "title": f"{team_a} × {team_b}", "league": competition_display_name(league_name),
+        "results": result_lines, "expectations": exp_lines, "opportunities": opp_lines,
+        "averages": avg_lines, "home": team_a, "away": team_b,
+    }, ensure_ascii=False)
+
     html = f"""
     <div style='font-family:Arial,sans-serif'>
-      <button id='shareBtn' style='width:100%;padding:12px 16px;border:0;border-radius:9px;background:#25D366;color:white;font-size:16px;font-weight:700;cursor:pointer'>📲 Compartilhar análise</button>
+      <button id='shareBtn' style='width:100%;padding:12px 16px;border:0;border-radius:9px;background:#25D366;color:white;font-size:16px;font-weight:700;cursor:pointer'>📲 Compartilhar análise completa</button>
       <div id='msg' style='font-size:12px;color:#6b7280;margin-top:6px'></div>
     </div>
     <script>
-    const title = {js_title};
-    const league = {js_league};
-    const body = {js_payload};
-    function wrap(ctx, text, x, y, maxWidth, lineHeight) {{
-      const words = text.split(' '); let line = ''; let yy = y;
-      for (let n=0;n<words.length;n++) {{
-        const test = line + words[n] + ' ';
-        if (ctx.measureText(test).width > maxWidth && n>0) {{ ctx.fillText(line, x, yy); line=words[n]+' '; yy += lineHeight; }}
-        else line=test;
-      }}
-      ctx.fillText(line, x, yy); return yy;
+    const D = {data};
+    function text(ctx, value, x, y, size=30, weight='normal', color='#172033') {{
+      ctx.fillStyle=color; ctx.font=`${{weight}} ${{size}}px Arial`; ctx.fillText(value,x,y);
+    }}
+    function wrap(ctx, value, x, y, maxWidth, lineHeight) {{
+      const words=String(value).split(' '); let line='', yy=y;
+      for(const w of words) {{ const t=line+w+' '; if(ctx.measureText(t).width>maxWidth && line) {{ctx.fillText(line,x,yy); yy+=lineHeight; line=w+' ';}} else line=t; }}
+      ctx.fillText(line,x,yy); return yy;
+    }}
+    function watermark(ctx,w,h) {{
+      ctx.save(); ctx.globalAlpha=.045; ctx.fillStyle='#172033'; ctx.font='bold 48px Arial'; ctx.translate(w/2,h/2); ctx.rotate(-Math.PI/7);
+      for(let y=-h;y<h;y+=180) for(let x=-w;x<w;x+=360) ctx.fillText('GM SCORE',x,y);
+      ctx.restore();
     }}
     document.getElementById('shareBtn').onclick = async () => {{
-      const canvas=document.createElement('canvas'); canvas.width=1080; canvas.height=1350;
-      const ctx=canvas.getContext('2d'); ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,1080,1350);
-      ctx.fillStyle='#111827'; ctx.font='bold 52px Arial'; ctx.fillText('⚽ GM SCORE',70,90);
-      ctx.font='bold 46px Arial'; wrap(ctx,title,70,175,940,58);
-      ctx.fillStyle='#6b7280'; ctx.font='30px Arial'; wrap(ctx,league,70,235,940,42);
-      let y=330; const arr=body.split('\\n');
-      arr.forEach((line,i)=>{{
-        const pm=line.match(/(\\d+)%/); const pct=pm?parseInt(pm[1]):0;
-        ctx.fillStyle = pct>=80 ? '#16a34a' : '#111827';
-        ctx.font = pct>=80 ? 'bold 36px Arial' : '34px Arial';
-        y = wrap(ctx,line,70,y,940,50)+64;
-      }});
-      ctx.fillStyle='#6b7280'; ctx.font='25px Arial'; wrap(ctx,'Estimativas estatísticas; não garantem resultado.',70,1270,940,35);
+      const extra = D.averages.length*48 + D.opportunities.length*88 + D.expectations.length*58 + D.results.length*58;
+      const canvas=document.createElement('canvas'); canvas.width=1080; canvas.height=Math.max(1900,1050+extra);
+      const ctx=canvas.getContext('2d'); ctx.fillStyle='#fff'; ctx.fillRect(0,0,canvas.width,canvas.height); watermark(ctx,canvas.width,canvas.height);
+      let y=90; text(ctx,'⚽ GM SCORE',65,y,52,'bold'); y+=62; text(ctx,'ANÁLISE • ESTATÍSTICAS • PROBABILIDADES',65,y,23,'bold','#64748b');
+      y+=72; text(ctx,D.title,65,y,44,'bold'); y+=42; text(ctx,D.league,65,y,25,'normal','#64748b'); y+=70;
+      const section=(t)=>{{ text(ctx,t,65,y,31,'bold'); y+=30; ctx.strokeStyle='#e5e7eb'; ctx.beginPath();ctx.moveTo(65,y);ctx.lineTo(1015,y);ctx.stroke(); y+=45; }};
+      if(D.results.length) {{ section('🏆 Chance de resultado'); for(const r of D.results) {{text(ctx,r[0],80,y,27); text(ctx,r[1],930,y,30,'bold',parseInt(r[1])>=70?'#16a34a':'#172033'); y+=55;}} y+=20; }}
+      if(D.expectations.length) {{ section('📈 Expectativa da partida'); for(const r of D.expectations) {{text(ctx,r[0],80,y,27); text(ctx,r[1],930,y,29,'bold'); y+=55;}} y+=20; }}
+      if(D.opportunities.length) {{ section('⭐ Melhores linhas para observar'); for(const r of D.opportunities) {{ctx.font='bold 27px Arial';ctx.fillStyle='#172033'; y=wrap(ctx,r[0],80,y,700,34); text(ctx,r[1],930,y,30,'bold',parseInt(r[1])>=80?'#16a34a':'#b7791f'); y+=34; ctx.font='22px Arial';ctx.fillStyle='#64748b'; y=wrap(ctx,r[2],80,y,820,29); y+=45;}} }}
+      if(D.averages.length) {{ section('📊 Médias usadas na análise'); text(ctx,'Dado',80,y,23,'bold','#64748b'); text(ctx,D.home,550,y,21,'bold','#64748b'); text(ctx,D.away,820,y,21,'bold','#64748b'); y+=42; for(const r of D.averages) {{text(ctx,r[0],80,y,23);text(ctx,r[1],580,y,23,'bold');text(ctx,r[2],850,y,23,'bold');y+=46;}} }}
+      y+=45; text(ctx,'CRIADO E VALIDADO POR GUILHERME MEDEIROS',65,y,21,'bold','#94a3b8'); y+=38; text(ctx,'Estimativas estatísticas; não garantem resultado.',65,y,20,'normal','#94a3b8');
       canvas.toBlob(async blob=>{{
-        const file=new File([blob],'analise-futebol.png',{{type:'image/png'}});
+        const file=new File([blob],'gm-score-analise-completa.png',{{type:'image/png'}});
         try {{
-          if (navigator.share && (!navigator.canShare || navigator.canShare({{files:[file]}}))) {{
-            await navigator.share({{title:title,text:'Análise estatística',files:[file]}});
-            document.getElementById('msg').innerText='Escolha o WhatsApp na tela de compartilhamento.';
-          }} else {{
-            const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='analise-futebol.png'; a.click();
-            document.getElementById('msg').innerText='Seu navegador não permite anexar direto. A imagem foi salva para você compartilhar no WhatsApp.';
-          }}
+          if(navigator.share && (!navigator.canShare || navigator.canShare({{files:[file]}}))) {{ await navigator.share({{title:D.title,text:'GM SCORE - análise completa',files:[file]}}); document.getElementById('msg').innerText='Escolha o WhatsApp na tela de compartilhamento.'; }}
+          else {{ const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=file.name;a.click();document.getElementById('msg').innerText='A imagem completa foi salva para compartilhar no WhatsApp.'; }}
         }} catch(e) {{ if(e.name!=='AbortError') document.getElementById('msg').innerText='Não foi possível abrir o compartilhamento neste navegador.'; }}
       }},'image/png');
     }};
@@ -2023,7 +2196,7 @@ def render_analysis():
         st.info("Ainda não há dados suficientes para destacar uma oportunidade.")
 
     st.markdown("### 📲 Compartilhar")
-    render_share_button(team_a, team_b, league_name, probs, opportunities)
+    render_share_button(team_a, team_b, league_name, probs, opportunities, expectations, a, b)
 
     with st.expander("📊 Ver médias usadas na análise"):
         metric_emojis = {"Gols pró":"⚽","Gols contra":"🥅","Escanteios":"⛳","Amarelos":"🟨","Vermelhos":"🟥","Faltas":"🚫","Finalizações":"🎯","Chutes no alvo":"🥅","Posse (%)":"⚪","Impedimentos":"🚩"}
