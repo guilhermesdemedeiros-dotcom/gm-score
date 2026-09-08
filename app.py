@@ -3298,24 +3298,28 @@ def validate_current_data(df, season_type, competition_name):
 # ============================================================
 # INTERFACE
 # ============================================================
-# Alterações feitas pelo seletor de competição da tela principal são
-# aplicadas antes de o widget da barra lateral ser criado. Assim, os dois
-# seletores permanecem sincronizados e nunca misturamos equipes/análises de
-# campeonatos diferentes.
-if "_main_competition_pending" in st.session_state:
-    _new_comp = st.session_state.pop("_main_competition_pending")
-    if _new_comp in COMPETITIONS:
-        st.session_state.selected_competition = _new_comp
-        st.session_state.league_widget = _new_comp
-        st.session_state.main_league_widget = _new_comp
-        st.session_state.selected_home = None
-        st.session_state.selected_away = None
-        st.session_state.loaded_home = None
-        st.session_state.loaded_away = None
-        st.session_state.loaded_competition = _new_comp
-        st.session_state.pop("home_widget", None)
-        st.session_state.pop("away_widget", None)
-        st.session_state.pop("_synced_loaded_signature", None)
+# A troca de competição na tela principal é tratada por callback.
+# Isso altera apenas o estado da interface: as rotinas antigas de coleta,
+# médias e probabilidades permanecem intactas. O callback roda antes do
+# rerun completo do Streamlit, então a nova competição já é usada ao
+# carregar equipes e jogos do dia.
+def _on_main_competition_change():
+    _new_comp = st.session_state.get("main_league_widget")
+    if _new_comp not in COMPETITIONS:
+        return
+    st.session_state.selected_competition = _new_comp
+    st.session_state.league_widget = _new_comp
+    st.session_state.selected_home = None
+    st.session_state.selected_away = None
+    st.session_state.loaded_home = None
+    st.session_state.loaded_away = None
+    st.session_state.loaded_competition = _new_comp
+    st.session_state.pop("home_widget", None)
+    st.session_state.pop("away_widget", None)
+    st.session_state.pop("_synced_loaded_signature", None)
+    # Ao trocar a competição, a lista de jogos da nova competição volta
+    # a aparecer na tela principal.
+    st.session_state.pop("_main_games_hidden_competition", None)
 
 if "_goto_comp" in st.session_state:
     st.session_state.selected_competition = st.session_state.pop("_goto_comp")
@@ -3595,10 +3599,8 @@ def render_analysis():
         list(COMPETITIONS.keys()),
         key="main_league_widget",
         format_func=competition_display_name,
+        on_change=_on_main_competition_change,
     )
-    if main_league_name != league_name:
-        st.session_state["_main_competition_pending"] = main_league_name
-        st.rerun()
 
     # Jogos de hoje também aparecem na tela principal. Depois que o usuário
     # carrega um confronto (pela lista ou manualmente), a lista fica oculta
