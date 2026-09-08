@@ -618,20 +618,48 @@ def adaptive_market_weight(model_probs, moneyline, base_weight):
 
 
 def calibrate_result_with_market(model_probs, moneyline, market_weight):
-    """Mercado calibra a chance final, sem substituir a estimativa independente."""
+    """Calibra o 1X2 com o mercado público sem transformar a odd no modelo.
+
+    Além da mistura ponderada, há um guardrail de coerência: quando o mercado
+    sem margem tem um favorito realmente claro (>=48% e >=12 p.p. sobre o
+    segundo), uma amostra estatística curta não pode terminar apontando o lado
+    oposto como favorito. Isso protege confrontos interligas como Real Madrid ×
+    Inter e Porto × Manchester City sem simplesmente copiar as cotações.
+    """
     if not model_probs or not moneyline:
         return model_probs
-    w = max(0.0, min(float(market_weight), 0.88))
+    w = max(0.0, min(float(market_weight), 0.90))
     out = dict(model_probs)
     out["model_home"] = float(model_probs["home"])
     out["model_draw"] = float(model_probs["draw"])
     out["model_away"] = float(model_probs["away"])
-    out["home"] = out["model_home"]*(1-w) + moneyline["home_prob"]*w
-    out["draw"] = out["model_draw"]*(1-w) + moneyline["draw_prob"]*w
-    out["away"] = out["model_away"]*(1-w) + moneyline["away_prob"]*w
-    total = out["home"] + out["draw"] + out["away"]
-    for k in ("home", "draw", "away"):
-        out[k] = out[k] / total * 100
+    keys = ("home", "draw", "away")
+    market = [float(moneyline[f"{k}_prob"]) for k in keys]
+    independent = [out[f"model_{k}"] for k in keys]
+    final = [independent[i]*(1-w) + market[i]*w for i in range(3)]
+
+    mfav = max(range(3), key=lambda i: market[i])
+    second = sorted(market, reverse=True)[1]
+    market_gap = market[mfav] - second
+    ffav = max(range(3), key=lambda i: final[i])
+
+    # Favoritismo público claro: preserva a direção e permite ao GM SCORE
+    # discordar na intensidade, mas não inverter o confronto por ruído amostral.
+    if market[mfav] >= 48.0 and market_gap >= 12.0 and ffav != mfav:
+        target = max(45.0, market[mfav] - 7.0)
+        target = min(target, market[mfav] + 3.0)
+        rest_idx = [i for i in range(3) if i != mfav]
+        rest_total = max(sum(final[i] for i in rest_idx), 1e-9)
+        remaining = 100.0 - target
+        final[mfav] = target
+        for i in rest_idx:
+            final[i] = remaining * final[i] / rest_total
+        out["market_guardrail"] = True
+
+    total = sum(final)
+    final = [v / total * 100.0 for v in final]
+    for i, k in enumerate(keys):
+        out[k] = final[i]
     out["market_calibrated"] = True
     out["market_weight"] = w
     return out
@@ -654,7 +682,7 @@ def render_market_value_panel(team_a, team_b, probs, moneyline):
     if not moneyline or not probs:
         return
     st.markdown("### 💹 Mercado × odd justa GM SCORE")
-    st.caption("A odd justa e o valor usam a probabilidade FINAL exibida pelo GM SCORE, já com os ajustes de qualidade e a calibração de mercado. A probabilidade pública abaixo é mostrada sem a margem do 1X2.")
+    st.caption("Odd justa = probabilidade final do GM SCORE. As cotações públicas são usadas como referência e validação do favoritismo, sem substituir a análise estatística.")
     # A leitura de valor precisa ser coerente com a chance final mostrada acima.
     # Mantemos a probabilidade independente apenas para diagnóstico interno.
     model = {
@@ -678,7 +706,7 @@ def render_market_value_panel(team_a, team_b, probs, moneyline):
             st.markdown(f"Mercado: **{odd:.2f}**")
             st.caption(f"Mercado sem margem: {marketp:.1f}% · GM final: {model[key]:.1f}%")
             st.markdown(f'<span style="font-weight:700;color:{vr["color"]}">{vr["status"]}</span> · justa **{vr["fair_odd"]:.2f}** · edge **{vr["edge"]:+.1f}%**', unsafe_allow_html=True)
-    st.caption(f"Fonte pública de referência: {moneyline.get('source','OddsPortal')} · pode haver pequena defasagem; confira a cotação antes de apostar.")
+    st.caption(f"📌 Avaliação: dados estatísticos do GM SCORE + força das equipes + forma recente + referência pública de mercado ({moneyline.get('source','OddsPortal')}). A opção destacada é a que ficou mais consistente após o cruzamento desses sinais.")
 
 def to_num(value):
     if value is None or (isinstance(value, float) and pd.isna(value)):
@@ -3226,32 +3254,13 @@ def render_analysis():
         x.metric(f"🏠 Vitória {team_a}", f"{probs['home']:.0f}%")
         y.metric("🤝 Empate", f"{probs['draw']:.0f}%")
         z.metric(f"✈️ Vitória {team_b}", f"{probs['away']:.0f}%")
-        if probs.get("contextual") and analysis_context:
-            hp = analysis_context.get("home_profile") or {}
-            ap = analysis_context.get("away_profile") or {}
-            sources = []
-            if hp.get("competition"): sources.append(f"{team_a}: {hp['competition']}")
-            if ap.get("competition"): sources.append(f"{team_b}: {ap['competition']}")
-            h2n = analysis_context.get("h2h_games", 0)
-            histn = analysis_context.get("history", {}).get("seasons", 0)
-            detail = " • ".join(sources)
-            elo_bits = []
-            if probs.get("home_elo") is not None: elo_bits.append(f"Elo {team_a}: {probs['home_elo']:.0f}")
-            if probs.get("away_elo") is not None: elo_bits.append(f"Elo {team_b}: {probs['away_elo']:.0f}")
-            elo_text = (" • " + " | ".join(elo_bits)) if elo_bits else ""
-            st.caption(f"Base contextual: força global do clube + histórico individual + nível da liga doméstica + forma recente + histórico da competição ({histn} edição(ões) encontrada(s))" + (f" + {h2n} confronto(s) direto(s)" if h2n else "") + (f". {detail}" if detail else ".") + elo_text)
-        else:
-            st.caption("Estimativa calibrada por força ofensiva/defensiva, desempenho casa/fora, fase recente, tamanho da amostra e confronto direto com peso reduzido.")
-        if probs.get("quality_calibrated"):
-            qparts = []
-            if probs.get("home_elo") is not None:
-                qparts.append(f"Elo {team_a}: {probs['home_elo']:.0f}")
-            if probs.get("away_elo") is not None:
-                qparts.append(f"Elo {team_b}: {probs['away_elo']:.0f}")
-            qtxt = (" · " + " | ".join(qparts)) if qparts else ""
-            st.caption(f"⚖️ Ajuste de qualidade global: força do clube + nível da liga + potencial ofensivo + forma recente ({probs.get('quality_weight',0)*100:.0f}% de peso nesta leitura){qtxt}.")
-        if probs.get("market_calibrated") and moneyline:
-            st.caption(f"💹 Chance final calibrada com {probs.get('market_weight',0)*100:.0f}% de peso do mercado público sem margem e {100-probs.get('market_weight',0)*100:.0f}% do modelo GM SCORE.")
+        # Explicação curta e útil: evita expor pesos e detalhes técnicos demais.
+        eval_bits = ["força atual", "potencial ofensivo/defensivo", "forma recente", "nível da liga"]
+        if analysis_context and analysis_context.get("h2h_games", 0):
+            eval_bits.append("histórico direto com peso reduzido")
+        if moneyline:
+            eval_bits.append("mercado público como validação externa")
+        st.caption("📌 Avaliação GM SCORE: " + ", ".join(eval_bits) + ". A leitura final prioriza a qualidade real das equipes e reduz distorções de amostras curtas.")
 
     if moneyline and probs:
         render_market_value_panel(team_a, team_b, probs, moneyline)
