@@ -41,9 +41,10 @@ st.markdown("""
   font-size:2.35rem;
   font-weight:850;
   letter-spacing:-.04em;
-  color:#071426;
-  -webkit-text-stroke:0.9px #020617;
-  text-shadow:0 1px 1px rgba(2,6,23,.22);
+  color:#f8fafc;
+  -webkit-text-stroke:2px #16803a;
+  paint-order:stroke fill;
+  text-shadow:0 1px 1px rgba(22,128,58,.18);
 }
 .gm-brand-subtitle {
   margin-top:.55rem;
