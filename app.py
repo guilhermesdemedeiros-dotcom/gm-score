@@ -145,6 +145,12 @@ CURRENT_TEAM_ROSTERS = {
         "Independiente Medellín", "Independiente Santa Fe", "Internacional de Bogotá",
         "Jaguares de Córdoba", "Junior", "Llaneros", "Millonarios", "Once Caldas",
     ],
+    "CONMEBOL Libertadores": [
+        # Quartas de final 2026 + participantes que podem não aparecer ainda
+        # na fonte de resultados usada pelo seletor.
+        "Fluminense", "Platense", "Palmeiras", "LDU Quito",
+        "Estudiantes", "Corinthians", "Independiente del Valle", "Flamengo",
+    ],
     "UEFA Champions League": [
         "AEK Athens", "Arsenal", "Aston Villa", "Atlético de Madrid", "Barcelona",
         "Bayern München", "Bodø/Glimt", "Borussia Dortmund", "Club Brugge", "Como",
@@ -1149,6 +1155,79 @@ def _candidate_domestic_competitions(team):
     return out
 
 
+CLUBELO_NAME_ALIASES = {
+    "manchester_city": ["man_city", "mancity", "manchester_city"],
+    "manchester_united": ["man_united", "manutd", "manchester_united"],
+    "porto": ["porto", "fc_porto"],
+    "paris_saint_germain": ["paris_sg", "psg", "paris_saint_germain"],
+    "internazionale": ["inter", "internazionale"],
+    "inter": ["inter", "internazionale"],
+    "atletico_madrid": ["atletico_madrid", "atletico"],
+    "bayern_munchen": ["bayern", "bayern_munich", "bayern_munchen"],
+    "sporting_cp": ["sporting", "sporting_cp"],
+    "psv": ["psv", "psv_eindhoven"],
+    "platense": ["platense", "club_atletico_platense"],
+}
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def load_clubelo_snapshot(day_iso=None):
+    """Rating global de clubes sem chave de API; falha silenciosamente se indisponível."""
+    if day_iso is None:
+        day_iso = datetime.now(ZoneInfo("America/Sao_Paulo")).date().isoformat()
+    urls = [f"http://api.clubelo.com/{day_iso}", f"https://api.clubelo.com/{day_iso}"]
+    last = None
+    for url in urls:
+        try:
+            r = requests.get(url, timeout=12, headers={"User-Agent": "Mozilla/5.0 GM-SCORE/1.0"})
+            last = r.status_code
+            if r.status_code != 200 or not r.text.lstrip().startswith("Rank,Club"):
+                continue
+            df = pd.read_csv(io.StringIO(r.text))
+            if "Club" not in df.columns or "Elo" not in df.columns:
+                continue
+            return df
+        except Exception:
+            continue
+    return pd.DataFrame()
+
+
+def _clubelo_team_key(name):
+    return _norm_team(name).replace(" ", "_")
+
+
+def clubelo_rating(team):
+    """Retorna Elo atual e ranking. Usa correspondência tolerante de nomes."""
+    try:
+        snap = load_clubelo_snapshot()
+        if snap is None or snap.empty:
+            return None
+        wanted = _clubelo_team_key(team)
+        candidates = {wanted}
+        for a in CLUBELO_NAME_ALIASES.get(wanted, []):
+            candidates.add(_clubelo_team_key(a))
+        # também remove termos institucionais comuns
+        stripped = re.sub(r'_(fc|cf|ac|club|clube)$', '', wanted)
+        candidates.add(stripped)
+        best = None
+        for _, row in snap.iterrows():
+            key = _clubelo_team_key(row.get("Club", ""))
+            score = 0
+            if key in candidates:
+                score = 100
+            elif any(c and (c in key or key in c) and min(len(c), len(key)) >= 5 for c in candidates):
+                score = 70
+            if score and (best is None or score > best[0]):
+                best = (score, row)
+        if best is None:
+            return None
+        row = best[1]
+        elo = float(row.get("Elo"))
+        rank = row.get("Rank")
+        return {"elo": elo, "rank": None if pd.isna(rank) else int(float(rank)), "club": str(row.get("Club", team))}
+    except Exception:
+        return None
+
+
 @st.cache_data(ttl=21600, show_spinner=False)
 def load_team_domestic_profile(team, recent_games=10):
     for comp in _candidate_domestic_competitions(team):
@@ -1162,6 +1241,7 @@ def load_team_domestic_profile(team, recent_games=10):
             season_strength, gd = _season_strength(canonical, matches) if matches else (0.5, 0.0)
             form, form_gd = _team_form(canonical, matches, min(6, recent_games)) if matches else (season_strength, gd)
             games = int(float(row.get("Jogos", 0) or 0))
+            elo_info = clubelo_rating(canonical) or clubelo_rating(team)
             return {
                 "team": canonical,
                 "competition": comp,
@@ -1173,6 +1253,8 @@ def load_team_domestic_profile(team, recent_games=10):
                 "form": form,
                 "goal_diff": gd,
                 "form_goal_diff": form_gd,
+                "elo": (elo_info or {}).get("elo"),
+                "elo_rank": (elo_info or {}).get("rank"),
             }
         except Exception:
             continue
@@ -1286,9 +1368,15 @@ def contextual_analysis_rows(team_a, team_b, competition_name, competition_df, r
     def relevance(prof):
         if not prof:
             return 0.50
-        # 55% nível da liga, 30% desempenho de temporada, 15% forma recente.
         league_component = max(0.0, min(1.0, (prof["league_strength"] - 0.82) / 0.36))
-        return 0.55 * league_component + 0.30 * prof.get("season_strength", .5) + 0.15 * prof.get("form", .5)
+        elo = prof.get("elo")
+        if elo is not None:
+            # ClubElo é a âncora de força global: captura qualidade estrutural e
+            # histórico recente em confrontos de níveis diferentes.
+            elo_component = max(0.0, min(1.0, (float(elo) - 1350.0) / 700.0))
+            return (0.58 * elo_component + 0.20 * league_component +
+                    0.14 * prof.get("season_strength", .5) + 0.08 * prof.get("form", .5))
+        return 0.48 * league_component + 0.34 * prof.get("season_strength", .5) + 0.18 * prof.get("form", .5)
 
     ctx = {
         "home_profile": prof_a, "away_profile": prof_b,
@@ -1307,34 +1395,72 @@ def contextual_victory_probabilities(home, away, a, b, ctx):
     agf, aga = metric_value(b, "Gols pró"), metric_value(b, "Gols contra")
     if None in (hgf, hga, agf, aga):
         return None
-    lam_h = max(0.25, ((hgf + aga) / 2.0) * 1.07)
-    lam_a = max(0.22, ((agf + hga) / 2.0) / 1.07)
 
-    # Relevância relativa (nível da liga + força + forma) pesa no máximo ~12%.
-    rel_delta = max(-0.12, min(0.12, (ctx.get("home_relevance", .5) - ctx.get("away_relevance", .5)) * 0.24))
+    hp = ctx.get("home_profile") or {}
+    ap = ctx.get("away_profile") or {}
+    helo, aelo = hp.get("elo"), ap.get("elo")
+
+    # Base de gols com mando moderado. O mando vale menos que uma diferença
+    # estrutural grande de qualidade entre os clubes.
+    lam_h = max(0.25, ((hgf + aga) / 2.0) * 1.055)
+    lam_a = max(0.22, ((agf + hga) / 2.0) / 1.055)
+
+    rel_delta = max(-0.22, min(0.22, (ctx.get("home_relevance", .5) - ctx.get("away_relevance", .5)) * 0.44))
     lam_h *= 1 + rel_delta
     lam_a *= 1 - rel_delta
-    # H2H apenas como desempate, nunca como fundamento principal.
+
+    # Quando ClubElo está disponível, ele é usado diretamente como âncora
+    # interligas. +55 pontos representam aproximadamente o mando de campo.
+    elo_prior = None
+    if helo is not None and aelo is not None:
+        elo_diff = float(helo) + 55.0 - float(aelo)
+        # converte diferença Elo em expectativa relativa; cap evita extremos.
+        strength_mult = max(0.72, min(1.38, math.exp(elo_diff / 700.0)))
+        lam_h *= math.sqrt(strength_mult)
+        lam_a /= math.sqrt(strength_mult)
+
+        score_expect = 1.0 / (1.0 + 10.0 ** (-elo_diff / 400.0))
+        draw_prior = 0.25 + 0.035 * (1.0 - min(abs(elo_diff) / 300.0, 1.0))
+        decisive = 1.0 - draw_prior
+        # score_expect é expectativa Elo; transformamos em uma distribuição 1X2
+        # conservadora, sem usar odds de casas de aposta.
+        home_share = max(0.08, min(0.92, score_expect))
+        elo_prior = (decisive * home_share, draw_prior, decisive * (1.0 - home_share))
+
     if ctx.get("h2h_games", 0) >= 2:
         h2_delta = max(-0.035, min(0.035, (ctx.get("h2h_home", .5) - ctx.get("h2h_away", .5)) * 0.055))
-        lam_h *= 1 + h2_delta; lam_a *= 1 - h2_delta
+        lam_h *= 1 + h2_delta
+        lam_a *= 1 - h2_delta
 
-    lam_h = max(.35, min(lam_h, 2.9)); lam_a = max(.30, min(lam_a, 2.7))
+    lam_h = max(.30, min(lam_h, 3.1)); lam_a = max(.28, min(lam_a, 3.0))
     ph, pd_, pa = _poisson_result_probs(lam_h, lam_a)
-    # Quanto menor a amostra no torneio, maior a regressão para um jogo europeu
-    # equilibrado. O mando ainda permanece no Poisson.
+
+    # Mistura Poisson com força global. No começo do torneio, Elo/relevância
+    # tem peso maior; conforme há jogos na competição, os dados atuais dominam.
     sample = min(ctx.get("competition_games_home", 0), ctx.get("competition_games_away", 0))
-    w = min(.86, .58 + sample * .045)
-    baseline = (.42, .29, .29)
-    ph = ph*w + baseline[0]*(1-w); pd_ = pd_*w + baseline[1]*(1-w); pa = pa*w + baseline[2]*(1-w)
-    probs = [max(.075, ph), max(.075, pd_), max(.075, pa)]
+    if elo_prior is not None:
+        elo_w = max(0.22, 0.42 - sample * 0.035)
+        ph = ph * (1-elo_w) + elo_prior[0] * elo_w
+        pd_ = pd_ * (1-elo_w) + elo_prior[1] * elo_w
+        pa = pa * (1-elo_w) + elo_prior[2] * elo_w
+
+    # Regressão residual; não força mais o mandante para 42% quando o visitante
+    # é claramente superior em força global.
+    w = min(.92, .68 + sample * .04)
+    baseline = elo_prior if elo_prior is not None else (.39, .29, .32)
+    ph = ph*w + baseline[0]*(1-w)
+    pd_ = pd_*w + baseline[1]*(1-w)
+    pa = pa*w + baseline[2]*(1-w)
+
+    probs = [max(.06, ph), max(.075, pd_), max(.06, pa)]
     total = sum(probs); probs = [x/total for x in probs]
     return {
         "home": probs[0]*100, "draw": probs[1]*100, "away": probs[2]*100,
-        "home_form": ((ctx.get("home_profile") or {}).get("form", .5))*100,
-        "away_form": ((ctx.get("away_profile") or {}).get("form", .5))*100,
+        "home_form": hp.get("form", .5)*100,
+        "away_form": ap.get("form", .5)*100,
         "h2h_games": ctx.get("h2h_games", 0),
         "expected_home_goals": lam_h, "expected_away_goals": lam_a,
+        "home_elo": helo, "away_elo": aelo,
         "contextual": True,
     }
 
@@ -2533,7 +2659,11 @@ def render_analysis():
             h2n = analysis_context.get("h2h_games", 0)
             histn = analysis_context.get("history", {}).get("seasons", 0)
             detail = " • ".join(sources)
-            st.caption(f"Base contextual: histórico individual + nível da liga doméstica + forma recente + histórico da competição ({histn} edição(ões) encontrada(s))" + (f" + {h2n} confronto(s) direto(s)" if h2n else "") + (f". {detail}" if detail else "."))
+            elo_bits = []
+            if probs.get("home_elo") is not None: elo_bits.append(f"Elo {team_a}: {probs['home_elo']:.0f}")
+            if probs.get("away_elo") is not None: elo_bits.append(f"Elo {team_b}: {probs['away_elo']:.0f}")
+            elo_text = (" • " + " | ".join(elo_bits)) if elo_bits else ""
+            st.caption(f"Base contextual: força global do clube + histórico individual + nível da liga doméstica + forma recente + histórico da competição ({histn} edição(ões) encontrada(s))" + (f" + {h2n} confronto(s) direto(s)" if h2n else "") + (f". {detail}" if detail else ".") + elo_text)
         else:
             st.caption("Estimativa calibrada por força ofensiva/defensiva, desempenho casa/fora, fase recente, tamanho da amostra e confronto direto com peso reduzido.")
 
