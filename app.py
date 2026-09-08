@@ -82,6 +82,16 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+VALIDATION_NOTICE = (
+    "⚠️ **Aviso de validação:** O GM SCORE está em fase de validação e aprimoramento contínuo. "
+    "Resultados, probabilidades e funcionalidades podem apresentar inconsistências pontuais. "
+    "Caso identifique qualquer bug, comportamento inesperado ou informação fora do padrão, "
+    "informe ao administrador para análise e correção."
+)
+
+# Aviso global: aparece no conteúdo principal sempre que o usuário acessa o app.
+st.info(VALIDATION_NOTICE)
+
 # Competições com estatísticas detalhadas em CSV público.
 EUROPE_LEAGUES = {
     "Inglaterra - Premier League": "E0",
@@ -643,18 +653,22 @@ def calibrate_result_with_market(model_probs, moneyline, market_weight):
     market_gap = market[mfav] - second
     ffav = max(range(3), key=lambda i: final[i])
 
-    # Favoritismo público claro: preserva a direção e permite ao GM SCORE
-    # discordar na intensidade, mas não inverter o confronto por ruído amostral.
-    if market[mfav] >= 48.0 and market_gap >= 12.0 and ffav != mfav:
-        target = max(45.0, market[mfav] - 7.0)
-        target = min(target, market[mfav] + 3.0)
-        rest_idx = [i for i in range(3) if i != mfav]
-        rest_total = max(sum(final[i] for i in rest_idx), 1e-9)
-        remaining = 100.0 - target
-        final[mfav] = target
-        for i in rest_idx:
-            final[i] = remaining * final[i] / rest_total
-        out["market_guardrail"] = True
+    # Consenso público forte é tratado como validação externa de realidade, não
+    # como palpite. Quando o mercado sem margem tem favorito >=48% e vantagem
+    # >=12 p.p., o GM pode discordar da intensidade, mas não inverter a equipe
+    # favorita por ruído de amostra, H2H antigo ou comparação entre ligas.
+    # O piso fica alguns pontos abaixo do mercado para preservar independência.
+    if market[mfav] >= 48.0 and market_gap >= 12.0:
+        floor = max(46.0, market[mfav] - 6.0)
+        if final[mfav] < floor or ffav != mfav:
+            target = floor
+            rest_idx = [i for i in range(3) if i != mfav]
+            rest_total = max(sum(final[i] for i in rest_idx), 1e-9)
+            remaining = 100.0 - target
+            final[mfav] = target
+            for i in rest_idx:
+                final[i] = remaining * final[i] / rest_total
+            out["market_guardrail"] = True
 
     total = sum(final)
     final = [v / total * 100.0 for v in final]
@@ -706,7 +720,7 @@ def render_market_value_panel(team_a, team_b, probs, moneyline):
             st.markdown(f"Mercado: **{odd:.2f}**")
             st.caption(f"Mercado sem margem: {marketp:.1f}% · GM final: {model[key]:.1f}%")
             st.markdown(f'<span style="font-weight:700;color:{vr["color"]}">{vr["status"]}</span> · justa **{vr["fair_odd"]:.2f}** · edge **{vr["edge"]:+.1f}%**', unsafe_allow_html=True)
-    st.caption(f"📌 Avaliação: dados estatísticos do GM SCORE + força das equipes + forma recente + referência pública de mercado ({moneyline.get('source','OddsPortal')}). A opção destacada é a que ficou mais consistente após o cruzamento desses sinais.")
+    st.caption(f"📌 Avaliação: cruzamos desempenho atual, força global, nível da liga e produção ofensiva/defensiva com a referência pública de mercado ({moneyline.get('source','OddsPortal')}). A odd justa usa exatamente a probabilidade final mostrada pelo GM SCORE.")
 
 def to_num(value):
     if value is None or (isinstance(value, float) and pd.isna(value)):
@@ -1804,14 +1818,17 @@ def global_quality_prior(home, away, df=None, ctx=None):
     hseason = float(hp.get("season_strength", 0.50) or 0.50)
     aseason = float(ap.get("season_strength", 0.50) or 0.50)
 
-    # Mando vale cerca de 45 pontos. Qualidade global deve superar mando quando
-    # existe uma diferença clara entre os clubes.
-    home_adv = 45.0
+    # Mando é importante, mas nunca deve apagar uma diferença estrutural clara.
+    # Mesmo quando há ClubElo, mantemos nível da liga, produção ofensiva e força
+    # da temporada no cálculo. Isso evita que um único rating ou uma sequência
+    # doméstica curta domine confrontos entre ligas diferentes.
+    home_adv = 42.0
     if helo is not None and aelo is not None:
         quality_diff = float(helo) + home_adv - float(aelo)
-        # Potencial ofensivo e forma complementam o rating, sem duplicá-lo.
-        quality_diff += (hatk - aatk) * 115.0
-        quality_diff += (hform - aform) * 55.0
+        quality_diff += (hls - als) * 360.0
+        quality_diff += (hatk - aatk) * 145.0
+        quality_diff += (hseason - aseason) * 70.0
+        quality_diff += (hform - aform) * 45.0
     else:
         # Fallback sem Elo: nível da liga recebe peso alto justamente para não
         # equiparar campanhas domésticas de contextos competitivos distintos.
@@ -2901,6 +2918,7 @@ if "selected_away" not in st.session_state:
     st.session_state.selected_away = None
 st.sidebar.markdown("### ⚽ GM SCORE")
 st.sidebar.caption("Configurar análise")
+st.sidebar.info(VALIDATION_NOTICE)
 league_name = st.sidebar.selectbox(
     "🏆 Competição", list(COMPETITIONS.keys()),
     index=list(COMPETITIONS.keys()).index(st.session_state.selected_competition)
@@ -3260,7 +3278,7 @@ def render_analysis():
             eval_bits.append("histórico direto com peso reduzido")
         if moneyline:
             eval_bits.append("mercado público como validação externa")
-        st.caption("📌 Avaliação GM SCORE: " + ", ".join(eval_bits) + ". A leitura final prioriza a qualidade real das equipes e reduz distorções de amostras curtas.")
+        st.caption("📌 Avaliação GM SCORE: " + ", ".join(eval_bits) + ". Esses sinais são cruzados para identificar o favorito mais consistente; histórico antigo e amostras curtas funcionam apenas como apoio, nunca como fator dominante.")
 
     if moneyline and probs:
         render_market_value_panel(team_a, team_b, probs, moneyline)
