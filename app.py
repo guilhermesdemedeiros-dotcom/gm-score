@@ -36,23 +36,21 @@ st.markdown("""
 
 st.markdown("""
 <style>
-/* Mantém o layout padrão do Streamlit. A cor acompanha o tema e o contorno
-   verde é feito com text-shadow para funcionar também no Safari/iPhone. */
+/* Marca GM SCORE. No tema claro usamos preenchimento escuro e uma borda
+   verde de gramado REAL ao redor das letras. O text-shadow fica como fallback
+   para navegadores que tratem o text-stroke de forma diferente. */
 .gm-brand-title {
   font-size:2.35rem;
   font-weight:850;
   letter-spacing:-.04em;
-  color:var(--text-color) !important;
-  -webkit-text-stroke:0 !important;
+  color:#111827 !important;
+  -webkit-text-stroke:2px #16803a !important;
+  paint-order:stroke fill;
   text-shadow:
     -1px -1px 0 #16803a,
      1px -1px 0 #16803a,
     -1px  1px 0 #16803a,
-     1px  1px 0 #16803a,
-     0   -1px 0 #16803a,
-     0    1px 0 #16803a,
-    -1px  0   0 #16803a,
-     1px  0   0 #16803a;
+     1px  1px 0 #16803a;
 }
 .gm-brand-subtitle {
   margin-top:.55rem;
@@ -1686,6 +1684,167 @@ def contextual_analysis_rows(team_a, team_b, competition_name, competition_df, r
     return a, b, ctx
 
 
+def _attack_power_from_row(row, league_strength=1.0):
+    """Índice ofensivo comparável entre ligas, usando somente métricas disponíveis.
+
+    Não é uma probabilidade. Serve para impedir que uma sequência doméstica em
+    uma liga mais fraca seja tratada como equivalente ao mesmo volume ofensivo
+    produzido numa liga de nível superior.
+    """
+    if row is None:
+        return 1.0
+    try:
+        gf = metric_value(row, "Gols pró")
+        sot = metric_value(row, "Chutes no alvo")
+        shots = metric_value(row, "Finalizações")
+        poss = metric_value(row, "Posse (%)")
+    except Exception:
+        gf = sot = shots = poss = None
+
+    parts = []
+    if gf is not None:
+        parts.append((max(0.35, min(1.85, float(gf) / 1.45)), 0.50))
+    if sot is not None:
+        parts.append((max(0.40, min(1.75, float(sot) / 4.6)), 0.27))
+    if shots is not None:
+        parts.append((max(0.45, min(1.65, float(shots) / 12.5)), 0.16))
+    if poss is not None:
+        parts.append((max(0.70, min(1.30, float(poss) / 50.0)), 0.07))
+    if not parts:
+        raw = 1.0
+    else:
+        den = sum(w for _, w in parts)
+        raw = sum(v*w for v, w in parts) / den
+
+    # O mesmo número ofensivo vale mais quando produzido semanalmente em uma
+    # competição mais forte. Limite conservador para não duplicar o efeito Elo.
+    league_adj = max(0.88, min(1.14, 1.0 + (float(league_strength) - 1.0) * 0.72))
+    return max(0.45, min(1.75, raw * league_adj))
+
+
+def global_quality_prior(home, away, df=None, ctx=None):
+    """Prior 1X2 independente de odds baseado em qualidade estrutural.
+
+    Combina ClubElo quando disponível, força da liga, potencial ofensivo,
+    desempenho da temporada e forma recente. É especialmente importante em
+    torneios continentais, onde 2-5 jogos do torneio não representam a força
+    real dos clubes.
+    """
+    ctx = ctx or {}
+    hp = ctx.get("home_profile") or {}
+    ap = ctx.get("away_profile") or {}
+
+    def row_from(team, profile):
+        prow = profile.get("row")
+        if prow:
+            return pd.Series(prow)
+        try:
+            if df is not None and not df.empty:
+                hit = df[df["Time"] == team]
+                if not hit.empty:
+                    return hit.iloc[0]
+        except Exception:
+            pass
+        return None
+
+    hr = row_from(home, hp)
+    ar = row_from(away, ap)
+    hls = float(hp.get("league_strength", 1.0) or 1.0)
+    als = float(ap.get("league_strength", 1.0) or 1.0)
+    helo = hp.get("elo")
+    aelo = ap.get("elo")
+    if helo is None:
+        helo = (clubelo_rating(home) or {}).get("elo")
+    if aelo is None:
+        aelo = (clubelo_rating(away) or {}).get("elo")
+
+    hatk = _attack_power_from_row(hr, hls)
+    aatk = _attack_power_from_row(ar, als)
+    hform = float(hp.get("form", 0.50) or 0.50)
+    aform = float(ap.get("form", 0.50) or 0.50)
+    hseason = float(hp.get("season_strength", 0.50) or 0.50)
+    aseason = float(ap.get("season_strength", 0.50) or 0.50)
+
+    # Mando vale cerca de 45 pontos. Qualidade global deve superar mando quando
+    # existe uma diferença clara entre os clubes.
+    home_adv = 45.0
+    if helo is not None and aelo is not None:
+        quality_diff = float(helo) + home_adv - float(aelo)
+        # Potencial ofensivo e forma complementam o rating, sem duplicá-lo.
+        quality_diff += (hatk - aatk) * 115.0
+        quality_diff += (hform - aform) * 55.0
+    else:
+        # Fallback sem Elo: nível da liga recebe peso alto justamente para não
+        # equiparar campanhas domésticas de contextos competitivos distintos.
+        quality_diff = home_adv
+        quality_diff += (hls - als) * 1150.0
+        quality_diff += (hatk - aatk) * 180.0
+        quality_diff += (hseason - aseason) * 95.0
+        quality_diff += (hform - aform) * 60.0
+
+    quality_diff = max(-520.0, min(520.0, quality_diff))
+    expected = 1.0 / (1.0 + 10.0 ** (-quality_diff / 400.0))
+    closeness = 1.0 - min(abs(quality_diff) / 360.0, 1.0)
+    draw = 0.225 + 0.065 * closeness
+    decisive = 1.0 - draw
+    home_p = decisive * expected
+    away_p = decisive * (1.0 - expected)
+    total = home_p + draw + away_p
+    return {
+        "home": home_p / total * 100.0,
+        "draw": draw / total * 100.0,
+        "away": away_p / total * 100.0,
+        "quality_diff": quality_diff,
+        "home_attack": hatk,
+        "away_attack": aatk,
+        "home_elo": helo,
+        "away_elo": aelo,
+    }
+
+
+def calibrate_with_global_quality(model_probs, quality_prior, sample=0, contextual=False):
+    """Mistura o modelo de jogo com a hierarquia estrutural dos clubes.
+
+    Em torneios continentais com pouca amostra, qualidade global tem peso maior.
+    Em ligas maduras, entra apenas como estabilizador. Odds não participam daqui.
+    """
+    if not model_probs or not quality_prior:
+        return model_probs
+    out = dict(model_probs)
+    m = [float(out[k]) for k in ("home", "draw", "away")]
+    q = [float(quality_prior[k]) for k in ("home", "draw", "away")]
+    qfav = max(range(3), key=lambda i: q[i])
+    mfav = max(range(3), key=lambda i: m[i])
+    qgap = q[qfav] - sorted(q, reverse=True)[1]
+
+    if contextual:
+        w = max(0.36, 0.62 - min(float(sample), 8.0) * 0.035)
+    else:
+        w = max(0.20, 0.36 - min(float(sample), 12.0) * 0.010)
+
+    # Se a hierarquia estrutural aponta favorito claro e o modelo de poucos
+    # jogos aponta o adversário, aumenta o guardrail. Ainda não vira 100% prior.
+    if qfav != mfav and qgap >= 12:
+        w = max(w, 0.62 if contextual else 0.46)
+    if qgap >= 24:
+        w = max(w, 0.68 if contextual else 0.50)
+
+    vals = [m[i] * (1.0-w) + q[i] * w for i in range(3)]
+    z = sum(vals)
+    vals = [v / z * 100.0 for v in vals]
+    out["home"], out["draw"], out["away"] = vals
+    out["quality_calibrated"] = True
+    out["quality_weight"] = w
+    out["quality_diff"] = quality_prior.get("quality_diff")
+    out["home_attack_index"] = quality_prior.get("home_attack")
+    out["away_attack_index"] = quality_prior.get("away_attack")
+    if out.get("home_elo") is None:
+        out["home_elo"] = quality_prior.get("home_elo")
+    if out.get("away_elo") is None:
+        out["away_elo"] = quality_prior.get("away_elo")
+    return out
+
+
 def contextual_victory_probabilities(home, away, a, b, ctx):
     if not ctx:
         return None
@@ -3029,6 +3188,17 @@ def render_analysis():
     if probs is None:
         probs = victory_probabilities(team_a, team_b, df)
 
+    # Antes das odds, aplica uma camada independente de qualidade estrutural.
+    # Isso corrige especialmente cruzamentos entre ligas: potencial ofensivo,
+    # ClubElo/força global, nível doméstico e forma têm precedência sobre uma
+    # amostra curta do torneio continental.
+    if probs:
+        quality_prior = global_quality_prior(team_a, team_b, df=df, ctx=analysis_context)
+        probs = calibrate_with_global_quality(
+            probs, quality_prior, sample=comp_sample,
+            contextual=(league_name in CONTEXTUAL_COMPETITIONS),
+        )
+
     # Mercado público entra apenas como calibrador, sem API key. Em torneios
     # com pouca amostra recebe peso moderado; em ligas maduras o modelo próprio
     # do GM SCORE permanece dominante.
@@ -3061,6 +3231,14 @@ def render_analysis():
             st.caption(f"Base contextual: força global do clube + histórico individual + nível da liga doméstica + forma recente + histórico da competição ({histn} edição(ões) encontrada(s))" + (f" + {h2n} confronto(s) direto(s)" if h2n else "") + (f". {detail}" if detail else ".") + elo_text)
         else:
             st.caption("Estimativa calibrada por força ofensiva/defensiva, desempenho casa/fora, fase recente, tamanho da amostra e confronto direto com peso reduzido.")
+        if probs.get("quality_calibrated"):
+            qparts = []
+            if probs.get("home_elo") is not None:
+                qparts.append(f"Elo {team_a}: {probs['home_elo']:.0f}")
+            if probs.get("away_elo") is not None:
+                qparts.append(f"Elo {team_b}: {probs['away_elo']:.0f}")
+            qtxt = (" · " + " | ".join(qparts)) if qparts else ""
+            st.caption(f"⚖️ Ajuste de qualidade global: força do clube + nível da liga + potencial ofensivo + forma recente ({probs.get('quality_weight',0)*100:.0f}% de peso nesta leitura){qtxt}.")
         if probs.get("market_calibrated") and moneyline:
             st.caption(f"💹 Chance final calibrada com {probs.get('market_weight',0)*100:.0f}% de peso do mercado público sem margem e {100-probs.get('market_weight',0)*100:.0f}% do modelo GM SCORE.")
 
