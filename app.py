@@ -1,5 +1,6 @@
 import io
 import math
+import os
 import re
 import time
 import unicodedata
@@ -372,6 +373,224 @@ def clean_col(text):
     text = "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
     return re.sub(r"[^a-z0-9]+", "_", text).strip("_")
 
+
+
+# ============================================================
+# ODDS PÚBLICAS - calibração de mercado sem API key
+# ============================================================
+# O GM SCORE não depende de chave privada. As odds são apenas uma referência
+# de mercado e nunca substituem o modelo estatístico. A fonte principal abaixo
+# é o OddsPortal, que publica comparações 1X2 em páginas públicas. Como páginas
+# públicas podem mudar de estrutura ou bloquear automação, qualquer falha é
+# tratada silenciosamente e a análise continua 100% estatística.
+ODDSPORTAL_PATHS = {
+    "Inglaterra - Premier League": ["england/premier-league"],
+    "Espanha - La Liga": ["spain/laliga", "spain/la-liga"],
+    "Itália - Serie A": ["italy/serie-a"],
+    "Alemanha - Bundesliga": ["germany/bundesliga"],
+    "França - Ligue 1": ["france/ligue-1"],
+    "Portugal - Liga Portugal": ["portugal/liga-portugal", "portugal/primeira-liga"],
+    "Holanda - Eredivisie": ["netherlands/eredivisie"],
+    "Escócia - Premiership": ["scotland/premiership"],
+    "Turquia - Süper Lig": ["turkey/super-lig"],
+    "Brasil - Série A": ["brazil/serie-a-betano", "brazil/serie-a"],
+    "Brasil - Série B": ["brazil/serie-b"],
+    "Arábia Saudita - Saudi Pro League": ["saudi-arabia/saudi-professional-league"],
+    "Estados Unidos - MLS": ["usa/mls"],
+    "Argentina - Liga Profesional": ["argentina/liga-profesional"],
+    "México - Liga MX": ["mexico/liga-mx"],
+    "Colômbia - Primera A": ["colombia/primera-a"],
+    "CONMEBOL Libertadores": ["south-america/copa-libertadores", "south-america/copa-libertadores-betano"],
+    "CONMEBOL Sul-Americana": ["south-america/copa-sudamericana"],
+    "UEFA Champions League": ["europe/champions-league"],
+    "UEFA Europa League": ["europe/europa-league"],
+    "UEFA Conference League": ["europe/conference-league"],
+}
+
+
+def _odds_team_key(name):
+    txt = clean_col(name).replace("_", " ")
+    stop = {
+        "fc", "cf", "afc", "sc", "ac", "ec", "club", "clube", "de", "do", "da",
+        "the", "football", "futbol", "futebol", "calcio", "fbpa", "sad", "sa"
+    }
+    toks = [t for t in txt.split() if t not in stop]
+    return " ".join(toks)
+
+
+def _team_similarity(a, b):
+    aa, bb = _odds_team_key(a), _odds_team_key(b)
+    if not aa or not bb:
+        return 0.0
+    if aa == bb:
+        return 1.0
+    if aa in bb or bb in aa:
+        return 0.92
+    sa, sb = set(aa.split()), set(bb.split())
+    return len(sa & sb) / max(len(sa | sb), 1)
+
+
+class _VisibleText(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.parts = []
+        self.skip = 0
+    def handle_starttag(self, tag, attrs):
+        if tag in ("script", "style", "noscript"):
+            self.skip += 1
+        elif tag in ("div", "tr", "li", "br", "p", "td", "span"):
+            self.parts.append("\n")
+    def handle_endtag(self, tag):
+        if tag in ("script", "style", "noscript") and self.skip:
+            self.skip -= 1
+        elif tag in ("div", "tr", "li", "p", "td"):
+            self.parts.append("\n")
+    def handle_data(self, data):
+        if not self.skip:
+            self.parts.append(data)
+    def text(self):
+        return re.sub(r"[ \t]+", " ", "".join(self.parts))
+
+
+def _extract_visible_text(html):
+    parser = _VisibleText()
+    try:
+        parser.feed(html)
+        return parser.text()
+    except Exception:
+        return re.sub(r"<[^>]+>", " ", html or "")
+
+
+def _public_odds_from_text(text, home, away):
+    """Localiza o confronto no texto visível e extrai o 1X2 mais próximo.
+    O filtro exige odds decimais plausíveis e usa os nomes apenas como âncora.
+    """
+    if not text:
+        return None
+    lines = [re.sub(r"\s+", " ", x).strip() for x in text.splitlines()]
+    lines = [x for x in lines if x]
+    hk, ak = _odds_team_key(home), _odds_team_key(away)
+    best = None
+    for i in range(len(lines)):
+        chunk = " ".join(lines[max(0, i-3):min(len(lines), i+8)])
+        ck = _odds_team_key(chunk)
+        # A mesma janela precisa conter pistas fortes das duas equipes.
+        sh = 1.0 if hk and hk in ck else max((_team_similarity(home, x) for x in lines[max(0,i-3):min(len(lines),i+8)]), default=0)
+        sa = 1.0 if ak and ak in ck else max((_team_similarity(away, x) for x in lines[max(0,i-3):min(len(lines),i+8)]), default=0)
+        if sh < 0.72 or sa < 0.72:
+            continue
+        vals = []
+        for raw in re.findall(r"(?<!\d)(\d{1,2}[.,]\d{2})(?!\d)", chunk):
+            try:
+                v = float(raw.replace(",", "."))
+                if 1.01 <= v <= 30.0:
+                    vals.append(v)
+            except Exception:
+                pass
+        # Procura três odds consecutivas plausíveis. Evita horários como 18.30
+        # exigindo que a soma implícita seja compatível com um mercado 1X2.
+        for j in range(max(0, len(vals)-8), len(vals)-2):
+            trio = vals[j:j+3]
+            if len(trio) < 3:
+                continue
+            inv = sum(1/x for x in trio)
+            if 0.88 <= inv <= 1.35:
+                score = sh + sa - abs(inv-1.06)*0.5
+                cand = (score, trio)
+                if best is None or cand[0] > best[0]:
+                    best = cand
+    if not best:
+        return None
+    h, d, a = best[1]
+    inv = [1/h, 1/d, 1/a]
+    z = sum(inv)
+    return {
+        "home_odd": h, "draw_odd": d, "away_odd": a,
+        "home_prob": inv[0]/z*100, "draw_prob": inv[1]/z*100, "away_prob": inv[2]/z*100,
+        "overround": (z-1)*100,
+    }
+
+
+@st.cache_data(ttl=180, show_spinner=False)
+def fetch_public_market_odds(home, away, league_name):
+    """Busca odds 1X2 em fonte pública, sem chave. Retorna None se a fonte
+    não puder ser lida. A análise nunca depende deste retorno para funcionar.
+    """
+    paths = ODDSPORTAL_PATHS.get(league_name, [])
+    # Por último tenta a página geral de futebol, útil para jogos do dia.
+    urls = [f"https://www.oddsportal.com/football/{p.strip('/')}/" for p in paths]
+    urls.append("https://www.oddsportal.com/football/")
+    errors = []
+    for url in urls:
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=12)
+            if r.status_code != 200 or len(r.text) < 500:
+                errors.append(f"HTTP {r.status_code}")
+                continue
+            parsed = _public_odds_from_text(_extract_visible_text(r.text), home, away)
+            if parsed:
+                parsed.update({"source": "OddsPortal", "source_url": url, "updated_at": datetime.now(BRASILIA_TZ).isoformat(timespec="minutes")})
+                return parsed
+        except Exception as exc:
+            errors.append(str(exc))
+    return {"error": "odds públicas indisponíveis", "details": errors[-2:]}
+
+
+def calibrate_result_with_market(model_probs, moneyline, market_weight):
+    """Mercado calibra, mas não substitui, o modelo estatístico."""
+    if not model_probs or not moneyline:
+        return model_probs
+    w = max(0.0, min(float(market_weight), 0.40))
+    out = dict(model_probs)
+    out["model_home"] = float(model_probs["home"])
+    out["model_draw"] = float(model_probs["draw"])
+    out["model_away"] = float(model_probs["away"])
+    out["home"] = out["model_home"]*(1-w) + moneyline["home_prob"]*w
+    out["draw"] = out["model_draw"]*(1-w) + moneyline["draw_prob"]*w
+    out["away"] = out["model_away"]*(1-w) + moneyline["away_prob"]*w
+    total = out["home"] + out["draw"] + out["away"]
+    for k in ("home", "draw", "away"):
+        out[k] = out[k] / total * 100
+    out["market_calibrated"] = True
+    out["market_weight"] = w
+    return out
+
+
+def value_reading(model_probability_pct, current_odd):
+    p = max(min(float(model_probability_pct)/100.0, .995), .005)
+    fair = 1.0/p
+    edge = p*float(current_odd) - 1.0
+    if edge >= 0.05:
+        status, color = "🟢 Valor", "#16a34a"
+    elif edge <= -0.05:
+        status, color = "🔴 Sem valor", "#dc2626"
+    else:
+        status, color = "🟡 Neutra", "#b7791f"
+    return {"fair_odd": fair, "edge": edge*100, "status": status, "color": color}
+
+
+def render_market_value_panel(team_a, team_b, probs, moneyline):
+    if not moneyline or not probs:
+        return
+    st.markdown("### 💹 Mercado × odd justa GM SCORE")
+    st.caption("As odds públicas servem apenas para calibrar a leitura. A probabilidade de mercado abaixo remove a margem do 1X2; a odd justa continua sendo calculada pelo modelo independente do GM SCORE.")
+    model = {
+        "home": probs.get("model_home", probs.get("home")),
+        "draw": probs.get("model_draw", probs.get("draw")),
+        "away": probs.get("model_away", probs.get("away")),
+    }
+    labels = [("home", f"🏠 {team_a}"), ("draw", "🤝 Empate"), ("away", f"✈️ {team_b}")]
+    cols = st.columns(3)
+    for col, (key, label) in zip(cols, labels):
+        odd = moneyline[f"{key}_odd"]
+        marketp = moneyline[f"{key}_prob"]
+        vr = value_reading(model[key], odd)
+        with col:
+            st.markdown(f"**{label}**")
+            st.markdown(f"Mercado: **{odd:.2f}**")
+            st.caption(f"Mercado sem margem: {marketp:.1f}% · GM: {model[key]:.1f}%")
+            st.markdown(f'<span style="font-weight:700;color:{vr["color"]}">{vr["status"]}</span> · justa **{vr["fair_odd"]:.2f}** · edge **{vr["edge"]:+.1f}%**', unsafe_allow_html=True)
+    st.caption(f"Fonte pública de referência: {moneyline.get('source','OddsPortal')} · pode haver pequena defasagem; confira a cotação antes de apostar.")
 
 def to_num(value):
     if value is None or (isinstance(value, float) and pd.isna(value)):
@@ -2644,6 +2863,16 @@ def render_analysis():
         probs = contextual_victory_probabilities(team_a, team_b, a, b, analysis_context)
     if probs is None:
         probs = victory_probabilities(team_a, team_b, df)
+
+    # Mercado público entra apenas como calibrador, sem API key. Em torneios
+    # com pouca amostra recebe peso moderado; em ligas maduras o modelo próprio
+    # do GM SCORE permanece dominante.
+    market_odds = fetch_public_market_odds(team_a, team_b, league_name)
+    moneyline = market_odds if market_odds and not market_odds.get("error") else None
+    if probs and moneyline:
+        market_weight = 0.34 if comp_sample < 6 else 0.22
+        probs = calibrate_result_with_market(probs, moneyline, market_weight)
+
     if probs:
         st.markdown("### 🏆 Chance de resultado")
         x, y, z = st.columns(3)
@@ -2666,6 +2895,13 @@ def render_analysis():
             st.caption(f"Base contextual: força global do clube + histórico individual + nível da liga doméstica + forma recente + histórico da competição ({histn} edição(ões) encontrada(s))" + (f" + {h2n} confronto(s) direto(s)" if h2n else "") + (f". {detail}" if detail else ".") + elo_text)
         else:
             st.caption("Estimativa calibrada por força ofensiva/defensiva, desempenho casa/fora, fase recente, tamanho da amostra e confronto direto com peso reduzido.")
+        if probs.get("market_calibrated") and moneyline:
+            st.caption(f"💹 Chance final calibrada com {probs.get('market_weight',0)*100:.0f}% de peso do mercado público sem margem e {100-probs.get('market_weight',0)*100:.0f}% do modelo GM SCORE.")
+
+    if moneyline and probs:
+        render_market_value_panel(team_a, team_b, probs, moneyline)
+    else:
+        st.caption("💹 Odds públicas: não encontrei uma cotação 1X2 confiável para este confronto agora; a análise acima segue somente o modelo GM SCORE.")
 
     expectations = render_match_probability_dashboard(a, b, team_a, team_b, df)
 
@@ -2679,7 +2915,7 @@ def render_analysis():
             c1.markdown(f"**{item['Mercado']}**  \n<small>{item['Base']}</small>", unsafe_allow_html=True)
             chance = item["Chance"]
             chance_color = "#16a34a" if chance >= 80 else "#111827"
-            c2.markdown(f'<div style="text-align:center"><div style="font-size:.85rem;color:#6b7280">Chance</div><div style="font-size:2rem;font-weight:800;color:{chance_color}">{chance:.0f}%</div></div>', unsafe_allow_html=True)
+            c2.markdown(f'<div style="text-align:center"><div style="font-size:.85rem;color:#6b7280">Chance</div><div style="font-size:1.65rem;font-weight:800;color:{chance_color}">{chance:.0f}%</div></div>', unsafe_allow_html=True)
             c3.markdown(f"**{item['Leitura']}**")
             st.divider()
     else:
