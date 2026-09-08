@@ -593,29 +593,216 @@ def _public_odds_from_text(text, home, away):
     }
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def find_sofascore_event(home, away, day_iso=None, search_days=2):
+    """Localiza o evento EXATO no calendário público do SofaScore.
+
+    A busca é feita por nomes das duas equipes e respeita mandante/visitante.
+    Isso evita o problema de capturar três números pertencentes a outro jogo da
+    mesma página — a causa das odds incorretas que apareciam anteriormente.
+    """
+    base_day = date.fromisoformat(day_iso) if day_iso else datetime.now(BRASILIA_TZ).date()
+    wanted_h, wanted_a = str(home or ''), str(away or '')
+    candidates = []
+    # Hoje primeiro; depois dias próximos para partidas carregadas antes/depois.
+    offsets = [0]
+    for n in range(1, max(0, int(search_days)) + 1):
+        offsets.extend([-n, n])
+    for off in offsets:
+        d = base_day + timedelta(days=off)
+        url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{d.isoformat()}"
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=10)
+            if r.status_code != 200:
+                continue
+            payload = r.json()
+            for ev in payload.get("events", []):
+                eh = str((ev.get("homeTeam") or {}).get("name") or "")
+                ea = str((ev.get("awayTeam") or {}).get("name") or "")
+                sh = _team_similarity(wanted_h, eh)
+                sa = _team_similarity(wanted_a, ea)
+                if sh >= 0.78 and sa >= 0.78:
+                    candidates.append((sh + sa, ev, d.isoformat()))
+        except Exception:
+            continue
+    if not candidates:
+        return None
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    score, ev, event_day = candidates[0]
+    # Exige correspondência forte das duas pontas para não trocar equipes homônimas.
+    if score < 1.68:
+        return None
+    return {
+        "event_id": ev.get("id"),
+        "date": event_day,
+        "home": (ev.get("homeTeam") or {}).get("name"),
+        "away": (ev.get("awayTeam") or {}).get("name"),
+        "tournament": ((ev.get("tournament") or {}).get("uniqueTournament") or {}).get("name") or (ev.get("tournament") or {}).get("name"),
+    }
+
+
+def _decimal_odd(value):
+    try:
+        if value is None:
+            return None
+        if isinstance(value, str) and '/' in value:
+            a, b = value.split('/', 1)
+            return 1.0 + float(a) / float(b)
+        v = float(str(value).replace(',', '.'))
+        return v if 1.01 <= v <= 50.0 else None
+    except Exception:
+        return None
+
+
+def _extract_sofascore_1x2(payload):
+    """Extrai SOMENTE o mercado 1X2 de tempo regulamentar do SofaScore.
+
+    O endpoint também devolve 1X2 do 1º tempo e outros mercados com escolhas
+    1/X/2. Antes o código varria todos eles e podia selecionar a tríade errada
+    apenas porque a margem parecia plausível. Agora o mercado precisa estar
+    explicitamente identificado como Full time/tempo regulamentar (ou marketId 1
+    com period Full-time), evitando trocar a odd do jogo por outro 1X2.
+    """
+    found = []
+
+    def is_full_time_1x2(obj):
+        if not isinstance(obj, dict):
+            return False
+        name = str(obj.get("marketName") or obj.get("name") or "").strip().lower()
+        group = str(obj.get("group") or "").strip().lower()
+        period = str(obj.get("period") or "").strip().lower()
+        mid = obj.get("marketId", obj.get("id"))
+        full_names = {"full time", "full-time", "match result", "resultado final", "1x2"}
+        full_periods = {"full time", "full-time", "ft", "match"}
+        # SofaScore tradicional: marketId=1 / marketName='Full time'.
+        if str(mid) == "1" and (not period or period in full_periods):
+            return True
+        if name in full_names and (not period or period in full_periods):
+            return True
+        if group == "1x2" and period in full_periods:
+            return True
+        return False
+
+    def walk(obj):
+        if isinstance(obj, dict):
+            choices = obj.get("choices")
+            if isinstance(choices, list) and is_full_time_1x2(obj):
+                vals = {}
+                for ch in choices:
+                    if not isinstance(ch, dict):
+                        continue
+                    cname = str(ch.get("name") or ch.get("choice") or ch.get("label") or "").strip().upper()
+                    if cname not in {"1", "X", "2"}:
+                        continue
+                    odd = None
+                    # O SofaScore oficial normalmente entrega fractionalValue.
+                    # Suportamos também estruturas com decimalValue/value.decimal.
+                    nested_value = ch.get("value") if isinstance(ch.get("value"), dict) else {}
+                    candidates = [
+                        ch.get("decimalValue"), ch.get("decimal"), nested_value.get("decimal"),
+                        ch.get("fractionalValue"), ch.get("odds"),
+                    ]
+                    for raw in candidates:
+                        odd = _decimal_odd(raw)
+                        if odd is not None:
+                            break
+                    if odd is not None:
+                        vals[cname] = odd
+                if set(vals) == {"1", "X", "2"}:
+                    h, d, a = vals["1"], vals["X"], vals["2"]
+                    z = 1/h + 1/d + 1/a
+                    # Margem plausível para 1X2 pré-jogo. Fora disso, rejeita.
+                    if 0.96 <= z <= 1.22:
+                        found.append((abs(z - 1.055), h, d, a))
+            for v in obj.values():
+                walk(v)
+        elif isinstance(obj, list):
+            for v in obj:
+                walk(v)
+
+    walk(payload)
+    if not found:
+        return None
+    _, h, d, a = sorted(found)[0]
+    inv = [1/h, 1/d, 1/a]
+    z = sum(inv)
+    return {
+        "home_odd": h, "draw_odd": d, "away_odd": a,
+        "home_prob": inv[0]/z*100, "draw_prob": inv[1]/z*100, "away_prob": inv[2]/z*100,
+        "overround": (z-1)*100,
+    }
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_sofascore_h2h(home, away):
+    """H2H público e dinâmico para o confronto carregado, sem chave de API."""
+    event = find_sofascore_event(home, away)
+    if not event or not event.get("event_id"):
+        return []
+    url = f"https://api.sofascore.com/api/v1/event/{event['event_id']}/h2h/events"
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=10)
+        if r.status_code != 200:
+            return []
+        payload = r.json()
+        rows = []
+        for ev in payload.get("events", []):
+            status = str((ev.get("status") or {}).get("type") or '').lower()
+            hs, aas = ev.get("homeScore") or {}, ev.get("awayScore") or {}
+            hg = hs.get("normaltime", hs.get("current"))
+            ag = aas.get("normaltime", aas.get("current"))
+            if status not in {"finished", "ended"} or hg is None or ag is None:
+                continue
+            ts = ev.get("startTimestamp")
+            dt = datetime.fromtimestamp(ts, BRASILIA_TZ).date().isoformat() if ts else ""
+            rows.append({
+                "home": (ev.get("homeTeam") or {}).get("name"),
+                "away": (ev.get("awayTeam") or {}).get("name"),
+                "hg": float(hg), "ag": float(ag), "date": dt,
+                "source": "SofaScore H2H",
+            })
+        rows.sort(key=lambda x: x.get("date") or "")
+        return rows[-10:]
+    except Exception:
+        return []
+
+
 @st.cache_data(ttl=180, show_spinner=False)
 def fetch_public_market_odds(home, away, league_name):
-    """Busca odds 1X2 em fonte pública, sem chave. Retorna None se a fonte
-    não puder ser lida. A análise nunca depende deste retorno para funcionar.
+    """Busca 1X2 público ligado ao ID EXATO do evento, sem chave.
+
+    OddsPortal por varredura de texto foi removido como fonte automática porque
+    páginas agregadoras podem colocar várias odds próximas e gerar associação ao
+    jogo errado. Se o evento/mercado exato não puder ser confirmado, retornamos
+    indisponível em vez de mostrar uma cotação incorreta.
     """
-    paths = ODDSPORTAL_PATHS.get(league_name, [])
-    # Por último tenta a página geral de futebol, útil para jogos do dia.
-    urls = [f"https://www.oddsportal.com/football/{p.strip('/')}/" for p in paths]
-    urls.append("https://www.oddsportal.com/football/")
-    errors = []
+    event = find_sofascore_event(home, away)
+    if not event or not event.get("event_id"):
+        return {"error": "evento público exato não localizado"}
+    eid = event["event_id"]
+    urls = [
+        f"https://api.sofascore.com/api/v1/event/{eid}/odds/1/all",
+        f"https://www.sofascore.com/api/v1/event/{eid}/odds/1/all",
+    ]
     for url in urls:
         try:
-            r = requests.get(url, headers=HEADERS, timeout=12)
-            if r.status_code != 200 or len(r.text) < 500:
-                errors.append(f"HTTP {r.status_code}")
+            r = requests.get(url, headers=HEADERS, timeout=10)
+            if r.status_code != 200:
                 continue
-            parsed = _public_odds_from_text(_extract_visible_text(r.text), home, away)
+            parsed = _extract_sofascore_1x2(r.json())
             if parsed:
-                parsed.update({"source": "OddsPortal", "source_url": url, "updated_at": datetime.now(BRASILIA_TZ).isoformat(timespec="minutes")})
+                parsed.update({
+                    "source": "SofaScore (mercado público)",
+                    "source_url": url,
+                    "event_id": eid,
+                    "event_home": event.get("home"),
+                    "event_away": event.get("away"),
+                    "updated_at": datetime.now(BRASILIA_TZ).isoformat(timespec="minutes"),
+                })
                 return parsed
-        except Exception as exc:
-            errors.append(str(exc))
-    return {"error": "odds públicas indisponíveis", "details": errors[-2:]}
+        except Exception:
+            continue
+    return {"error": "mercado 1X2 exato indisponível para este evento"}
 
 
 def adaptive_market_weight(model_probs, moneyline, base_weight):
@@ -740,7 +927,7 @@ def render_market_value_panel(team_a, team_b, probs, moneyline):
             st.markdown(f"Mercado: **{odd:.2f}**")
             st.caption(f"Mercado sem margem: {marketp:.1f}% · GM final: {model[key]:.1f}%")
             st.markdown(f'<span style="font-weight:700;color:{vr["color"]}">{vr["status"]}</span> · justa **{vr["fair_odd"]:.2f}** · edge **{vr["edge"]:+.1f}%**', unsafe_allow_html=True)
-    st.caption(f"📌 Avaliação: cruzamos desempenho atual, força global, nível da liga e produção ofensiva/defensiva com a referência pública de mercado ({moneyline.get('source','OddsPortal')}). A odd justa usa exatamente a probabilidade final mostrada pelo GM SCORE.")
+    st.caption(f"📌 Avaliação: cruzamos desempenho atual, força global, nível da liga e produção ofensiva/defensiva com a referência pública de mercado ({moneyline.get('source','mercado público')}). A odd justa usa exatamente a probabilidade final mostrada pelo GM SCORE.")
 
 def to_num(value):
     if value is None or (isinstance(value, float) and pd.isna(value)):
@@ -1730,9 +1917,13 @@ def contextual_analysis_rows(team_a, team_b, competition_name, competition_df, r
     a = build(base_a, prof_a, "home")
     b = build(base_b, prof_b, "away")
 
-    # H2H atual + edições anteriores do próprio torneio.
-    h2h_pool = list(competition_df.attrs.get("matches", [])) + list(hist.get("matches", []))
-    h2d = _h2h_details(team_a, team_b, h2h_pool, 8)
+    # H2H atual + edições anteriores + histórico público dinâmico do confronto.
+    # Para jogos do dia, o SofaScore fornece o event_id exato e o histórico entre
+    # as mesmas equipes; isso torna o H2H genérico para qualquer competição.
+    public_h2h = fetch_sofascore_h2h(team_a, team_b)
+    h2h_pool = (list(competition_df.attrs.get("matches", [])) +
+                list(hist.get("matches", [])) + list(public_h2h or []))
+    h2d = _h2h_details(team_a, team_b, h2h_pool, 10)
     hh, ah, h2n = h2d["home_share"], h2d["away_share"], h2d["games"]
 
     def relevance(prof):
@@ -1858,7 +2049,7 @@ def global_quality_prior(home, away, df=None, ctx=None):
     h2h_home = float(ctx.get("h2h_home", 0.5) or 0.5)
     h2h_away = float(ctx.get("h2h_away", 0.5) or 0.5)
     h2h_reliability = min(h2h_games / 5.0, 1.0)
-    h2h_component = (h2h_home - h2h_away) * 330.0 * h2h_reliability
+    h2h_component = (h2h_home - h2h_away) * 430.0 * h2h_reliability
 
     if helo is not None and aelo is not None:
         # Elo segue importante, mas não pode sozinho apagar liga + H2H + produção.
@@ -1973,7 +2164,7 @@ def apply_evidence_consensus_guardrail(probs, quality_prior, ctx=None, moneyline
     hg = float(ctx.get("h2h_home", .5) or .5)
     ag = float(ctx.get("h2h_away", .5) or .5)
     if n >= 3 and abs(hg-ag) >= .20:
-        w = 1.8 + min(n, 8) * .10
+        w = 2.25 + min(n, 8) * .14
         if hg > ag: score_h += w; reasons_h.append("H2H")
         else: score_a += w; reasons_a.append("H2H")
 
@@ -2013,9 +2204,9 @@ def apply_evidence_consensus_guardrail(probs, quality_prior, ctx=None, moneyline
 
     side = None
     diff = score_h - score_a
-    if diff >= 2.4 and len(set(reasons_h)) >= 2:
+    if diff >= 2.15 and len(set(reasons_h)) >= 2:
         side = 0
-    elif diff <= -2.4 and len(set(reasons_a)) >= 2:
+    elif diff <= -2.15 and len(set(reasons_a)) >= 2:
         side = 2
     if side is None:
         return probs
@@ -3493,7 +3684,7 @@ def render_analysis():
         if analysis_context and analysis_context.get("h2h_games", 0):
             n = int(analysis_context.get("h2h_games", 0))
             hw = int(analysis_context.get("h2h_home_wins", 0)); aw = int(analysis_context.get("h2h_away_wins", 0)); dd = int(analysis_context.get("h2h_draws", 0))
-            eval_bits.append(f"confronto direto histórico ({n} jogo(s))")
+            eval_bits.append(f"confronto direto histórico verificado ({n} jogo(s))")
             h2txt = f" H2H encontrado: {team_a} {hw}V · {dd}E · {team_b} {aw}V."
         if moneyline:
             eval_bits.append("mercado público como validação externa")
@@ -3502,7 +3693,7 @@ def render_analysis():
     if moneyline and probs:
         render_market_value_panel(team_a, team_b, probs, moneyline)
     else:
-        st.caption("💹 Odds públicas: não encontrei uma cotação 1X2 confiável para este confronto agora; a análise acima segue somente o modelo GM SCORE.")
+        st.caption("💹 Odds públicas: não encontrei um mercado 1X2 ligado com segurança ao evento exato. Para evitar cotação de outro jogo, o GM SCORE não exibe odds quando a associação não pode ser confirmada.")
 
     expectations = render_match_probability_dashboard(a, b, team_a, team_b, df)
 
