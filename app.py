@@ -3600,6 +3600,56 @@ def render_analysis():
         st.session_state["_main_competition_pending"] = main_league_name
         st.rerun()
 
+    # Jogos de hoje também aparecem na tela principal. Depois que o usuário
+    # carrega um confronto (pela lista ou manualmente), a lista fica oculta
+    # para esta competição e só volta a aparecer quando a competição mudar.
+    main_games_hidden = st.session_state.get("_main_games_hidden_competition") == league_name
+    if not main_games_hidden:
+        st.markdown("### 📅 Jogos de hoje")
+        st.caption("🕒 Horário de Brasília · toque em **Analisar** para carregar o confronto")
+        try:
+            today_fixtures = [
+                f for f in load_today_fixtures()
+                if f.get("competition") == league_name and valid_daily_fixture(f)
+            ]
+        except Exception:
+            today_fixtures = []
+        today_fixtures = sorted(today_fixtures, key=lambda f: str(f.get("time") or "99:99"))
+
+        if today_fixtures:
+            for i, f in enumerate(today_fixtures):
+                game_home = resolve_team_name(f.get("home"), teams) or f.get("home")
+                game_away = resolve_team_name(f.get("away"), teams) or f.get("away")
+                time_text = str(f.get("time") or "").strip()
+                if time_text and time_text.lower() != "nan":
+                    st.markdown(f"**⚽ {game_home} × {game_away}**  \n🕒 {time_text}")
+                else:
+                    st.markdown(f"**⚽ {game_home} × {game_away}**")
+                if st.button(
+                    "🔎 Analisar",
+                    key=f"main_today_{i}_{clean_col(str(game_home))}_{clean_col(str(game_away))}",
+                    use_container_width=True,
+                ):
+                    resolved_game_home = resolve_team_name(game_home, teams)
+                    resolved_game_away = resolve_team_name(game_away, teams)
+                    if not resolved_game_home or not resolved_game_away:
+                        st.warning("Não consegui associar este jogo às equipes da competição.")
+                    else:
+                        st.session_state.selected_home = resolved_game_home
+                        st.session_state.selected_away = resolved_game_away
+                        st.session_state.loaded_home = resolved_game_home
+                        st.session_state.loaded_away = resolved_game_away
+                        st.session_state.loaded_competition = league_name
+                        st.session_state["_main_games_hidden_competition"] = league_name
+                        st.session_state["home_widget"] = resolved_game_home
+                        st.session_state["away_widget"] = resolved_game_away
+                        st.session_state["_synced_loaded_signature"] = f"{league_name}|{resolved_game_home}|{resolved_game_away}"
+                        st.rerun()
+            st.markdown("---")
+        else:
+            st.info("Nenhum jogo desta competição encontrado para hoje.")
+            st.markdown("---")
+
     if loaded_home_now and loaded_away_now:
         st.caption(f"✅ Jogo carregado: {loaded_home_now} × {loaded_away_now}")
 
@@ -3630,6 +3680,7 @@ def render_analysis():
         st.session_state.selected_away = team_b
         st.session_state.loaded_home = team_a
         st.session_state.loaded_away = team_b
+        st.session_state["_main_games_hidden_competition"] = league_name
         st.session_state["_synced_loaded_signature"] = f"{league_name}|{team_a}|{team_b}"
         st.rerun()
 
@@ -3807,6 +3858,7 @@ def render_sidebar_today():
             st.session_state["_goto_comp"] = f["competition"]
             st.session_state["_goto_home"] = f["home"]
             st.session_state["_goto_away"] = f["away"]
+            st.session_state["_main_games_hidden_competition"] = f["competition"]
             st.rerun()
 
 
