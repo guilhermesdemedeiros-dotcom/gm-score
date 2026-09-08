@@ -179,6 +179,34 @@ COMPETITION_ICONS = {
     "UEFA Conference League": "🏆",
 }
 
+# Força relativa aproximada do nível competitivo da liga doméstica.
+# O valor não é uma "nota absoluta"; serve somente para traduzir desempenho
+# doméstico para partidas entre clubes de campeonatos diferentes.
+LEAGUE_STRENGTH = {
+    "Inglaterra - Premier League": 1.15, "Espanha - La Liga": 1.10,
+    "Itália - Serie A": 1.08, "Alemanha - Bundesliga": 1.08,
+    "França - Ligue 1": 1.04, "Portugal - Liga Portugal": 0.99,
+    "Holanda - Eredivisie": 0.98, "Turquia - Süper Lig": 0.94,
+    "Escócia - Premiership": 0.90, "Brasil - Série A": 1.00,
+    "Brasil - Série B": 0.88, "Argentina - Liga Profesional": 0.96,
+    "México - Liga MX": 0.94, "Colômbia - Primera A": 0.90,
+    "Estados Unidos - MLS": 0.92, "Arábia Saudita - Saudi Pro League": 0.93,
+}
+
+# Baselines conservadores de torneio. Gols são recalculados dinamicamente com
+# edições anteriores quando o OpenFootball estiver disponível. Escanteios e
+# cartões funcionam como regressão à média quando a competição atual ainda não
+# possui amostra suficiente.
+COMPETITION_PRIORS = {
+    "UEFA Champions League": {"Gols": 2.85, "Escanteios": 9.70, "Cartões": 4.50},
+    "UEFA Europa League": {"Gols": 2.75, "Escanteios": 9.60, "Cartões": 4.70},
+    "UEFA Conference League": {"Gols": 2.80, "Escanteios": 9.55, "Cartões": 4.65},
+    "CONMEBOL Libertadores": {"Gols": 2.45, "Escanteios": 9.40, "Cartões": 5.10},
+    "CONMEBOL Sul-Americana": {"Gols": 2.40, "Escanteios": 9.35, "Cartões": 5.20},
+}
+
+CONTEXTUAL_COMPETITIONS = set(COMPETITION_PRIORS)
+
 def competition_display_name(name):
     return f"{COMPETITION_ICONS.get(name, '🏆')} {name}"
 
@@ -418,26 +446,33 @@ def averages_football_data(df, last_games_per_team=0):
     teams = sorted(set(df["HomeTeam"]).union(df["AwayTeam"]))
     acc = {t: empty_team(t) for t in teams}
 
-    # Limite por equipe, não por liga: mais intuitivo para comparação.
-    selected_indices = None
+    # Limite EXATO por equipe. A implementação anterior criava a união dos
+    # últimos N índices de todos os clubes e podia acabar usando mais de N jogos
+    # para um time. Aqui cada lado só recebe a partida se ela pertence à sua
+    # própria janela recente.
+    allowed = None
     if last_games_per_team:
-        selected_indices = set()
+        allowed = {}
         for team in teams:
             mask = (df["HomeTeam"] == team) | (df["AwayTeam"] == team)
-            selected_indices.update(df[mask].tail(last_games_per_team).index.tolist())
+            allowed[team] = set(df[mask].tail(last_games_per_team).index.tolist())
 
     for idx, g in df.iterrows():
-        if selected_indices is not None and idx not in selected_indices:
-            continue
         home, away = g["HomeTeam"], g["AwayTeam"]
         hg, ag = float(g["FTHG"]), float(g["FTAG"])
         H, A = acc[home], acc[away]
-        H["Jogos"] += 1; A["Jogos"] += 1
-        H["Gols pró"] += hg; H["Gols contra"] += ag
-        A["Gols pró"] += ag; A["Gols contra"] += hg
-        for metric, (hc, ac) in FD_STATS.items():
-            if hc in df.columns: add_metric(H, metric, g.get(hc))
-            if ac in df.columns: add_metric(A, metric, g.get(ac))
+        use_h = allowed is None or idx in allowed[home]
+        use_a = allowed is None or idx in allowed[away]
+        if use_h:
+            H["Jogos"] += 1
+            H["Gols pró"] += hg; H["Gols contra"] += ag
+            for metric, (hc, ac) in FD_STATS.items():
+                if hc in df.columns: add_metric(H, metric, g.get(hc))
+        if use_a:
+            A["Jogos"] += 1
+            A["Gols pró"] += ag; A["Gols contra"] += hg
+            for metric, (hc, ac) in FD_STATS.items():
+                if ac in df.columns: add_metric(A, metric, g.get(ac))
     out = finish_averages(acc)
     out.attrs["updated_until"] = df.attrs.get("updated_until")
     raw_matches = []
@@ -1034,6 +1069,274 @@ def load_open_results(comp_id, year, season_type):
     if not matches:
         raise RuntimeError("sem resultados estruturados disponíveis para esta temporada")
     return averages_open_matches(matches)
+
+
+# ============================================================
+# MODELO CONTEXTUAL ENTRE COMPETIÇÕES
+# ============================================================
+def _norm_team(value):
+    return clean_col(value or "")
+
+
+def _find_team_in_df(team, df):
+    if df is None or not isinstance(df, pd.DataFrame) or "Time" not in df.columns:
+        return None
+    wanted = _norm_team(team)
+    exact = df[df["Time"].astype(str).map(_norm_team) == wanted]
+    if not exact.empty:
+        return exact.iloc[0]
+    resolved = resolve_team_name(team, df["Time"].dropna().astype(str).tolist()) if "resolve_team_name" in globals() else None
+    if resolved:
+        hit = df[df["Time"] == resolved]
+        if not hit.empty:
+            return hit.iloc[0]
+    # Tolerância para sufixos FC/CF e variantes de nomes.
+    for _, row in df.iterrows():
+        a, b = wanted, _norm_team(row.get("Time"))
+        if a and b and (a in b or b in a) and min(len(a), len(b)) >= 5:
+            return row
+    return None
+
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def _domestic_dataset(competition_name, recent_games=10):
+    cfg = COMPETITIONS.get(competition_name)
+    if not cfg:
+        raise RuntimeError("competição doméstica desconhecida")
+    year = current_season_year(cfg["season"])
+    if cfg["kind"] == "football_data":
+        raw = load_football_data(cfg["code"], year)
+        return averages_football_data(raw, recent_games)
+    if cfg["kind"] == "hybrid_extra":
+        try:
+            raw = load_extra_football_data(cfg["extra_code"], year)
+            return averages_football_data(raw, recent_games)
+        except Exception:
+            pass
+        try:
+            return load_open_results(cfg["id"], year, cfg["season"])
+        except Exception:
+            return load_livescore_season(competition_name, year)
+    if cfg["kind"] == "open_results":
+        try:
+            return load_open_results(cfg["id"], year, cfg["season"])
+        except Exception:
+            return load_livescore_season(competition_name, year)
+    raise RuntimeError("sem fonte doméstica")
+
+
+def _candidate_domestic_competitions(team):
+    # Se o clube está em um elenco doméstico conhecido, evita varrer todas as ligas.
+    hinted = []
+    for comp, roster in CURRENT_TEAM_ROSTERS.items():
+        if comp in CONTEXTUAL_COMPETITIONS:
+            continue
+        if any(_norm_team(team) == _norm_team(x) for x in roster):
+            hinted.append(comp)
+    # Para clubes europeus, os nove campeonatos com CSV detalhado são baratos e
+    # ficam em cache depois da primeira consulta.
+    european = list(EUROPE_LEAGUES.keys())
+    others = [
+        "Brasil - Série A", "Brasil - Série B", "Argentina - Liga Profesional",
+        "México - Liga MX", "Colômbia - Primera A", "Estados Unidos - MLS",
+        "Arábia Saudita - Saudi Pro League",
+    ]
+    ordered = hinted + european + others
+    seen = set(); out = []
+    for comp in ordered:
+        if comp not in seen and comp in COMPETITIONS:
+            seen.add(comp); out.append(comp)
+    return out
+
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def load_team_domestic_profile(team, recent_games=10):
+    for comp in _candidate_domestic_competitions(team):
+        try:
+            data = _domestic_dataset(comp, recent_games)
+            row = _find_team_in_df(team, data)
+            if row is None:
+                continue
+            matches = data.attrs.get("matches", [])
+            canonical = str(row.get("Time", team))
+            season_strength, gd = _season_strength(canonical, matches) if matches else (0.5, 0.0)
+            form, form_gd = _team_form(canonical, matches, min(6, recent_games)) if matches else (season_strength, gd)
+            games = int(float(row.get("Jogos", 0) or 0))
+            return {
+                "team": canonical,
+                "competition": comp,
+                "league_strength": LEAGUE_STRENGTH.get(comp, 0.95),
+                "row": row.to_dict(),
+                "matches": matches,
+                "games": games,
+                "season_strength": season_strength,
+                "form": form,
+                "goal_diff": gd,
+                "form_goal_diff": form_gd,
+            }
+        except Exception:
+            continue
+    return None
+
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def load_competition_history_context(competition_name, current_year, lookback=5):
+    cfg = COMPETITIONS.get(competition_name, {})
+    comp_id = cfg.get("id")
+    season_type = cfg.get("season")
+    if not comp_id or competition_name not in CONTEXTUAL_COMPETITIONS:
+        return {"matches": [], "goal_avg": None, "seasons": 0}
+    all_matches = []
+    seasons = 0
+    # Edições anteriores: úteis para H2H e média de gols do próprio torneio.
+    for offset in range(1, lookback + 1):
+        y = current_year - offset
+        try:
+            hist = load_open_results(comp_id, y, season_type)
+            ms = hist.attrs.get("matches", [])
+            if ms:
+                all_matches.extend(ms)
+                seasons += 1
+        except Exception:
+            continue
+    goals = [float(m.get("hg", 0)) + float(m.get("ag", 0)) for m in all_matches if m.get("hg") is not None and m.get("ag") is not None]
+    return {
+        "matches": all_matches,
+        "goal_avg": (sum(goals) / len(goals)) if goals else None,
+        "seasons": seasons,
+    }
+
+
+def _blend_metric(current_value, current_games, domestic_value, prior_value, league_strength=1.0, metric=""):
+    cv = None if current_value is None or pd.isna(current_value) else float(current_value)
+    dv = None if domestic_value is None or pd.isna(domestic_value) else float(domestic_value)
+    pv = None if prior_value is None or pd.isna(prior_value) else float(prior_value)
+    # Dados do torneio passam a dominar gradualmente; com 0 jogos, a base é
+    # doméstica + histórico da competição.
+    w_current = min(max(float(current_games), 0.0) / 8.0, 0.78)
+    # Traduz desempenho doméstico pelo nível da liga, mas com ajuste pequeno.
+    strength_adj = max(0.90, min(1.10, 1.0 + (float(league_strength) - 1.0) * 0.55))
+    if metric in ("Gols pró", "Finalizações", "Chutes no alvo", "Escanteios") and dv is not None:
+        dv *= strength_adj
+    elif metric == "Gols contra" and dv is not None:
+        dv /= strength_adj
+    vals = []
+    if cv is not None:
+        vals.append((cv, w_current))
+    remaining = 1.0 - sum(w for _, w in vals)
+    if dv is not None:
+        wd = remaining * (0.72 if pv is not None else 1.0)
+        vals.append((dv, wd)); remaining -= wd
+    if pv is not None and remaining > 0:
+        vals.append((pv, remaining))
+    if not vals:
+        return None
+    den = sum(w for _, w in vals)
+    return sum(v*w for v,w in vals) / den if den else None
+
+
+def contextual_analysis_rows(team_a, team_b, competition_name, competition_df, recent_games=10):
+    """Completa amostras pequenas com histórico doméstico + nível da liga + torneio."""
+    base_a = competition_df[competition_df["Time"] == team_a].iloc[0].to_dict()
+    base_b = competition_df[competition_df["Time"] == team_b].iloc[0].to_dict()
+    ga = int(float(base_a.get("Jogos", 0) or 0)); gb = int(float(base_b.get("Jogos", 0) or 0))
+    # Só há necessidade de complemento real quando a competição é continental ou
+    # uma das equipes tem menos de 6 jogos na base selecionada.
+    if competition_name not in CONTEXTUAL_COMPETITIONS and min(ga, gb) >= 6:
+        return pd.Series(base_a), pd.Series(base_b), None
+
+    prof_a = load_team_domestic_profile(team_a, recent_games)
+    prof_b = load_team_domestic_profile(team_b, recent_games)
+    hist = load_competition_history_context(competition_name, current_season_year(COMPETITIONS[competition_name]["season"]), 5) if competition_name in CONTEXTUAL_COMPETITIONS else {"matches": [], "goal_avg": None, "seasons": 0}
+    priors = dict(COMPETITION_PRIORS.get(competition_name, {}))
+    if hist.get("goal_avg"):
+        priors["Gols"] = max(1.8, min(3.8, float(hist["goal_avg"])))
+
+    def build(base, prof, side):
+        out = dict(base)
+        cg = int(float(base.get("Jogos", 0) or 0))
+        prow = (prof or {}).get("row", {})
+        strength = (prof or {}).get("league_strength", 0.95)
+        # Priors por equipe; para mercados totais dividimos em duas parcelas.
+        goal_team_prior = (priors.get("Gols") / 2.0) if priors.get("Gols") else None
+        corner_team_prior = (priors.get("Escanteios") / 2.0) if priors.get("Escanteios") else None
+        card_team_prior = (priors.get("Cartões") / 2.0) if priors.get("Cartões") else None
+        prior_map = {
+            "Gols pró": goal_team_prior, "Gols contra": goal_team_prior,
+            "Escanteios": corner_team_prior, "Amarelos": card_team_prior,
+            "Vermelhos": 0.10 if priors.get("Cartões") else None,
+            "Finalizações": None, "Chutes no alvo": None, "Faltas": None,
+        }
+        for metric in ["Gols pró", "Gols contra", "Escanteios", "Amarelos", "Vermelhos", "Faltas", "Finalizações", "Chutes no alvo"]:
+            out[metric] = _blend_metric(
+                base.get(metric), cg, prow.get(metric), prior_map.get(metric),
+                strength, metric,
+            )
+        # Mantém o tamanho de amostra real da competição na tela, mas anota a base
+        # contextual separadamente.
+        return pd.Series(out)
+
+    a = build(base_a, prof_a, "home")
+    b = build(base_b, prof_b, "away")
+
+    # H2H atual + edições anteriores do próprio torneio.
+    h2h_pool = list(competition_df.attrs.get("matches", [])) + list(hist.get("matches", []))
+    hh, ah, h2n = _h2h(team_a, team_b, h2h_pool, 8)
+
+    def relevance(prof):
+        if not prof:
+            return 0.50
+        # 55% nível da liga, 30% desempenho de temporada, 15% forma recente.
+        league_component = max(0.0, min(1.0, (prof["league_strength"] - 0.82) / 0.36))
+        return 0.55 * league_component + 0.30 * prof.get("season_strength", .5) + 0.15 * prof.get("form", .5)
+
+    ctx = {
+        "home_profile": prof_a, "away_profile": prof_b,
+        "history": hist, "h2h_games": h2n, "h2h_home": hh, "h2h_away": ah,
+        "home_relevance": relevance(prof_a), "away_relevance": relevance(prof_b),
+        "competition_games_home": ga, "competition_games_away": gb,
+        "priors": priors,
+    }
+    return a, b, ctx
+
+
+def contextual_victory_probabilities(home, away, a, b, ctx):
+    if not ctx:
+        return None
+    hgf, hga = metric_value(a, "Gols pró"), metric_value(a, "Gols contra")
+    agf, aga = metric_value(b, "Gols pró"), metric_value(b, "Gols contra")
+    if None in (hgf, hga, agf, aga):
+        return None
+    lam_h = max(0.25, ((hgf + aga) / 2.0) * 1.07)
+    lam_a = max(0.22, ((agf + hga) / 2.0) / 1.07)
+
+    # Relevância relativa (nível da liga + força + forma) pesa no máximo ~12%.
+    rel_delta = max(-0.12, min(0.12, (ctx.get("home_relevance", .5) - ctx.get("away_relevance", .5)) * 0.24))
+    lam_h *= 1 + rel_delta
+    lam_a *= 1 - rel_delta
+    # H2H apenas como desempate, nunca como fundamento principal.
+    if ctx.get("h2h_games", 0) >= 2:
+        h2_delta = max(-0.035, min(0.035, (ctx.get("h2h_home", .5) - ctx.get("h2h_away", .5)) * 0.055))
+        lam_h *= 1 + h2_delta; lam_a *= 1 - h2_delta
+
+    lam_h = max(.35, min(lam_h, 2.9)); lam_a = max(.30, min(lam_a, 2.7))
+    ph, pd_, pa = _poisson_result_probs(lam_h, lam_a)
+    # Quanto menor a amostra no torneio, maior a regressão para um jogo europeu
+    # equilibrado. O mando ainda permanece no Poisson.
+    sample = min(ctx.get("competition_games_home", 0), ctx.get("competition_games_away", 0))
+    w = min(.86, .58 + sample * .045)
+    baseline = (.42, .29, .29)
+    ph = ph*w + baseline[0]*(1-w); pd_ = pd_*w + baseline[1]*(1-w); pa = pa*w + baseline[2]*(1-w)
+    probs = [max(.075, ph), max(.075, pd_), max(.075, pa)]
+    total = sum(probs); probs = [x/total for x in probs]
+    return {
+        "home": probs[0]*100, "draw": probs[1]*100, "away": probs[2]*100,
+        "home_form": ((ctx.get("home_profile") or {}).get("form", .5))*100,
+        "away_form": ((ctx.get("away_profile") or {}).get("form", .5))*100,
+        "h2h_games": ctx.get("h2h_games", 0),
+        "expected_home_goals": lam_h, "expected_away_goals": lam_a,
+        "contextual": True,
+    }
 
 
 # ============================================================
@@ -2195,8 +2498,11 @@ def render_analysis():
         st.warning("Selecione duas equipes diferentes.")
         return
 
-    a = df[df["Time"] == team_a].iloc[0]
-    b = df[df["Time"] == team_b].iloc[0]
+    raw_a = df[df["Time"] == team_a].iloc[0]
+    raw_b = df[df["Time"] == team_b].iloc[0]
+    # Em torneios com pouca amostra, complementa com o histórico individual
+    # doméstico, força da liga, H2H de edições anteriores e baseline do torneio.
+    a, b, analysis_context = contextual_analysis_rows(team_a, team_b, league_name, df, recent_games=10)
     st.subheader(f"{team_a} × {team_b}")
     season_text = season_label(used_year, config["season"])
     if updated_until is not None and not pd.isna(updated_until):
@@ -2204,19 +2510,39 @@ def render_analysis():
     else:
         st.caption(f"{league_name} · {season_text}")
 
-    probs = victory_probabilities(team_a, team_b, df)
+    # O modelo da própria competição é prioritário quando já há amostra. Quando
+    # ela ainda é curta ou vazia, usamos a base contextual entre competições.
+    comp_sample = min(int(float(raw_a.get("Jogos", 0) or 0)), int(float(raw_b.get("Jogos", 0) or 0)))
+    probs = victory_probabilities(team_a, team_b, df) if comp_sample >= 6 else None
+    if probs is None and analysis_context:
+        probs = contextual_victory_probabilities(team_a, team_b, a, b, analysis_context)
+    if probs is None:
+        probs = victory_probabilities(team_a, team_b, df)
     if probs:
         st.markdown("### 🏆 Chance de resultado")
         x, y, z = st.columns(3)
         x.metric(f"🏠 Vitória {team_a}", f"{probs['home']:.0f}%")
         y.metric("🤝 Empate", f"{probs['draw']:.0f}%")
         z.metric(f"✈️ Vitória {team_b}", f"{probs['away']:.0f}%")
-        st.caption("Estimativa calibrada por força ofensiva/defensiva, desempenho casa/fora, fase recente, tamanho da amostra e confronto direto com peso reduzido.")
+        if probs.get("contextual") and analysis_context:
+            hp = analysis_context.get("home_profile") or {}
+            ap = analysis_context.get("away_profile") or {}
+            sources = []
+            if hp.get("competition"): sources.append(f"{team_a}: {hp['competition']}")
+            if ap.get("competition"): sources.append(f"{team_b}: {ap['competition']}")
+            h2n = analysis_context.get("h2h_games", 0)
+            histn = analysis_context.get("history", {}).get("seasons", 0)
+            detail = " • ".join(sources)
+            st.caption(f"Base contextual: histórico individual + nível da liga doméstica + forma recente + histórico da competição ({histn} edição(ões) encontrada(s))" + (f" + {h2n} confronto(s) direto(s)" if h2n else "") + (f". {detail}" if detail else "."))
+        else:
+            st.caption("Estimativa calibrada por força ofensiva/defensiva, desempenho casa/fora, fase recente, tamanho da amostra e confronto direto com peso reduzido.")
 
     expectations = render_match_probability_dashboard(a, b, team_a, team_b, df)
 
     opportunities = build_opportunities(a, b, team_a, team_b)
     st.markdown("#### ⭐ Melhores linhas para observar")
+    if analysis_context and comp_sample < 6:
+        st.caption("Linhas projetadas com base híbrida enquanto a competição ainda tem pouca amostra. A influência dos dados domésticos diminui à medida que o torneio avança.")
     if opportunities:
         for item in opportunities:
             c1, c2, c3 = st.columns([4.8, 1.3, 1.5])
