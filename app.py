@@ -36,10 +36,12 @@ st.markdown("""
 st.markdown("""
 <style>
 /* Identidade GM SCORE adaptativa ao tema do Streamlit. */
-.gm-brand-title { font-size:2.35rem; font-weight:800; letter-spacing:-.04em; color:var(--text-color); }
-.gm-brand-subtitle { margin-top:.55rem; font-size:.82rem; font-weight:700; letter-spacing:.08em; color:color-mix(in srgb, var(--text-color) 72%, transparent); }
-.gm-brand-credit { margin-top:.25rem; font-size:.78rem; color:color-mix(in srgb, var(--text-color) 58%, transparent); }
-[data-testid="stSidebar"] { background:var(--secondary-background-color); border-right:1px solid color-mix(in srgb, var(--text-color) 16%, transparent); }
+.gm-brand-title { font-size:2.35rem; font-weight:850; letter-spacing:-.04em; color:#0f172a !important; text-shadow:none; }
+.gm-brand-subtitle { margin-top:.55rem; font-size:.82rem; font-weight:700; letter-spacing:.08em; color:#64748b !important; }
+.gm-brand-credit { margin-top:.25rem; font-size:.78rem; color:#94a3b8 !important; }
+[data-testid="stSidebar"] { background-color:var(--secondary-background-color) !important; opacity:1 !important; border-right:1px solid color-mix(in srgb, var(--text-color) 16%, transparent); }
+[data-testid="stSidebar"] > div:first-child { background-color:var(--secondary-background-color) !important; opacity:1 !important; }
+[data-testid="stSidebarContent"] { background-color:var(--secondary-background-color) !important; opacity:1 !important; }
 [data-testid="stSidebar"] .stButton > button { border-radius:10px; }
 .stButton > button { border-radius:10px; }
 [data-testid="stMetric"] { background:transparent; }
