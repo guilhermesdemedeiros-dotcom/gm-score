@@ -40,7 +40,9 @@ st.markdown("""
   font-size:2.35rem;
   font-weight:850;
   letter-spacing:-.04em;
-  color:var(--text-color);
+  color:#172033;
+  -webkit-text-stroke:0.7px #0b1220;
+  text-shadow:0 1px 0 rgba(15,23,42,.12);
 }
 .gm-brand-subtitle {
   margin-top:.55rem;
@@ -57,7 +59,11 @@ st.markdown("""
 
 /* No tema escuro, muda somente a cor das fontes da identidade GM SCORE. */
 @media (prefers-color-scheme: dark) {
-  .gm-brand-title { color:#f8fafc !important; }
+  .gm-brand-title {
+    color:#f8fafc !important;
+    -webkit-text-stroke:0 !important;
+    text-shadow:none !important;
+  }
   .gm-brand-subtitle { color:#cbd5e1 !important; }
   .gm-brand-credit { color:#94a3b8 !important; }
 }
@@ -2942,10 +2948,11 @@ def render_analysis():
         st.caption(f"✅ Jogo carregado: {loaded_home_now} × {loaded_away_now}")
         # As chaves podem guardar uma seleção antiga do Streamlit. Removemos
         # somente antes de criar os widgets, para o valor visual bater com o jogo.
-        if st.session_state.get("home_widget") != loaded_home_now:
-            st.session_state.pop("home_widget", None)
-        if st.session_state.get("away_widget") != loaded_away_now:
-            st.session_state.pop("away_widget", None)
+        # Força o valor VISÍVEL dos seletores a ser exatamente o confronto
+        # carregado. Assim não sobra Arsenal/Aston Villa (ou qualquer seleção
+        # anterior) enquanto a análise ativa é de outro jogo.
+        st.session_state["home_widget"] = loaded_home_now
+        st.session_state["away_widget"] = loaded_away_now
 
     c1, c2 = st.columns(2)
     with c1:
