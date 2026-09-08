@@ -43,7 +43,7 @@ st.markdown("""
   font-size:2.35rem;
   font-weight:850;
   letter-spacing:-.04em;
-  color:#111827 !important;
+  color:var(--text-color) !important;
   -webkit-text-stroke:2px #16803a !important;
   paint-order:stroke fill;
   text-shadow:
@@ -68,9 +68,13 @@ st.markdown("""
 /* No tema escuro, muda somente a cor das fontes da identidade GM SCORE. */
 @media (prefers-color-scheme: dark) {
   .gm-brand-title {
-    color:#f8fafc !important;
-    -webkit-text-stroke:0 !important;
-    text-shadow:none !important;
+    color:var(--text-color) !important;
+    -webkit-text-stroke:2px #16803a !important;
+    text-shadow:
+      -1px -1px 0 #16803a,
+       1px -1px 0 #16803a,
+      -1px  1px 0 #16803a,
+       1px  1px 0 #16803a !important;
   }
   .gm-brand-subtitle { color:#cbd5e1 !important; }
   .gm-brand-credit { color:#94a3b8 !important; }
@@ -650,11 +654,18 @@ def render_market_value_panel(team_a, team_b, probs, moneyline):
     if not moneyline or not probs:
         return
     st.markdown("### 💹 Mercado × odd justa GM SCORE")
-    st.caption("As odds públicas servem apenas para calibrar a leitura. A probabilidade de mercado abaixo remove a margem do 1X2; a odd justa continua sendo calculada pelo modelo independente do GM SCORE.")
+    st.caption("A odd justa e o valor usam a probabilidade FINAL exibida pelo GM SCORE, já com os ajustes de qualidade e a calibração de mercado. A probabilidade pública abaixo é mostrada sem a margem do 1X2.")
+    # A leitura de valor precisa ser coerente com a chance final mostrada acima.
+    # Mantemos a probabilidade independente apenas para diagnóstico interno.
     model = {
-        "home": probs.get("model_home", probs.get("home")),
-        "draw": probs.get("model_draw", probs.get("draw")),
-        "away": probs.get("model_away", probs.get("away")),
+        "home": float(probs.get("home")),
+        "draw": float(probs.get("draw")),
+        "away": float(probs.get("away")),
+    }
+    independent = {
+        "home": probs.get("model_home"),
+        "draw": probs.get("model_draw"),
+        "away": probs.get("model_away"),
     }
     labels = [("home", f"🏠 {team_a}"), ("draw", "🤝 Empate"), ("away", f"✈️ {team_b}")]
     cols = st.columns(3)
@@ -665,7 +676,7 @@ def render_market_value_panel(team_a, team_b, probs, moneyline):
         with col:
             st.markdown(f"**{label}**")
             st.markdown(f"Mercado: **{odd:.2f}**")
-            st.caption(f"Mercado sem margem: {marketp:.1f}% · GM: {model[key]:.1f}%")
+            st.caption(f"Mercado sem margem: {marketp:.1f}% · GM final: {model[key]:.1f}%")
             st.markdown(f'<span style="font-weight:700;color:{vr["color"]}">{vr["status"]}</span> · justa **{vr["fair_odd"]:.2f}** · edge **{vr["edge"]:+.1f}%**', unsafe_allow_html=True)
     st.caption(f"Fonte pública de referência: {moneyline.get('source','OddsPortal')} · pode haver pequena defasagem; confira a cotação antes de apostar.")
 
