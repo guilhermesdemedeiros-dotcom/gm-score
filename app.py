@@ -23,25 +23,48 @@ st.set_page_config(
 )
 
 st.markdown("""
-<div style="margin:0 0 1.15rem 0">
+<div class="gm-brand" style="margin:0 0 1.15rem 0">
   <div style="display:flex;align-items:center;gap:.65rem;line-height:1">
     <span style="font-size:2.35rem">⚽</span>
-    <span style="font-size:2.35rem;font-weight:800;letter-spacing:-.04em;color:#172033">GM SCORE</span>
+    <span class="gm-brand-title">GM SCORE</span>
   </div>
-  <div style="margin-top:.55rem;font-size:.82rem;font-weight:700;letter-spacing:.08em;color:#64748b">ANÁLISE • ESTATÍSTICAS • PROBABILIDADES</div>
-  <div style="margin-top:.25rem;font-size:.78rem;color:#94a3b8">CRIADO E VALIDADO POR GUILHERME MEDEIROS</div>
+  <div class="gm-brand-subtitle">ANÁLISE • ESTATÍSTICAS • PROBABILIDADES</div>
+  <div class="gm-brand-credit">CRIADO E VALIDADO POR GUILHERME MEDEIROS</div>
 </div>
 """, unsafe_allow_html=True)
 
 st.markdown("""
 <style>
-/* Identidade clara e discreta do GM SCORE */
-[data-testid="stSidebar"] { background:#f5f7fa; border-right:1px solid #e5e7eb; }
+/* Identidade GM SCORE adaptativa ao tema do Streamlit. */
+.gm-brand-title { font-size:2.35rem; font-weight:800; letter-spacing:-.04em; color:var(--text-color); }
+.gm-brand-subtitle { margin-top:.55rem; font-size:.82rem; font-weight:700; letter-spacing:.08em; color:color-mix(in srgb, var(--text-color) 72%, transparent); }
+.gm-brand-credit { margin-top:.25rem; font-size:.78rem; color:color-mix(in srgb, var(--text-color) 58%, transparent); }
+[data-testid="stSidebar"] { background:var(--secondary-background-color); border-right:1px solid color-mix(in srgb, var(--text-color) 16%, transparent); }
 [data-testid="stSidebar"] .stButton > button { border-radius:10px; }
 .stButton > button { border-radius:10px; }
 [data-testid="stMetric"] { background:transparent; }
 div[data-baseweb="select"] > div { border-radius:10px; }
-hr { border-color:#eef1f5 !important; }
+hr { border-color:color-mix(in srgb, var(--text-color) 12%, transparent) !important; }
+
+/* Mantém o botão de recolher a barra lateral acessível mesmo após rolar a lista. */
+[data-testid="stSidebarCollapseButton"] {
+  position:fixed !important;
+  top:50vh !important;
+  left:min(20.25rem, calc(100vw - 3.6rem)) !important;
+  transform:translateY(-50%) !important;
+  z-index:100000 !important;
+  background:var(--secondary-background-color) !important;
+  border:1px solid color-mix(in srgb, var(--text-color) 18%, transparent) !important;
+  border-radius:999px !important;
+  box-shadow:0 2px 10px rgba(0,0,0,.14) !important;
+}
+
+/* Reforço de contraste quando o sistema/navegador usa tema escuro. */
+@media (prefers-color-scheme: dark) {
+  .gm-brand-title { color:#f8fafc !important; text-shadow:0 1px 0 #000, 0 0 10px rgba(255,255,255,.12); }
+  .gm-brand-subtitle { color:#cbd5e1 !important; }
+  .gm-brand-credit { color:#94a3b8 !important; }
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -171,6 +194,21 @@ CURRENT_TEAM_ROSTERS = {
         "Union SG", "Viktoria Plzeň",
     ],
 }
+
+# Competições em que o seletor deve conter SOMENTE o elenco principal oficial.
+# Evita U19/Sub-19, Youth League, reservas, feminino e clubes de fases paralelas.
+STRICT_OFFICIAL_ROSTERS = {"UEFA Champions League"}
+SECONDARY_TEAM_RE = re.compile(
+    r"(?:\bu\s*[- ]?1[789]\b|\bsub\s*[- ]?1[789]\b|\byouth\b|\bjunior(?:es|s)?\b|"
+    r"\breserv(?:e|es|as?)\b|\bb\s*team\b|\bfemin(?:ino|ina|ine|ine)?\b|\bwomen(?:'s)?\b)",
+    re.IGNORECASE,
+)
+
+def is_main_senior_team_name(name):
+    text = str(name or "").strip()
+    if not text:
+        return False
+    return SECONDARY_TEAM_RE.search(text) is None
 
 COMPETITION_ICONS = {
     "Inglaterra - Premier League": "🇬🇧", "Espanha - La Liga": "🇪🇸",
@@ -536,11 +574,40 @@ def fetch_public_market_odds(home, away, league_name):
     return {"error": "odds públicas indisponíveis", "details": errors[-2:]}
 
 
+def adaptive_market_weight(model_probs, moneyline, base_weight):
+    """Usa o mercado como âncora de realidade quando há inversão severa.
+
+    A odd nunca vira 100% do modelo. Porém, se o consenso 1X2 aponta um favorito
+    claro e o GM SCORE o coloca atrás por margem grande, aumentamos a calibração
+    somente na probabilidade FINAL exibida. A odd justa/valor continua vindo da
+    probabilidade independente, preservada em model_home/model_draw/model_away.
+    """
+    if not model_probs or not moneyline:
+        return float(base_weight)
+    m = [float(model_probs[k]) for k in ("home", "draw", "away")]
+    q = [float(moneyline[f"{k}_prob"]) for k in ("home", "draw", "away")]
+    fav = max(range(3), key=lambda i: q[i])
+    second_market = sorted(q, reverse=True)[1]
+    market_gap = q[fav] - second_market
+    model_rank = sorted(range(3), key=lambda i: m[i], reverse=True)
+    inversion = model_rank[0] != fav
+    deficit = q[fav] - m[fav]
+
+    # Favorito de mercado bem definido + modelo invertido: forte guardrail.
+    if inversion and market_gap >= 12 and deficit >= 18:
+        return 0.84
+    if inversion and market_gap >= 8 and deficit >= 12:
+        return 0.72
+    if inversion and deficit >= 10:
+        return max(float(base_weight), 0.58)
+    return float(base_weight)
+
+
 def calibrate_result_with_market(model_probs, moneyline, market_weight):
-    """Mercado calibra, mas não substitui, o modelo estatístico."""
+    """Mercado calibra a chance final, sem substituir a estimativa independente."""
     if not model_probs or not moneyline:
         return model_probs
-    w = max(0.0, min(float(market_weight), 0.40))
+    w = max(0.0, min(float(market_weight), 0.88))
     out = dict(model_probs)
     out["model_home"] = float(model_probs["home"])
     out["model_draw"] = float(model_probs["draw"])
@@ -1772,12 +1839,14 @@ def build_opportunities(a, b, team_a, team_b):
         if not opts:
             return
         strong = [(line, pct) for line, pct in opts if pct >= 80]
-        # Maior linha ainda forte; se não houver 80%+, usa a opção mais provável.
+        # Maior linha ainda forte. Se não houver 80%+, escolhe a MAIOR linha que
+        # mantém a confiança mínima — evita cair sempre no +0,5 só para mostrar
+        # uma porcentagem muito alta e pouco informativa.
         if strong:
             line, pct = max(strong, key=lambda x: x[0])
         else:
-            line, pct = max(opts, key=lambda x: x[1])
-        level = "🟢 Forte" if pct >= 80 else "🟡 Boa"
+            line, pct = max(opts, key=lambda x: x[0])
+        level = "🟢 Forte" if pct >= 80 else ("🟡 Boa" if pct >= 70 else "🟠 Moderada")
         candidates.append({
             "Mercado": f"{emoji} Mais de {str(line).replace('.', ',')} {label}",
             "Chance": round(pct, 1),
@@ -1795,7 +1864,7 @@ def build_opportunities(a, b, team_a, team_b):
         lam_a = max(((a_gf + b_ga) / 2) * 1.08, 0.05)
         lam_b = max(((b_gf + a_ga) / 2) / 1.08, 0.05)
         lam_total = lam_a + lam_b
-        add_market("Gols", "⚽", "gols", lam_total, (0.5, 1.5, 2.5, 3.5, 4.5), f"Média projetada: {lam_total:.2f} gols")
+        add_market("Gols", "⚽", "gols", lam_total, (0.5, 1.5, 2.5, 3.5, 4.5, 5.5), f"Média projetada: {lam_total:.2f} gols", min_good=65)
 
     specs = [
         ("Escanteios", "⛳", "escanteios", (4.5, 5.5, 6.5, 7.5, 8.5, 9.5, 10.5, 11.5)),
@@ -2363,7 +2432,7 @@ def fixture_team_key(name):
 
 
 def complete_current_roster(df, competition_name):
-    """Completa apenas a lista de clubes oficiais, preservando dados reais já coletados."""
+    """Completa o elenco oficial e, quando exigido, remove qualquer clube extra."""
     roster = CURRENT_TEAM_ROSTERS.get(competition_name)
     if not roster or df is None:
         return df
@@ -2371,6 +2440,27 @@ def complete_current_roster(df, competition_name):
     out = df.copy()
     if "Time" not in out.columns:
         return df
+
+    if competition_name in STRICT_OFFICIAL_ROSTERS:
+        # Canonicaliza variantes como "FC Porto" -> "Porto", mas descarta antes
+        # qualquer indicação de U19/Sub-19/Youth/reservas/feminino.
+        canonical = []
+        for name in out["Time"].astype(str):
+            if not is_main_senior_team_name(name):
+                canonical.append(None)
+                continue
+            resolved = resolve_team_name(name, roster)
+            canonical.append(resolved)
+        out["Time"] = canonical
+        out = out[out["Time"].notna()].copy()
+        # Se duas fontes/variações virarem o mesmo clube, preserva a linha com
+        # maior amostra de jogos (ou a primeira quando não houver amostra).
+        if "Jogos" in out.columns:
+            out["__games"] = pd.to_numeric(out["Jogos"], errors="coerce").fillna(-1)
+            out = out.sort_values("__games", ascending=False).drop_duplicates("Time", keep="first").drop(columns="__games")
+        else:
+            out = out.drop_duplicates("Time", keep="first")
+
     existing = {fixture_team_key(x): x for x in out["Time"].dropna().astype(str)}
     missing = []
     for team in roster:
@@ -2404,6 +2494,36 @@ def _fixture_quality(f):
     has_time = bool(re.fullmatch(r"\d{2}:\d{2}", tm))
     accents = sum(ord(ch) > 127 for ch in home + away)
     return (100 if has_time else 0) + accents * 3 + len(home) + len(away)
+
+
+INVALID_FIXTURE_NAMES = {
+    "n.n", "n.n.", "nn", "tbd", "tba", "unknown", "a definir", "to be decided",
+    "winner", "loser", "vencedor", "perdedor", "bye", "-", "?",
+}
+
+def valid_fixture_team(name):
+    text = str(name or "").strip()
+    if not text:
+        return False
+    low = re.sub(r"\s+", " ", text.lower()).strip()
+    if low in INVALID_FIXTURE_NAMES:
+        return False
+    if re.fullmatch(r"(?:n\.?\s*n\.?|tbd|tba|unknown)(?:\s*\d+)?", low, re.I):
+        return False
+    return is_main_senior_team_name(text)
+
+
+def valid_daily_fixture(f):
+    home, away = f.get("home"), f.get("away")
+    if not valid_fixture_team(home) or not valid_fixture_team(away):
+        return False
+    if fixture_team_key(home) == fixture_team_key(away):
+        return False
+    comp = f.get("competition")
+    if comp in STRICT_OFFICIAL_ROSTERS:
+        roster = CURRENT_TEAM_ROSTERS.get(comp, [])
+        return bool(resolve_team_name(home, roster) and resolve_team_name(away, roster))
+    return True
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -2511,15 +2631,21 @@ def load_today_fixtures():
     best = {}
     order = []
     for f in fixtures:
-        if not f.get("home") or not f.get("away"):
+        if not valid_daily_fixture(f):
             continue
+        comp = f.get("competition")
+        if comp in STRICT_OFFICIAL_ROSTERS:
+            roster = CURRENT_TEAM_ROSTERS.get(comp, [])
+            f = dict(f)
+            f["home"] = resolve_team_name(f.get("home"), roster)
+            f["away"] = resolve_team_name(f.get("away"), roster)
         key = (f["competition"], fixture_team_key(f["home"]), fixture_team_key(f["away"]))
         if key not in best:
             best[key] = f
             order.append(key)
         elif _fixture_quality(f) > _fixture_quality(best[key]):
             best[key] = f
-    return [best[k] for k in order]
+    return [best[k] for k in order if valid_daily_fixture(best[k])]
 
 def validate_current_data(df, season_type, competition_name):
     """Impede que uma base antiga seja apresentada como temporada atual."""
@@ -2760,8 +2886,9 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
     }}
     document.getElementById('shareBtn').onclick = async () => {{
       const extra = D.averages.length*48 + D.opportunities.length*88 + D.expectations.length*58 + D.results.length*58;
-      const canvas=document.createElement('canvas'); canvas.width=1080; canvas.height=Math.max(1900,1050+extra);
-      const ctx=canvas.getContext('2d'); ctx.fillStyle='#fff'; ctx.fillRect(0,0,canvas.width,canvas.height); watermark(ctx,canvas.width,canvas.height);
+      const logicalW=1080, logicalH=Math.max(1900,1050+extra), scale=4/3;
+      const canvas=document.createElement('canvas'); canvas.width=Math.round(logicalW*scale); canvas.height=Math.round(logicalH*scale);
+      const ctx=canvas.getContext('2d'); ctx.scale(scale,scale); ctx.fillStyle='#fff'; ctx.fillRect(0,0,logicalW,logicalH); watermark(ctx,logicalW,logicalH);
       let y=90; text(ctx,'⚽ GM SCORE',65,y,52,'bold'); y+=62; text(ctx,'ANÁLISE • ESTATÍSTICAS • PROBABILIDADES',65,y,23,'bold','#64748b');
       y+=72; text(ctx,D.title,65,y,44,'bold'); y+=42; text(ctx,D.league,65,y,25,'normal','#64748b'); y+=70;
       const section=(t)=>{{ text(ctx,t,65,y,31,'bold'); y+=30; ctx.strokeStyle='#e5e7eb'; ctx.beginPath();ctx.moveTo(65,y);ctx.lineTo(1015,y);ctx.stroke(); y+=45; }};
@@ -2771,12 +2898,12 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
       if(D.averages.length) {{ section('📊 Médias usadas na análise'); text(ctx,'Dado',80,y,23,'bold','#64748b'); text(ctx,D.home,550,y,21,'bold','#64748b'); text(ctx,D.away,820,y,21,'bold','#64748b'); y+=42; for(const r of D.averages) {{text(ctx,r[0],80,y,23);text(ctx,r[1],580,y,23,'bold');text(ctx,r[2],850,y,23,'bold');y+=46;}} }}
       y+=45; text(ctx,'CRIADO E VALIDADO POR GUILHERME MEDEIROS',65,y,21,'bold','#94a3b8'); y+=38; text(ctx,'Estimativas estatísticas; não garantem resultado.',65,y,20,'normal','#94a3b8');
       canvas.toBlob(async blob=>{{
-        const file=new File([blob],'gm-score-analise-completa.png',{{type:'image/png'}});
+        const file=new File([blob],'gm-score-analise-completa-HD.jpg',{{type:'image/jpeg'}});
         try {{
           if(navigator.share && (!navigator.canShare || navigator.canShare({{files:[file]}}))) {{ await navigator.share({{title:D.title,text:'GM SCORE - análise completa',files:[file]}}); document.getElementById('msg').innerText='Escolha o WhatsApp na tela de compartilhamento.'; }}
           else {{ const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=file.name;a.click();document.getElementById('msg').innerText='A imagem completa foi salva para compartilhar no WhatsApp.'; }}
         }} catch(e) {{ if(e.name!=='AbortError') document.getElementById('msg').innerText='Não foi possível abrir o compartilhamento neste navegador.'; }}
-      }},'image/png');
+      }},'image/jpeg',0.95);
     }};
     </script>
     """
@@ -2807,8 +2934,23 @@ def render_analysis():
 
     resolved_home = resolve_team_name(st.session_state.selected_home, teams)
     resolved_away = resolve_team_name(st.session_state.selected_away, teams)
-    default_home = resolved_home or teams[0]
-    default_away = resolved_away or (teams[1] if len(teams) > 1 else teams[0])
+    loaded_home_now = resolve_team_name(st.session_state.get("loaded_home"), teams)
+    loaded_away_now = resolve_team_name(st.session_state.get("loaded_away"), teams)
+    default_home = loaded_home_now or resolved_home or teams[0]
+    default_away = loaded_away_now or resolved_away or (teams[1] if len(teams) > 1 else teams[0])
+
+    # O cabeçalho de seleção sempre identifica a competição ativa e, quando há
+    # jogo carregado, mantém os selectboxes sincronizados com esse confronto.
+    st.markdown(f"**🏆 Competição:** {competition_display_name(league_name)}")
+    if loaded_home_now and loaded_away_now:
+        st.caption(f"✅ Jogo carregado: {loaded_home_now} × {loaded_away_now}")
+        # As chaves podem guardar uma seleção antiga do Streamlit. Removemos
+        # somente antes de criar os widgets, para o valor visual bater com o jogo.
+        if st.session_state.get("home_widget") != loaded_home_now:
+            st.session_state.pop("home_widget", None)
+        if st.session_state.get("away_widget") != loaded_away_now:
+            st.session_state.pop("away_widget", None)
+
     c1, c2 = st.columns(2)
     with c1:
         team_a = st.selectbox("🏠 Time da casa", teams, index=teams.index(default_home), key="home_widget")
@@ -2830,6 +2972,12 @@ def render_analysis():
 
     loaded_home = resolve_team_name(st.session_state.get("loaded_home"), teams)
     loaded_away = resolve_team_name(st.session_state.get("loaded_away"), teams)
+
+    # Se o usuário mexeu nos seletores, não deixamos uma análise antiga visível
+    # com nomes diferentes. A nova seleção só entra após "Carregar equipes".
+    if loaded_home and loaded_away and (team_a != loaded_home or team_b != loaded_away):
+        st.info("Você alterou o confronto. Toque em **⚽ Carregar equipes** para carregar esta nova análise.")
+        return
 
     # Na primeira abertura da competição, não exibe uma partida aleatória.
     # Depois do clique, a análise abaixo sempre corresponde exatamente aos
@@ -2870,7 +3018,8 @@ def render_analysis():
     market_odds = fetch_public_market_odds(team_a, team_b, league_name)
     moneyline = market_odds if market_odds and not market_odds.get("error") else None
     if probs and moneyline:
-        market_weight = 0.34 if comp_sample < 6 else 0.22
+        base_market_weight = 0.34 if comp_sample < 6 else 0.22
+        market_weight = adaptive_market_weight(probs, moneyline, base_market_weight)
         probs = calibrate_result_with_market(probs, moneyline, market_weight)
 
     if probs:
@@ -2914,7 +3063,7 @@ def render_analysis():
             c1, c2, c3 = st.columns([4.8, 1.3, 1.5])
             c1.markdown(f"**{item['Mercado']}**  \n<small>{item['Base']}</small>", unsafe_allow_html=True)
             chance = item["Chance"]
-            chance_color = "#16a34a" if chance >= 80 else "#111827"
+            chance_color = "#16a34a" if chance >= 80 else "var(--text-color)"
             c2.markdown(f'<div style="text-align:center"><div style="font-size:.85rem;color:#6b7280">Chance</div><div style="font-size:1.65rem;font-weight:800;color:{chance_color}">{chance:.0f}%</div></div>', unsafe_allow_html=True)
             c3.markdown(f"**{item['Leitura']}**")
             st.divider()
@@ -2949,7 +3098,7 @@ def render_sidebar_today():
     # Segurança extra: somente a competição selecionada e confrontos válidos.
     fixtures = [
         f for f in fixtures
-        if f.get("competition") == league_name and f.get("home") and f.get("away")
+        if f.get("competition") == league_name and valid_daily_fixture(f)
     ]
     fixtures = sorted(fixtures, key=lambda f: str(f.get("time") or "99:99"))
 
