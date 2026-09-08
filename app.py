@@ -3298,6 +3298,25 @@ def validate_current_data(df, season_type, competition_name):
 # ============================================================
 # INTERFACE
 # ============================================================
+# Alterações feitas pelo seletor de competição da tela principal são
+# aplicadas antes de o widget da barra lateral ser criado. Assim, os dois
+# seletores permanecem sincronizados e nunca misturamos equipes/análises de
+# campeonatos diferentes.
+if "_main_competition_pending" in st.session_state:
+    _new_comp = st.session_state.pop("_main_competition_pending")
+    if _new_comp in COMPETITIONS:
+        st.session_state.selected_competition = _new_comp
+        st.session_state.league_widget = _new_comp
+        st.session_state.main_league_widget = _new_comp
+        st.session_state.selected_home = None
+        st.session_state.selected_away = None
+        st.session_state.loaded_home = None
+        st.session_state.loaded_away = None
+        st.session_state.loaded_competition = _new_comp
+        st.session_state.pop("home_widget", None)
+        st.session_state.pop("away_widget", None)
+        st.session_state.pop("_synced_loaded_signature", None)
+
 if "_goto_comp" in st.session_state:
     st.session_state.selected_competition = st.session_state.pop("_goto_comp")
     st.session_state.selected_home = st.session_state.pop("_goto_home", None)
@@ -3306,6 +3325,7 @@ if "_goto_comp" in st.session_state:
     st.session_state.loaded_away = st.session_state.selected_away
     st.session_state.loaded_competition = st.session_state.selected_competition
     st.session_state.league_widget = st.session_state.selected_competition
+    st.session_state.main_league_widget = st.session_state.selected_competition
 
 if "selected_competition" not in st.session_state:
     st.session_state.selected_competition = list(COMPETITIONS.keys())[0]
@@ -3564,9 +3584,22 @@ def render_analysis():
     default_home = loaded_home_now or resolved_home or teams[0]
     default_away = loaded_away_now or resolved_away or (teams[1] if len(teams) > 1 else teams[0])
 
-    # O cabeçalho de seleção sempre identifica a competição ativa e, quando há
-    # jogo carregado, mantém os selectboxes sincronizados com esse confronto.
-    st.markdown(f"**🏆 Competição:** {competition_display_name(league_name)}")
+    # A competição também pode ser alterada diretamente na tela principal.
+    # O valor é sincronizado com a barra lateral; ao trocar de campeonato,
+    # limpamos o confronto anterior antes de carregar as equipes da nova liga.
+    if st.session_state.get("main_league_widget") != league_name:
+        st.session_state["main_league_widget"] = league_name
+
+    main_league_name = st.selectbox(
+        "🏆 Competição",
+        list(COMPETITIONS.keys()),
+        key="main_league_widget",
+        format_func=competition_display_name,
+    )
+    if main_league_name != league_name:
+        st.session_state["_main_competition_pending"] = main_league_name
+        st.rerun()
+
     if loaded_home_now and loaded_away_now:
         st.caption(f"✅ Jogo carregado: {loaded_home_now} × {loaded_away_now}")
 
