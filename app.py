@@ -36,15 +36,23 @@ st.markdown("""
 
 st.markdown("""
 <style>
-/* Mantém o layout padrão do Streamlit. Só ajusta as cores da marca conforme o tema. */
+/* Mantém o layout padrão do Streamlit. A cor acompanha o tema e o contorno
+   verde é feito com text-shadow para funcionar também no Safari/iPhone. */
 .gm-brand-title {
   font-size:2.35rem;
   font-weight:850;
   letter-spacing:-.04em;
-  color:#f8fafc;
-  -webkit-text-stroke:2px #16803a;
-  paint-order:stroke fill;
-  text-shadow:0 1px 1px rgba(22,128,58,.18);
+  color:var(--text-color) !important;
+  -webkit-text-stroke:0 !important;
+  text-shadow:
+    -1px -1px 0 #16803a,
+     1px -1px 0 #16803a,
+    -1px  1px 0 #16803a,
+     1px  1px 0 #16803a,
+     0   -1px 0 #16803a,
+     0    1px 0 #16803a,
+    -1px  0   0 #16803a,
+     1px  0   0 #16803a;
 }
 .gm-brand-subtitle {
   margin-top:.55rem;
@@ -2948,13 +2956,16 @@ def render_analysis():
     st.markdown(f"**🏆 Competição:** {competition_display_name(league_name)}")
     if loaded_home_now and loaded_away_now:
         st.caption(f"✅ Jogo carregado: {loaded_home_now} × {loaded_away_now}")
-        # As chaves podem guardar uma seleção antiga do Streamlit. Removemos
-        # somente antes de criar os widgets, para o valor visual bater com o jogo.
-        # Força o valor VISÍVEL dos seletores a ser exatamente o confronto
-        # carregado. Assim não sobra Arsenal/Aston Villa (ou qualquer seleção
-        # anterior) enquanto a análise ativa é de outro jogo.
-        st.session_state["home_widget"] = loaded_home_now
-        st.session_state["away_widget"] = loaded_away_now
+
+        # Sincroniza os widgets SOMENTE quando o confronto carregado muda
+        # (por exemplo, ao tocar em "Analisar" nos jogos do dia). Não fazemos
+        # isso em todo rerun, pois isso impediria o usuário de escolher outra
+        # equipe e faria o botão "Carregar equipes" parecer não funcionar.
+        loaded_signature = f"{league_name}|{loaded_home_now}|{loaded_away_now}"
+        if st.session_state.get("_synced_loaded_signature") != loaded_signature:
+            st.session_state["home_widget"] = loaded_home_now
+            st.session_state["away_widget"] = loaded_away_now
+            st.session_state["_synced_loaded_signature"] = loaded_signature
 
     c1, c2 = st.columns(2)
     with c1:
@@ -2973,6 +2984,7 @@ def render_analysis():
         st.session_state.selected_away = team_b
         st.session_state.loaded_home = team_a
         st.session_state.loaded_away = team_b
+        st.session_state["_synced_loaded_signature"] = f"{league_name}|{team_a}|{team_b}"
         st.rerun()
 
     loaded_home = resolve_team_name(st.session_state.get("loaded_home"), teams)
