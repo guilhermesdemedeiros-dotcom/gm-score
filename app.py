@@ -3690,10 +3690,24 @@ def render_analysis():
             eval_bits.append("mercado público como validação externa")
         st.caption("📌 Avaliação GM SCORE: " + ", ".join(eval_bits) + "." + h2txt + " O mando ajuda o time da casa, mas não supera sozinho um consenso forte de qualidade, liga e histórico. A opção favorita é definida pelo cruzamento desses dados, não pelo nome da equipe.")
 
-    if moneyline and probs:
-        render_market_value_panel(team_a, team_b, probs, moneyline)
-    else:
-        st.caption("💹 Odds públicas: não encontrei um mercado 1X2 ligado com segurança ao evento exato. Para evitar cotação de outro jogo, o GM SCORE não exibe odds quando a associação não pode ser confirmada.")
+    if probs:
+        # A odd justa é propriedade do modelo e deve aparecer mesmo quando a
+        # cotação pública não estiver disponível/validada. Mercado é opcional.
+        if moneyline:
+            render_market_value_panel(team_a, team_b, probs, moneyline)
+        else:
+            st.markdown("### 🎯 Odds justas GM SCORE")
+            st.caption("Calculadas exclusivamente a partir das probabilidades finais exibidas acima (odd justa = 1 ÷ probabilidade).")
+            fair_labels = [("home", f"🏠 {team_a}"), ("draw", "🤝 Empate"), ("away", f"✈️ {team_b}")]
+            fair_cols = st.columns(3)
+            for col, (key, label) in zip(fair_cols, fair_labels):
+                p_final = max(min(float(probs.get(key, 0.0)), 99.5), 0.5)
+                fair_odd = 100.0 / p_final
+                with col:
+                    st.markdown(f"**{label}**")
+                    st.markdown(f"Chance GM: **{p_final:.1f}%**")
+                    st.markdown(f"Odd justa: **{fair_odd:.2f}**")
+            st.caption("💹 Mercado público 1X2 não confirmado para o evento exato. A odd justa permanece disponível; valor/edge só é calculado quando houver cotação de mercado validada.")
 
     expectations = render_match_probability_dashboard(a, b, team_a, team_b, df)
 
