@@ -274,6 +274,26 @@ COMPETITION_PRIORS = {
     "CONMEBOL Sul-Americana": {"Gols": 2.40, "Escanteios": 9.35, "Cartões": 5.20},
 }
 
+
+# Confrontos históricos verificados usados apenas como complemento quando as
+# bases públicas de resultados não alcançam edições antigas ou outra competição
+# continental. Não existe favoritismo manual: são somente placares/resultados
+# históricos, combinados com os demais sinais do modelo.
+VERIFIED_H2H_MATCHES = {
+    frozenset({"Porto", "Manchester City"}): [
+        {"home": "Porto", "away": "Manchester City", "hg": 1, "ag": 2, "date": "2012-02-16", "source": "UEFA"},
+        {"home": "Manchester City", "away": "Porto", "hg": 4, "ag": 0, "date": "2012-02-22", "source": "UEFA"},
+        {"home": "Manchester City", "away": "Porto", "hg": 3, "ag": 1, "date": "2020-10-21", "source": "UEFA"},
+        {"home": "Porto", "away": "Manchester City", "hg": 0, "ag": 0, "date": "2020-12-01", "source": "UEFA"},
+    ],
+    frozenset({"Real Madrid", "Inter"}): [
+        {"home": "Real Madrid", "away": "Inter", "hg": 3, "ag": 2, "date": "2020-11-03", "source": "UEFA"},
+        {"home": "Inter", "away": "Real Madrid", "hg": 0, "ag": 2, "date": "2020-11-25", "source": "UEFA"},
+        {"home": "Inter", "away": "Real Madrid", "hg": 0, "ag": 1, "date": "2021-09-15", "source": "UEFA"},
+        {"home": "Real Madrid", "away": "Inter", "hg": 2, "ag": 0, "date": "2021-12-07", "source": "UEFA"},
+    ],
+}
+
 CONTEXTUAL_COMPETITIONS = set(COMPETITION_PRIORS)
 
 def competition_display_name(name):
@@ -1712,7 +1732,8 @@ def contextual_analysis_rows(team_a, team_b, competition_name, competition_df, r
 
     # H2H atual + edições anteriores do próprio torneio.
     h2h_pool = list(competition_df.attrs.get("matches", [])) + list(hist.get("matches", []))
-    hh, ah, h2n = _h2h(team_a, team_b, h2h_pool, 8)
+    h2d = _h2h_details(team_a, team_b, h2h_pool, 8)
+    hh, ah, h2n = h2d["home_share"], h2d["away_share"], h2d["games"]
 
     def relevance(prof):
         if not prof:
@@ -1730,6 +1751,8 @@ def contextual_analysis_rows(team_a, team_b, competition_name, competition_df, r
     ctx = {
         "home_profile": prof_a, "away_profile": prof_b,
         "history": hist, "h2h_games": h2n, "h2h_home": hh, "h2h_away": ah,
+        "h2h_home_wins": h2d.get("home_wins", 0), "h2h_away_wins": h2d.get("away_wins", 0),
+        "h2h_draws": h2d.get("draws", 0),
         "home_relevance": relevance(prof_a), "away_relevance": relevance(prof_b),
         "competition_games_home": ga, "competition_games_away": gb,
         "priors": priors,
@@ -1835,7 +1858,7 @@ def global_quality_prior(home, away, df=None, ctx=None):
     h2h_home = float(ctx.get("h2h_home", 0.5) or 0.5)
     h2h_away = float(ctx.get("h2h_away", 0.5) or 0.5)
     h2h_reliability = min(h2h_games / 5.0, 1.0)
-    h2h_component = (h2h_home - h2h_away) * 210.0 * h2h_reliability
+    h2h_component = (h2h_home - h2h_away) * 330.0 * h2h_reliability
 
     if helo is not None and aelo is not None:
         # Elo segue importante, mas não pode sozinho apagar liga + H2H + produção.
@@ -1931,6 +1954,109 @@ def calibrate_with_global_quality(model_probs, quality_prior, sample=0, contextu
     return out
 
 
+def apply_evidence_consensus_guardrail(probs, quality_prior, ctx=None, moneyline=None):
+    """Evita inversões quando múltiplas evidências independentes apontam o mesmo lado.
+
+    Não escolhe clubes por nome. Conta sinais objetivos: H2H, diferença entre ligas,
+    Elo/força global, ataque e mercado público. O mando já está embutido no prior de
+    qualidade e reduz a força do visitante, mas não deve superar sozinho um consenso forte.
+    """
+    if not probs or not quality_prior:
+        return probs
+    ctx = ctx or {}
+    hp, ap = ctx.get("home_profile") or {}, ctx.get("away_profile") or {}
+    score_h = score_a = 0.0
+    reasons_h, reasons_a = [], []
+
+    # H2H é um sinal forte quando há pelo menos 3 confrontos.
+    n = int(ctx.get("h2h_games", 0) or 0)
+    hg = float(ctx.get("h2h_home", .5) or .5)
+    ag = float(ctx.get("h2h_away", .5) or .5)
+    if n >= 3 and abs(hg-ag) >= .20:
+        w = 1.8 + min(n, 8) * .10
+        if hg > ag: score_h += w; reasons_h.append("H2H")
+        else: score_a += w; reasons_a.append("H2H")
+
+    # Nível da liga: diferença material entre campeonatos nacionais.
+    hls = float(hp.get("league_strength", 1.0) or 1.0)
+    als = float(ap.get("league_strength", 1.0) or 1.0)
+    if abs(hls-als) >= .055:
+        w = min(2.0, 0.9 + abs(hls-als) * 6.0)
+        if hls > als: score_h += w; reasons_h.append("liga")
+        else: score_a += w; reasons_a.append("liga")
+
+    # Elo/força global, sem o mando, para medir qualidade estrutural pura.
+    he, ae = quality_prior.get("home_elo"), quality_prior.get("away_elo")
+    if he is not None and ae is not None and abs(float(he)-float(ae)) >= 55:
+        w = min(2.1, 0.9 + abs(float(he)-float(ae))/180.0)
+        if float(he) > float(ae): score_h += w; reasons_h.append("força global")
+        else: score_a += w; reasons_a.append("força global")
+
+    # Potencial ofensivo comparável entre ligas.
+    ha = float(quality_prior.get("home_attack", 1.0) or 1.0)
+    aa = float(quality_prior.get("away_attack", 1.0) or 1.0)
+    if abs(ha-aa) >= .10:
+        w = min(1.3, .65 + abs(ha-aa)*2.5)
+        if ha > aa: score_h += w; reasons_h.append("ataque")
+        else: score_a += w; reasons_a.append("ataque")
+
+    # Mercado é validação externa, nunca sinal único para impor favorito.
+    market = None
+    if moneyline:
+        market = [float(moneyline[f"{k}_prob"]) for k in ("home","draw","away")]
+        mf = 0 if market[0] >= market[2] else 2
+        side_prob = market[mf]
+        opp_prob = market[2 if mf == 0 else 0]
+        if side_prob >= 44 and side_prob - opp_prob >= 10:
+            if mf == 0: score_h += 1.15; reasons_h.append("mercado")
+            else: score_a += 1.15; reasons_a.append("mercado")
+
+    side = None
+    diff = score_h - score_a
+    if diff >= 2.4 and len(set(reasons_h)) >= 2:
+        side = 0
+    elif diff <= -2.4 and len(set(reasons_a)) >= 2:
+        side = 2
+    if side is None:
+        return probs
+
+    out = dict(probs)
+    vals = [float(out["home"]), float(out["draw"]), float(out["away"])]
+    other = 2 if side == 0 else 0
+    # Alvo baseado nos dados, não em um número por clube. Mercado e prior de
+    # qualidade entram apenas se apontarem o mesmo lado do consenso.
+    anchors = [float(quality_prior["home" if side == 0 else "away"])]
+    if market is not None and ((side == 0 and market[0] > market[2]) or (side == 2 and market[2] > market[0])):
+        anchors.append(market[side])
+    h2_side = hg if side == 0 else ag
+    if n >= 3:
+        # Converte domínio H2H em âncora conservadora de 1X2 (não copia o share de pontos).
+        anchors.append(36.0 + 22.0 * max(0.0, min(1.0, h2_side)))
+    target = sum(anchors)/len(anchors)
+    target = max(42.0, min(62.0, target))
+
+    # Se o modelo está invertido, corrige com força; se já concorda, só estabiliza.
+    blend = .78 if vals[side] <= vals[other] else .38
+    desired = vals[side]*(1-blend) + target*blend
+    if vals[side] <= vals[other]:
+        desired = max(desired, vals[other] + 4.0)
+    desired = min(desired, 64.0)
+    remainder = 100.0 - desired
+    rest = [i for i in range(3) if i != side]
+    rest_total = max(sum(vals[i] for i in rest), 1e-9)
+    vals[side] = desired
+    for i in rest:
+        vals[i] = remainder * vals[i] / rest_total
+    z = sum(vals)
+    vals = [v/z*100 for v in vals]
+    out["home"], out["draw"], out["away"] = vals
+    out["evidence_guardrail"] = True
+    out["evidence_home_score"] = score_h
+    out["evidence_away_score"] = score_a
+    out["evidence_reasons"] = reasons_h if side == 0 else reasons_a
+    return out
+
+
 def contextual_victory_probabilities(home, away, a, b, ctx):
     if not ctx:
         return None
@@ -1975,7 +2101,7 @@ def contextual_victory_probabilities(home, away, a, b, ctx):
         # controla a confiança para evitar exagero com apenas dois jogos antigos.
         h2_rel = min(float(ctx.get("h2h_games", 0)) / 5.0, 1.0)
         h2_gap = float(ctx.get("h2h_home", .5)) - float(ctx.get("h2h_away", .5))
-        h2_delta = max(-0.10, min(0.10, h2_gap * 0.14 * h2_rel))
+        h2_delta = max(-0.18, min(0.18, h2_gap * 0.24 * h2_rel))
         lam_h *= 1 + h2_delta
         lam_a *= 1 - h2_delta
 
@@ -2323,24 +2449,70 @@ def _season_strength(team, matches):
     return pts / (3 * games), (gf - ga) / games
 
 
-def _h2h(home, away, matches, n=6):
-    pts_h = pts_a = games = 0
-    for m in reversed(matches):
-        if {m["home"], m["away"]} != {home, away}:
+def _h2h_team_key(name):
+    key = fixture_team_key(name) if "fixture_team_key" in globals() else clean_col(str(name or ""))
+    aliases = {
+        "fc_porto": "porto", "porto_fc": "porto",
+        "manchester_city_fc": "manchester_city", "man_city": "manchester_city",
+        "internazionale": "inter", "inter_milan": "inter", "fc_internazionale_milano": "inter",
+        "real_madrid_cf": "real_madrid",
+    }
+    return aliases.get(key, key)
+
+
+def _verified_h2h_matches(home, away):
+    # Procura por nomes canônicos; o dicionário contém somente resultados
+    # verificados para cobrir lacunas históricas das fontes abertas.
+    hk, ak = _h2h_team_key(home), _h2h_team_key(away)
+    for pair, rows in VERIFIED_H2H_MATCHES.items():
+        keys = {_h2h_team_key(x) for x in pair}
+        if keys == {hk, ak}:
+            return list(rows)
+    return []
+
+
+def _h2h_details(home, away, matches, n=8):
+    hk, ak = _h2h_team_key(home), _h2h_team_key(away)
+    pool = []
+    seen = set()
+    for m in list(matches or []) + _verified_h2h_matches(home, away):
+        mh, ma = _h2h_team_key(m.get("home")), _h2h_team_key(m.get("away"))
+        if {mh, ma} != {hk, ak}:
             continue
-        hg, ag = m["hg"], m["ag"]
+        try:
+            hg, ag = float(m.get("hg")), float(m.get("ag"))
+        except Exception:
+            continue
+        sig = (mh, ma, hg, ag, str(m.get("date") or ""))
+        if sig in seen:
+            continue
+        seen.add(sig)
+        pool.append((m, mh, ma, hg, ag))
+    pool = pool[-n:]
+    home_wins = away_wins = draws = 0
+    pts_h = pts_a = 0.0
+    for m, mh, ma, hg, ag in pool:
         if hg == ag:
-            pts_h += 1; pts_a += 1
+            draws += 1; pts_h += 1; pts_a += 1
         else:
-            winner = m["home"] if hg > ag else m["away"]
-            if winner == home: pts_h += 3
-            else: pts_a += 3
-        games += 1
-        if games >= n: break
+            winner_key = mh if hg > ag else ma
+            if winner_key == hk:
+                home_wins += 1; pts_h += 3
+            elif winner_key == ak:
+                away_wins += 1; pts_a += 3
+    games = len(pool)
     if not games:
-        return 0.5, 0.5, 0
-    total = max(pts_h + pts_a, 1)
-    return pts_h / total, pts_a / total, games
+        return {"home_share": .5, "away_share": .5, "games": 0, "home_wins": 0, "away_wins": 0, "draws": 0}
+    total = max(pts_h + pts_a, 1.0)
+    return {
+        "home_share": pts_h / total, "away_share": pts_a / total, "games": games,
+        "home_wins": home_wins, "away_wins": away_wins, "draws": draws,
+    }
+
+
+def _h2h(home, away, matches, n=6):
+    d = _h2h_details(home, away, matches, n)
+    return d["home_share"], d["away_share"], d["games"]
 
 
 def _home_away_rates(team, matches, as_home=True):
@@ -3300,6 +3472,15 @@ def render_analysis():
         market_weight = adaptive_market_weight(probs, moneyline, base_market_weight)
         probs = calibrate_result_with_market(probs, moneyline, market_weight)
 
+    # Checagem final orientada por evidências independentes. Só atua quando pelo
+    # menos dois sinais fortes concordam (ex.: H2H + nível da liga; Elo + mercado).
+    # Isso evita que mando ou amostra curta invertam um favorito estrutural real.
+    if probs:
+        probs = apply_evidence_consensus_guardrail(
+            probs, quality_prior if 'quality_prior' in locals() else None,
+            ctx=analysis_context, moneyline=moneyline,
+        )
+
     if probs:
         st.markdown("### 🏆 Chance de resultado")
         x, y, z = st.columns(3)
@@ -3308,11 +3489,15 @@ def render_analysis():
         z.metric(f"✈️ Vitória {team_b}", f"{probs['away']:.0f}%")
         # Explicação curta e útil: evita expor pesos e detalhes técnicos demais.
         eval_bits = ["força atual", "potencial ofensivo/defensivo", "forma recente", "nível da liga"]
+        h2txt = ""
         if analysis_context and analysis_context.get("h2h_games", 0):
-            eval_bits.append(f"confronto direto histórico ({analysis_context.get('h2h_games', 0)} jogo(s))")
+            n = int(analysis_context.get("h2h_games", 0))
+            hw = int(analysis_context.get("h2h_home_wins", 0)); aw = int(analysis_context.get("h2h_away_wins", 0)); dd = int(analysis_context.get("h2h_draws", 0))
+            eval_bits.append(f"confronto direto histórico ({n} jogo(s))")
+            h2txt = f" H2H encontrado: {team_a} {hw}V · {dd}E · {team_b} {aw}V."
         if moneyline:
             eval_bits.append("mercado público como validação externa")
-        st.caption("📌 Avaliação GM SCORE: " + ", ".join(eval_bits) + ". O favoritismo considera a força real do clube no contexto da liga em que atua; confrontos diretos entram como evidência adicional e a amostra curta da competição não pode, sozinha, inverter uma diferença estrutural clara.")
+        st.caption("📌 Avaliação GM SCORE: " + ", ".join(eval_bits) + "." + h2txt + " O mando ajuda o time da casa, mas não supera sozinho um consenso forte de qualidade, liga e histórico. A opção favorita é definida pelo cruzamento desses dados, não pelo nome da equipe.")
 
     if moneyline and probs:
         render_market_value_panel(team_a, team_b, probs, moneyline)
