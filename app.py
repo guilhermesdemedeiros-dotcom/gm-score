@@ -20,6 +20,7 @@ st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
     layout="wide",
+    initial_sidebar_state="expanded",
 )
 
 st.markdown("""
@@ -40,9 +41,9 @@ st.markdown("""
   font-size:2.35rem;
   font-weight:850;
   letter-spacing:-.04em;
-  color:#172033;
-  -webkit-text-stroke:0.7px #0b1220;
-  text-shadow:0 1px 0 rgba(15,23,42,.12);
+  color:#071426;
+  -webkit-text-stroke:0.9px #020617;
+  text-shadow:0 1px 1px rgba(2,6,23,.22);
 }
 .gm-brand-subtitle {
   margin-top:.55rem;
