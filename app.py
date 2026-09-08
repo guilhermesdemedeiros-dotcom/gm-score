@@ -252,9 +252,9 @@ COMPETITION_ICONS = {
 # O valor não é uma "nota absoluta"; serve somente para traduzir desempenho
 # doméstico para partidas entre clubes de campeonatos diferentes.
 LEAGUE_STRENGTH = {
-    "Inglaterra - Premier League": 1.15, "Espanha - La Liga": 1.10,
-    "Itália - Serie A": 1.08, "Alemanha - Bundesliga": 1.08,
-    "França - Ligue 1": 1.04, "Portugal - Liga Portugal": 0.99,
+    "Inglaterra - Premier League": 1.20, "Espanha - La Liga": 1.15,
+    "Itália - Serie A": 1.10, "Alemanha - Bundesliga": 1.09,
+    "França - Ligue 1": 1.04, "Portugal - Liga Portugal": 0.96,
     "Holanda - Eredivisie": 0.98, "Turquia - Süper Lig": 0.94,
     "Escócia - Premiership": 0.90, "Brasil - Série A": 1.00,
     "Brasil - Série B": 0.88, "Argentina - Liga Profesional": 0.96,
@@ -1818,25 +1818,37 @@ def global_quality_prior(home, away, df=None, ctx=None):
     hseason = float(hp.get("season_strength", 0.50) or 0.50)
     aseason = float(ap.get("season_strength", 0.50) or 0.50)
 
-    # Mando é importante, mas nunca deve apagar uma diferença estrutural clara.
-    # Mesmo quando há ClubElo, mantemos nível da liga, produção ofensiva e força
-    # da temporada no cálculo. Isso evita que um único rating ou uma sequência
-    # doméstica curta domine confrontos entre ligas diferentes.
+    # Hierarquia estrutural interligas. O nível do campeonato doméstico é um
+    # componente próprio (não apenas um pequeno ajuste do Elo), porque campanhas
+    # idênticas em ligas de forças muito diferentes não são equivalentes.
     home_adv = 42.0
+    league_component = (hls - als) * 620.0
+    attack_component = (hatk - aatk) * 150.0
+    season_component = (hseason - aseason) * 75.0
+    form_component = (hform - aform) * 42.0
+
+    # Confronto direto histórico entra como evidência adicional quando existe.
+    # O peso cresce com a quantidade de jogos, mas é limitado para não transformar
+    # partidas antigas em destino inevitável. Em continentais isso ajuda a separar
+    # força doméstica aparente de desempenho real contra o mesmo adversário.
+    h2h_games = int(ctx.get("h2h_games", 0) or 0)
+    h2h_home = float(ctx.get("h2h_home", 0.5) or 0.5)
+    h2h_away = float(ctx.get("h2h_away", 0.5) or 0.5)
+    h2h_reliability = min(h2h_games / 5.0, 1.0)
+    h2h_component = (h2h_home - h2h_away) * 210.0 * h2h_reliability
+
     if helo is not None and aelo is not None:
-        quality_diff = float(helo) + home_adv - float(aelo)
-        quality_diff += (hls - als) * 360.0
-        quality_diff += (hatk - aatk) * 145.0
-        quality_diff += (hseason - aseason) * 70.0
-        quality_diff += (hform - aform) * 45.0
+        # Elo segue importante, mas não pode sozinho apagar liga + H2H + produção.
+        elo_component = (float(helo) - float(aelo)) * 0.82
+        quality_diff = (home_adv + elo_component + league_component +
+                        attack_component + season_component + form_component +
+                        h2h_component)
     else:
-        # Fallback sem Elo: nível da liga recebe peso alto justamente para não
-        # equiparar campanhas domésticas de contextos competitivos distintos.
-        quality_diff = home_adv
-        quality_diff += (hls - als) * 1150.0
-        quality_diff += (hatk - aatk) * 180.0
-        quality_diff += (hseason - aseason) * 95.0
-        quality_diff += (hform - aform) * 60.0
+        # Sem Elo, ampliamos a tradução entre ligas mantendo os demais sinais.
+        quality_diff = (home_adv + (hls - als) * 980.0 +
+                        (hatk - aatk) * 175.0 +
+                        (hseason - aseason) * 90.0 +
+                        (hform - aform) * 52.0 + h2h_component)
 
     quality_diff = max(-520.0, min(520.0, quality_diff))
     expected = 1.0 / (1.0 + 10.0 ** (-quality_diff / 400.0))
@@ -1874,18 +1886,36 @@ def calibrate_with_global_quality(model_probs, quality_prior, sample=0, contextu
     qgap = q[qfav] - sorted(q, reverse=True)[1]
 
     if contextual:
-        w = max(0.36, 0.62 - min(float(sample), 8.0) * 0.035)
+        # Em continentais, a amostra inicial do torneio é pequena demais para
+        # superar a hierarquia interligas. Ela ganha espaço conforme os jogos chegam.
+        w = max(0.48, 0.72 - min(float(sample), 8.0) * 0.030)
     else:
         w = max(0.20, 0.36 - min(float(sample), 12.0) * 0.010)
 
     # Se a hierarquia estrutural aponta favorito claro e o modelo de poucos
-    # jogos aponta o adversário, aumenta o guardrail. Ainda não vira 100% prior.
-    if qfav != mfav and qgap >= 12:
-        w = max(w, 0.62 if contextual else 0.46)
-    if qgap >= 24:
-        w = max(w, 0.68 if contextual else 0.50)
+    # jogos aponta o adversário, aumenta o guardrail.
+    if qfav != mfav and qgap >= 10:
+        w = max(w, 0.76 if contextual else 0.46)
+    if qgap >= 20:
+        w = max(w, 0.82 if contextual else 0.50)
 
     vals = [m[i] * (1.0-w) + q[i] * w for i in range(3)]
+
+    # Guardrail independente de casas de aposta: se qualidade global + nível da
+    # liga + H2H produzem favorito claro, ruído de uma amostra curta não pode
+    # terminar invertendo o lado favorito. Preserva a intensidade do modelo.
+    if contextual and qgap >= 10:
+        vfav = max(range(3), key=lambda i: vals[i])
+        if vfav != qfav:
+            floor = max(38.0, q[qfav] - 5.0)
+            rest = [i for i in range(3) if i != qfav]
+            rest_total = max(sum(vals[i] for i in rest), 1e-9)
+            remaining = 100.0 - floor
+            vals[qfav] = floor
+            for i in rest:
+                vals[i] = remaining * vals[i] / rest_total
+            out["structural_guardrail"] = True
+
     z = sum(vals)
     vals = [v / z * 100.0 for v in vals]
     out["home"], out["draw"], out["away"] = vals
@@ -1941,7 +1971,11 @@ def contextual_victory_probabilities(home, away, a, b, ctx):
         elo_prior = (decisive * home_share, draw_prior, decisive * (1.0 - home_share))
 
     if ctx.get("h2h_games", 0) >= 2:
-        h2_delta = max(-0.035, min(0.035, (ctx.get("h2h_home", .5) - ctx.get("h2h_away", .5)) * 0.055))
+        # H2H tem peso perceptível, porém limitado. A quantidade de confrontos
+        # controla a confiança para evitar exagero com apenas dois jogos antigos.
+        h2_rel = min(float(ctx.get("h2h_games", 0)) / 5.0, 1.0)
+        h2_gap = float(ctx.get("h2h_home", .5)) - float(ctx.get("h2h_away", .5))
+        h2_delta = max(-0.10, min(0.10, h2_gap * 0.14 * h2_rel))
         lam_h *= 1 + h2_delta
         lam_a *= 1 - h2_delta
 
@@ -3275,10 +3309,10 @@ def render_analysis():
         # Explicação curta e útil: evita expor pesos e detalhes técnicos demais.
         eval_bits = ["força atual", "potencial ofensivo/defensivo", "forma recente", "nível da liga"]
         if analysis_context and analysis_context.get("h2h_games", 0):
-            eval_bits.append("histórico direto com peso reduzido")
+            eval_bits.append(f"confronto direto histórico ({analysis_context.get('h2h_games', 0)} jogo(s))")
         if moneyline:
             eval_bits.append("mercado público como validação externa")
-        st.caption("📌 Avaliação GM SCORE: " + ", ".join(eval_bits) + ". Esses sinais são cruzados para identificar o favorito mais consistente; histórico antigo e amostras curtas funcionam apenas como apoio, nunca como fator dominante.")
+        st.caption("📌 Avaliação GM SCORE: " + ", ".join(eval_bits) + ". O favoritismo considera a força real do clube no contexto da liga em que atua; confrontos diretos entram como evidência adicional e a amostra curta da competição não pode, sozinha, inverter uma diferença estrutural clara.")
 
     if moneyline and probs:
         render_market_value_panel(team_a, team_b, probs, moneyline)
