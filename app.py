@@ -3271,65 +3271,176 @@ ESPN_FIXTURE_LEAGUES = {
 }
 
 
-def load_espn_fixtures_for_date(target_date):
-    """Agenda pública da ESPN para complementar a busca por data.
+def _espn_get_json(url, timeout=15):
+    """Consulta ESPN sem o User-Agent de navegador usado pelas demais fontes.
 
-    Esta função é deliberadamente isolada das rotinas de estatísticas: serve
-    somente para preencher a agenda lateral com os jogos das competições que
-    já existem no GM SCORE.
+    A borda pública da ESPN pode responder 403 para User-Agents de navegador
+    simulados. Por isso a agenda usa uma chamada isolada com o User-Agent padrão
+    do ``requests`` e Accept JSON. Isso não altera nenhuma outra fonte do app.
     """
-    fixtures = []
-    date_token = target_date.strftime("%Y%m%d")
-    for competition, league_slug in ESPN_FIXTURE_LEAGUES.items():
+    errors = []
+    header_variants = (
+        {"Accept": "application/json"},
+        {},
+        {"User-Agent": "python-requests/2.x", "Accept": "application/json"},
+    )
+    for headers in header_variants:
         try:
-            urls = [
-                "https://site.api.espn.com/apis/site/v2/sports/soccer/"
-                f"{league_slug}/scoreboard?dates={date_token}&limit=100",
-                "https://site.web.api.espn.com/apis/site/v2/sports/soccer/"
-                f"{league_slug}/scoreboard?dates={date_token}&limit=100",
-            ]
-            data = request_first(urls, timeout=12).json()
-            for event in data.get("events", []) or []:
-                comps = event.get("competitions", []) or []
-                if not comps:
-                    continue
-                contest = comps[0]
-                competitors = contest.get("competitors", []) or []
-                home = away = None
-                for c in competitors:
-                    team = c.get("team", {}) or {}
-                    name = team.get("displayName") or team.get("shortDisplayName") or team.get("name")
-                    if c.get("homeAway") == "home":
-                        home = name
-                    elif c.get("homeAway") == "away":
-                        away = name
-                if not home or not away:
-                    continue
+            r = requests.get(url, headers=headers or None, timeout=timeout)
+            if r.status_code == 200 and r.content:
+                data = r.json()
+                if isinstance(data, dict):
+                    return data
+            errors.append(f"HTTP {r.status_code}")
+        except Exception as exc:
+            errors.append(str(exc))
+    raise RuntimeError(errors[-1] if errors else "ESPN indisponível")
 
-                raw_dt = event.get("date")
-                br_time = ""
-                br_date = target_date
-                if raw_dt:
-                    try:
-                        dt = pd.to_datetime(raw_dt, utc=True, errors="coerce")
-                        if not pd.isna(dt):
-                            dt_br = dt.tz_convert(BRASILIA_TZ)
-                            br_date = dt_br.date()
-                            br_time = dt_br.strftime("%H:%M")
-                    except Exception:
-                        pass
-                if br_date != target_date:
-                    continue
 
-                fixtures.append({
-                    "competition": competition,
-                    "home": home,
-                    "away": away,
-                    "time": br_time,
-                    "br_date": br_date,
-                })
-        except Exception:
+ESPN_SEASON_SLUG_MAP = {
+    "english-premier-league": "Inglaterra - Premier League",
+    "spanish-laliga": "Espanha - La Liga",
+    "italian-serie-a": "Itália - Serie A",
+    "german-bundesliga": "Alemanha - Bundesliga",
+    "french-ligue-1": "França - Ligue 1",
+    "portuguese-primeira-liga": "Portugal - Liga Portugal",
+    "dutch-eredivisie": "Holanda - Eredivisie",
+    "scottish-premiership": "Escócia - Premiership",
+    "turkish-super-lig": "Turquia - Süper Lig",
+    "brazilian-serie-a": "Brasil - Série A",
+    "brazilian-serie-b": "Brasil - Série B",
+    "saudi-pro-league": "Arábia Saudita - Saudi Pro League",
+    "major-league-soccer": "Estados Unidos - MLS",
+    "argentine-liga-profesional": "Argentina - Liga Profesional",
+    "mexican-liga-bbva-mx": "México - Liga MX",
+    "mexican-liga-mx": "México - Liga MX",
+    "colombian-primera-a": "Colômbia - Primera A",
+    "copa-libertadores": "CONMEBOL Libertadores",
+    "copa-sudamericana": "CONMEBOL Sul-Americana",
+    "uefa-champions-league": "UEFA Champions League",
+    "uefa-europa-league": "UEFA Europa League",
+    "uefa-conference-league": "UEFA Conference League",
+}
+
+
+def _competition_from_espn_event(event, fallback=None):
+    """Identifica a competição de um evento ESPN sem aceitar torneios fora do app."""
+    if fallback in COMPETITIONS:
+        return fallback
+
+    candidates = []
+    season = event.get("season", {}) or {}
+    for value in (season.get("slug"), season.get("displayName"), event.get("league")):
+        if value:
+            candidates.append(clean_col(value).replace("_", "-"))
+
+    # Alguns envelopes incluem liga dentro da competição/evento.
+    for contest in event.get("competitions", []) or []:
+        lg = contest.get("league") or contest.get("type") or {}
+        if isinstance(lg, dict):
+            for value in (lg.get("slug"), lg.get("name"), lg.get("abbreviation")):
+                if value:
+                    candidates.append(clean_col(value).replace("_", "-"))
+
+    joined = " ".join(candidates)
+    for token, competition in ESPN_SEASON_SLUG_MAP.items():
+        if token in joined:
+            return competition
+    return None
+
+
+def _fixtures_from_espn_payload(data, target_date, fallback_competition=None):
+    fixtures = []
+    for event in data.get("events", []) or []:
+        competition = _competition_from_espn_event(event, fallback_competition)
+        if not competition or competition not in COMPETITIONS:
             continue
+        comps = event.get("competitions", []) or []
+        if not comps:
+            continue
+        contest = comps[0]
+        competitors = contest.get("competitors", []) or []
+        home = away = None
+        for c in competitors:
+            team = c.get("team", {}) or {}
+            name = team.get("displayName") or team.get("shortDisplayName") or team.get("name")
+            if c.get("homeAway") == "home":
+                home = name
+            elif c.get("homeAway") == "away":
+                away = name
+        if not home or not away:
+            continue
+
+        raw_dt = event.get("date") or contest.get("date")
+        br_time = ""
+        br_date = target_date
+        if raw_dt:
+            try:
+                dt = pd.to_datetime(raw_dt, utc=True, errors="coerce")
+                if not pd.isna(dt):
+                    dt_br = dt.tz_convert(BRASILIA_TZ)
+                    br_date = dt_br.date()
+                    br_time = dt_br.strftime("%H:%M")
+            except Exception:
+                pass
+        if br_date != target_date:
+            continue
+
+        fixtures.append({
+            "competition": competition,
+            "home": home,
+            "away": away,
+            "time": br_time,
+            "br_date": br_date,
+            "source": "ESPN",
+        })
+    return fixtures
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def load_espn_fixtures_for_date(target_date):
+    """Agenda ESPN por data, isolada das bases estatísticas do GM SCORE.
+
+    Consulta primeiro o placar global e depois as ligas individualmente. Também
+    consulta os dias UTC adjacentes para não perder jogos noturnos que, em UTC,
+    aparecem no dia seguinte. O filtro final sempre usa a data de Brasília.
+    """
+    if isinstance(target_date, pd.Timestamp):
+        target_date = target_date.date()
+
+    fixtures = []
+    query_dates = [target_date - timedelta(days=1), target_date, target_date + timedelta(days=1)]
+
+    # 1) Fonte global: uma única agenda ampla reduz risco de rate-limit e cobre
+    # competições em que o slug individual da ESPN muda ao longo da temporada.
+    for query_date in query_dates:
+        date_token = query_date.strftime("%Y%m%d")
+        try:
+            data = _espn_get_json(
+                "https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard"
+                f"?dates={date_token}&limit=1000",
+                timeout=15,
+            )
+            fixtures.extend(_fixtures_from_espn_payload(data, target_date))
+        except Exception:
+            pass
+
+    # 2) Complemento liga a liga. É importante para eventos cujo payload global
+    # não expõe informação suficiente para identificar a competição.
+    for competition, league_slug in ESPN_FIXTURE_LEAGUES.items():
+        for query_date in query_dates:
+            date_token = query_date.strftime("%Y%m%d")
+            try:
+                data = _espn_get_json(
+                    "https://site.api.espn.com/apis/site/v2/sports/soccer/"
+                    f"{league_slug}/scoreboard?dates={date_token}&limit=100",
+                    timeout=12,
+                )
+                fixtures.extend(_fixtures_from_espn_payload(data, target_date, competition))
+                # Se esta data já retornou jogos para a liga, não precisamos das
+                # demais variantes UTC para a maioria dos campeonatos europeus.
+            except Exception:
+                continue
     return fixtures
 
 
