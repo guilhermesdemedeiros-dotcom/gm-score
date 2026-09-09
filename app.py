@@ -89,13 +89,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-VALIDATION_NOTICE = (
-    "⚠️ **Aviso de validação:** O GM SCORE está em fase de validação e aprimoramento contínuo. "
-    "Resultados, probabilidades e funcionalidades podem apresentar inconsistências pontuais. "
-    "Caso identifique qualquer bug, comportamento inesperado ou informação fora do padrão, "
-    "informe ao administrador para análise e correção."
-)
-
 
 # ============================================================
 # AUTENTICAÇÃO GM SCORE — ETAPA 11 (MODO DE TESTE)
@@ -643,26 +636,150 @@ def gm_payment_url():
         return ""
 
 
+GM_PUBLIC_COMPETITIONS = [
+    "🇬🇧 Inglaterra - Premier League",
+    "🇪🇸 Espanha - La Liga",
+    "🇮🇹 Itália - Serie A",
+    "🇩🇪 Alemanha - Bundesliga",
+    "🇫🇷 França - Ligue 1",
+    "🇵🇹 Portugal - Liga Portugal",
+    "🇳🇱 Holanda - Eredivisie",
+    "🏴 Escócia - Premiership",
+    "🇹🇷 Turquia - Süper Lig",
+    "🇧🇷 Brasil - Série A",
+    "🇧🇷 Brasil - Série B",
+    "🇸🇦 Arábia Saudita - Saudi Pro League",
+    "🇺🇸 Estados Unidos - MLS",
+    "🇦🇷 Argentina - Liga Profesional",
+    "🇲🇽 México - Liga MX",
+    "🇨🇴 Colômbia - Primera A",
+    "🏆 CONMEBOL Libertadores",
+    "🏆 CONMEBOL Sul-Americana",
+    "🏆 UEFA Champions League",
+    "🏆 UEFA Europa League",
+    "🏆 UEFA Conference League",
+]
+
+
+def gm_render_vip_showcase(compact=False):
+    """Vitrine pública chamativa do VIP, usando apenas dados ilustrativos."""
+    st.markdown("### 🚀 Veja o que existe dentro do GM SCORE VIP")
+    st.caption("Prévia visual do painel. Os valores abaixo são ilustrativos e não representam uma partida real.")
+
+    # Mockup visual do painel VIP — construído no próprio app, sem depender de imagens externas.
+    st.markdown(
+        """
+        <style>
+        .gm-vip-hero{border:1px solid rgba(34,197,94,.35);border-radius:22px;padding:20px;
+          background:linear-gradient(145deg,rgba(22,128,58,.22),rgba(15,23,42,.88));
+          box-shadow:0 16px 42px rgba(0,0,0,.20);margin:.35rem 0 1rem 0;color:#f8fafc}
+        .gm-vip-kicker{font-size:.74rem;font-weight:800;letter-spacing:.12em;color:#86efac}
+        .gm-vip-title{font-size:1.55rem;font-weight:900;margin:.35rem 0 .2rem}
+        .gm-vip-sub{font-size:.88rem;color:#cbd5e1;margin-bottom:1rem}
+        .gm-vip-scoregrid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}
+        .gm-vip-scorebox{background:rgba(15,23,42,.70);border:1px solid rgba(148,163,184,.20);
+          border-radius:14px;padding:12px;text-align:center}
+        .gm-vip-scorebox b{display:block;font-size:1.35rem;color:#fff;margin-top:2px}
+        .gm-vip-scorebox span{font-size:.72rem;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em}
+        .gm-bar-wrap{margin:10px 0 4px}.gm-bar-label{display:flex;justify-content:space-between;font-size:.82rem;margin-bottom:5px}
+        .gm-bar-track{height:9px;border-radius:999px;background:rgba(148,163,184,.18);overflow:hidden}
+        .gm-bar-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,#16a34a,#4ade80)}
+        .gm-chip{display:inline-block;border:1px solid rgba(74,222,128,.30);background:rgba(22,163,74,.12);
+          color:#bbf7d0;border-radius:999px;padding:5px 9px;margin:3px 3px 3px 0;font-size:.76rem;font-weight:700}
+        .gm-section-card{border:1px solid rgba(148,163,184,.22);border-radius:17px;padding:14px 15px;
+          background:rgba(30,41,59,.28);min-height:100%}
+        .gm-section-card h4{margin:0 0 8px 0;font-size:1rem}
+        .gm-section-card p{margin:0;color:inherit;opacity:.78;font-size:.86rem;line-height:1.45}
+        .gm-comp-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:9px}
+        .gm-comp{border:1px solid rgba(148,163,184,.20);border-radius:12px;padding:9px 10px;
+          background:rgba(30,41,59,.22);font-size:.83rem;font-weight:650}
+        @media(max-width:700px){.gm-vip-scoregrid{grid-template-columns:1fr 1fr 1fr}.gm-comp-grid{grid-template-columns:1fr}}
+        </style>
+        <div class="gm-vip-hero">
+          <div class="gm-vip-kicker">PRÉVIA DO PAINEL VIP</div>
+          <div class="gm-vip-title">⚽ Time A <span style="opacity:.45">x</span> Time B</div>
+          <div class="gm-vip-sub">Leitura completa da partida: força das equipes, contexto da competição, probabilidades, mercados e odds justas.</div>
+          <div class="gm-vip-scoregrid">
+            <div class="gm-vip-scorebox"><span>Casa</span><b>46%</b></div>
+            <div class="gm-vip-scorebox"><span>Empate</span><b>28%</b></div>
+            <div class="gm-vip-scorebox"><span>Fora</span><b>26%</b></div>
+          </div>
+          <div style="margin-top:14px">
+            <div class="gm-bar-wrap"><div class="gm-bar-label"><span>Mais de 1.5 gols</span><b>82%</b></div><div class="gm-bar-track"><div class="gm-bar-fill" style="width:82%"></div></div></div>
+            <div class="gm-bar-wrap"><div class="gm-bar-label"><span>Mais de 7.5 escanteios</span><b>74%</b></div><div class="gm-bar-track"><div class="gm-bar-fill" style="width:74%"></div></div></div>
+            <div class="gm-bar-wrap"><div class="gm-bar-label"><span>Mais de 3.5 cartões</span><b>68%</b></div><div class="gm-bar-track"><div class="gm-bar-fill" style="width:68%"></div></div></div>
+          </div>
+          <div style="margin-top:13px">
+            <span class="gm-chip">🎯 Odds justas</span><span class="gm-chip">🛡️ Dupla chance</span><span class="gm-chip">📈 Expectativa</span><span class="gm-chip">🔥 Oportunidades</span>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("#### 📊 Estatísticas que você encontra")
+    s1, s2, s3, s4 = st.columns(4)
+    s1.metric("Gols esperados", "2,8")
+    s2.metric("Escanteios", "9,7")
+    s3.metric("Cartões", "4,6")
+    s4.metric("Finalizações", "25")
+
+    st.markdown(
+        """
+        <div class="gm-comp-grid" style="margin-bottom:1rem">
+          <div class="gm-section-card"><h4>⚽ Gols e resultado</h4><p>Probabilidade 1X2, dupla chance, gols esperados, linhas de mais de gols e contexto ofensivo/defensivo.</p></div>
+          <div class="gm-section-card"><h4>🚩 Escanteios</h4><p>Médias das equipes, tendência da competição, expectativa do confronto e linhas com maior confiança.</p></div>
+          <div class="gm-section-card"><h4>🟨 Cartões e faltas</h4><p>Perfil disciplinar, intensidade esperada e comportamento recente das equipes.</p></div>
+          <div class="gm-section-card"><h4>🥅 Finalizações</h4><p>Finalizações, chutes no alvo, eficiência ofensiva e pressão esperada durante a partida.</p></div>
+          <div class="gm-section-card"><h4>📈 Forma e contexto</h4><p>Recorte recente, mando, força da liga, confronto direto e fase da competição.</p></div>
+          <div class="gm-section-card"><h4>💰 Odds justas</h4><p>Probabilidade final GM SCORE convertida em odd justa e comparação com mercado quando disponível.</p></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("#### 🎯 Exemplo de oportunidades encontradas")
+    demo = pd.DataFrame(
+        {
+            "Probabilidade (%)": [82, 74, 68, 66],
+        },
+        index=["+1.5 gols", "+7.5 escanteios", "+3.5 cartões", "Dupla chance 1X"],
+    )
+    st.bar_chart(demo, height=245)
+
+    st.markdown("### 🌍 Competições disponíveis no GM SCORE")
+    st.caption("As principais ligas nacionais e competições continentais já fazem parte da cobertura do aplicativo.")
+    competition_html = ''.join(f'<div class="gm-comp">{item}</div>' for item in GM_PUBLIC_COMPETITIONS)
+    st.markdown(f'<div class="gm-comp-grid">{competition_html}</div>', unsafe_allow_html=True)
+
+    if not compact:
+        st.success(
+            "⭐ Ao ter o VIP liberado, o cliente acessa a agenda de partidas, seleciona o confronto e recebe a análise completa com os dados disponíveis para aquela competição."
+        )
+
+
 def gm_render_public_intro():
     st.markdown("## ⭐ GM SCORE VIP")
     st.markdown(
-        "Análises estatísticas de partidas com **probabilidades, odds justas, dupla chance, "
-        "expectativa de gols, escanteios, cartões, finalizações e outros indicadores** para apoiar "
-        "uma leitura mais completa do mercado esportivo."
+        "**Mais informação antes de cada partida.** O GM SCORE transforma dados de futebol em uma leitura organizada de "
+        "estatísticas, probabilidades, contexto da competição e mercados utilizados em apostas esportivas."
     )
+
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.markdown("**📊 Estatísticas**  \nDesempenho recente, médias e contexto das equipes.")
+        st.markdown("**📅 Agenda de jogos**  \nEscolha data, competição e confronto diretamente no aplicativo.")
     with c2:
-        st.markdown("**🎯 Probabilidades**  \nResultado, dupla chance, gols e mercados complementares.")
+        st.markdown("**📊 Análise completa**  \nGols, escanteios, cartões, finalizações, forma e outras métricas.")
     with c3:
-        st.markdown("**📈 Expectativa**  \nProjeções da partida com contexto da competição e da amostra.")
+        st.markdown("**🎯 Probabilidades**  \nResultado, dupla chance, linhas, odds justas e oportunidades.")
 
+    gm_render_vip_showcase(compact=False)
+
+    st.markdown("### 🔐 Como liberar seu acesso")
     st.info(
-        "🔒 **Conteúdo completo exclusivo para clientes VIP.** Crie sua conta, efetue o pagamento "
-        "e aguarde a liberação do administrador."
+        "1. Crie sua conta GM SCORE.  2. Efetue o pagamento pelo link disponibilizado.  "
+        "3. Aguarde a confirmação do administrador.  4. Entre com o mesmo login e acesse o GM SCORE VIP completo."
     )
-
 
 def gm_render_login_form(form_key="gm_public_login"):
     with st.form(form_key, clear_on_submit=False):
@@ -773,6 +890,12 @@ def gm_render_waiting_access(profile, state):
             st.link_button("💳 Efetuar pagamento", pay_url, type="primary", use_container_width=True)
         else:
             st.caption("O link de pagamento ainda não foi configurado no aplicativo. Fale com o suporte para receber as instruções.")
+
+    # Enquanto aguarda a aprovação, o cliente continua vendo a vitrine do que receberá no VIP.
+    if state not in {"blocked", "expired"}:
+        st.markdown("---")
+        gm_render_vip_showcase(compact=True)
+
     st.link_button("✈️ Suporte pelo Telegram", "https://t.me/suport_gm", use_container_width=True)
     if st.button("🚪 Sair da conta", use_container_width=True, key="gm_wait_logout"):
         gm_auth_sign_out()
@@ -854,7 +977,6 @@ if (
     gm_render_admin_panel(_gm_profile_after_gate)
     st.stop()
 
-st.info(VALIDATION_NOTICE)
 if _gm_profile_after_gate and _gm_profile_after_gate.get("role") == "admin":
     gm_render_auth_test_console()
 
@@ -4789,7 +4911,6 @@ if "selected_away" not in st.session_state:
     st.session_state.selected_away = None
 st.sidebar.markdown("### ⚽ GM SCORE")
 st.sidebar.caption("Agenda de jogos")
-st.sidebar.info(VALIDATION_NOTICE)
 
 # A competição continua sendo controlada pela tela principal. A barra lateral
 # passa a ser uma agenda independente, sem alterar as rotinas antigas de análise.
