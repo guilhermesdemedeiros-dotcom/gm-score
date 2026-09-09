@@ -30,7 +30,6 @@ st.markdown("""
     <span class="gm-brand-title">GM SCORE</span>
   </div>
   <div class="gm-brand-subtitle">ANÁLISE • ESTATÍSTICAS • PROBABILIDADES</div>
-  <div class="gm-brand-credit">CRIADO E VALIDADO POR GUILHERME MEDEIROS</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -4130,11 +4129,11 @@ else:
 if st.sidebar.button("🔄 Atualizar agenda", use_container_width=True):
     st.cache_data.clear(); st.rerun()
 
-_SUPPORT_URL = "https://wa.me/5554996523476?text=Ol%C3%A1%2C%20eu%20vim%20do%20APP%20GM%20Score"
+_SUPPORT_URL = "https://t.me/suport_gm"
 st.sidebar.markdown("---")
 if st.sidebar.button("📲 Instalar GM SCORE no celular", use_container_width=True):
     render_install_guide()
-st.sidebar.link_button("💬 Suporte pelo WhatsApp", _SUPPORT_URL, use_container_width=True)
+st.sidebar.link_button("✈️ Suporte pelo Telegram", _SUPPORT_URL, use_container_width=True)
 
 def load_current_season():
     def roster_only_fallback(errors):
@@ -4322,7 +4321,7 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
       if(D.expectations.length) {{ section('📈 Expectativa da partida'); for(const r of D.expectations) {{text(ctx,r[0],80,y,27); text(ctx,r[1],930,y,29,'bold'); y+=55;}} y+=20; }}
       if(D.opportunities.length) {{ section('⭐ Melhores linhas para observar'); for(const r of D.opportunities) {{ctx.font='bold 27px Arial';ctx.fillStyle='#172033'; y=wrap(ctx,r[0],80,y,700,34); text(ctx,r[1],930,y,30,'bold',parseInt(r[1])>=80?'#16a34a':'#b7791f'); y+=34; ctx.font='22px Arial';ctx.fillStyle='#64748b'; y=wrap(ctx,r[2],80,y,820,29); y+=45;}} }}
       if(D.averages.length) {{ section('📊 Médias usadas na análise'); text(ctx,'Dado',80,y,23,'bold','#64748b'); text(ctx,D.home,550,y,21,'bold','#64748b'); text(ctx,D.away,820,y,21,'bold','#64748b'); y+=42; for(const r of D.averages) {{text(ctx,r[0],80,y,23);text(ctx,r[1],580,y,23,'bold');text(ctx,r[2],850,y,23,'bold');y+=46;}} }}
-      y+=45; text(ctx,'CRIADO E VALIDADO POR GUILHERME MEDEIROS',65,y,21,'bold','#94a3b8'); y+=38; text(ctx,'Estimativas estatísticas; não garantem resultado.',65,y,20,'normal','#94a3b8');
+      y+=45; text(ctx,'Estimativas estatísticas; não garantem resultado.',65,y,20,'normal','#94a3b8');
       canvas.toBlob(async blob=>{{
         const file=new File([blob],'gm-score-analise-completa-HD.jpg',{{type:'image/jpeg'}});
         try {{
@@ -4634,7 +4633,7 @@ def render_analysis():
 render_analysis()
 
 st.markdown("---")
-st.link_button("💬 Suporte pelo WhatsApp", _SUPPORT_URL, use_container_width=True)
+st.link_button("✈️ Suporte pelo Telegram", _SUPPORT_URL, use_container_width=True)
 
 st.caption("As chances são estimativas estatísticas da temporada vigente e não garantem resultado. Use como apoio à análise e aposte com responsabilidade.")
 
