@@ -13,6 +13,14 @@ import requests
 import streamlit as st
 import streamlit.components.v1 as components
 
+# Cliente oficial do Supabase. Nesta etapa ele é usado apenas como
+# infraestrutura de autenticação em modo de teste; o GM SCORE continua
+# público até a ativação explícita do portal VIP em uma etapa posterior.
+try:
+    from supabase import create_client
+except Exception:
+    create_client = None
+
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
@@ -88,8 +96,226 @@ VALIDATION_NOTICE = (
     "informe ao administrador para análise e correção."
 )
 
+
+# ============================================================
+# AUTENTICAÇÃO GM SCORE — ETAPA 11 (MODO DE TESTE)
+# ============================================================
+# IMPORTANTE:
+# - Nenhuma chave fica escrita neste arquivo.
+# - Usamos somente Project URL + Publishable Key dos Secrets do Streamlit.
+# - Não usamos Secret/Service Role Key no app.
+# - O acesso ao GM SCORE ainda NÃO é bloqueado nesta etapa.
+# - Tokens de login ficam apenas no st.session_state da sessão do navegador.
+GM_AUTH_TEST_MODE = True
+GM_AUTH_SESSION_KEYS = (
+    "gm_auth_access_token",
+    "gm_auth_refresh_token",
+    "gm_auth_user_id",
+    "gm_auth_email",
+)
+
+
+def gm_supabase_config():
+    """Lê a configuração do Supabase sem expor credenciais na interface/log."""
+    try:
+        cfg = st.secrets.get("supabase", {})
+        url = str(cfg.get("url", "")).strip().rstrip("/")
+        key = str(cfg.get("publishable_key", "")).strip()
+    except Exception:
+        url, key = "", ""
+    return url, key
+
+
+def gm_supabase_is_configured():
+    url, key = gm_supabase_config()
+    return bool(url.startswith("https://") and url.endswith("supabase.co") and key)
+
+
+def gm_new_supabase_client():
+    """Cria um cliente NOVO por chamada, evitando compartilhar sessão entre usuários."""
+    if create_client is None:
+        raise RuntimeError("Biblioteca 'supabase' não instalada. Verifique requirements.txt.")
+    url, key = gm_supabase_config()
+    if not url or not key:
+        raise RuntimeError("Secrets [supabase] ainda não estão configurados.")
+    return create_client(url, key)
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def gm_supabase_public_probe(url):
+    """Teste leve de disponibilidade do projeto, sem login e sem ler dados de clientes."""
+    _, key = gm_supabase_config()
+    if not url or not key:
+        return False, "Configuração ausente"
+    try:
+        r = requests.get(
+            f"{url}/auth/v1/settings",
+            headers={"apikey": key},
+            timeout=8,
+        )
+        if r.status_code == 200:
+            return True, "Supabase acessível"
+        return False, f"Resposta HTTP {r.status_code}"
+    except Exception as exc:
+        return False, f"Falha de conexão: {type(exc).__name__}"
+
+
+def gm_auth_clear_local_session():
+    for key in GM_AUTH_SESSION_KEYS:
+        st.session_state.pop(key, None)
+    st.session_state.pop("gm_auth_profile", None)
+
+
+def gm_auth_sign_in(email, password):
+    """Autentica por e-mail/senha e guarda os tokens somente nesta sessão Streamlit."""
+    client = gm_new_supabase_client()
+    response = client.auth.sign_in_with_password({
+        "email": str(email).strip().lower(),
+        "password": str(password),
+    })
+    session = getattr(response, "session", None)
+    user = getattr(response, "user", None)
+    if session is None or user is None:
+        raise RuntimeError("O Supabase não retornou uma sessão válida.")
+    st.session_state["gm_auth_access_token"] = session.access_token
+    st.session_state["gm_auth_refresh_token"] = session.refresh_token
+    st.session_state["gm_auth_user_id"] = str(user.id)
+    st.session_state["gm_auth_email"] = str(user.email or "")
+    st.session_state.pop("gm_auth_profile", None)
+    return user
+
+
+def gm_auth_client_from_session():
+    """Restaura a sessão Supabase deste navegador em um cliente isolado."""
+    access = st.session_state.get("gm_auth_access_token")
+    refresh = st.session_state.get("gm_auth_refresh_token")
+    if not access or not refresh:
+        return None
+    client = gm_new_supabase_client()
+    try:
+        result = client.auth.set_session(access, refresh)
+        # set_session pode renovar tokens expirados. Mantemos a cópia local atualizada.
+        session = getattr(result, "session", None)
+        if session is not None:
+            st.session_state["gm_auth_access_token"] = session.access_token
+            st.session_state["gm_auth_refresh_token"] = session.refresh_token
+        return client
+    except Exception:
+        gm_auth_clear_local_session()
+        return None
+
+
+def gm_auth_get_profile(force=False):
+    """Lê somente o próprio gm_users; o RLS do Supabase faz a proteção no servidor."""
+    if not force and isinstance(st.session_state.get("gm_auth_profile"), dict):
+        return st.session_state["gm_auth_profile"]
+    client = gm_auth_client_from_session()
+    user_id = st.session_state.get("gm_auth_user_id")
+    if client is None or not user_id:
+        return None
+    result = (
+        client.table("gm_users")
+        .select("id,nome,email,role,vip_status,payment_status,vip_until,blocked,terms_accepted,created_at")
+        .eq("id", user_id)
+        .limit(1)
+        .execute()
+    )
+    rows = getattr(result, "data", None) or []
+    profile = rows[0] if rows else None
+    if isinstance(profile, dict):
+        st.session_state["gm_auth_profile"] = profile
+    return profile
+
+
+def gm_auth_access_state(profile=None):
+    """Classifica a autorização sem ainda bloquear a interface nesta etapa."""
+    profile = profile or gm_auth_get_profile()
+    if not profile:
+        return "anonymous"
+    if bool(profile.get("blocked")) or profile.get("vip_status") == "blocked":
+        return "blocked"
+    if profile.get("role") == "admin":
+        return "admin"
+    if profile.get("vip_status") != "active":
+        return str(profile.get("vip_status") or "pending")
+    vip_until = profile.get("vip_until")
+    if vip_until:
+        try:
+            expiry = pd.to_datetime(vip_until, utc=True)
+            if expiry < pd.Timestamp.now(tz="UTC"):
+                return "expired"
+        except Exception:
+            return "pending"
+    return "vip"
+
+
+def gm_auth_sign_out():
+    client = gm_auth_client_from_session()
+    if client is not None:
+        try:
+            client.auth.sign_out()
+        except Exception:
+            pass
+    gm_auth_clear_local_session()
+
+
+def gm_auth_sign_up(nome, email, password):
+    """Infraestrutura do futuro cadastro. Ainda não há formulário público nesta etapa."""
+    client = gm_new_supabase_client()
+    return client.auth.sign_up({
+        "email": str(email).strip().lower(),
+        "password": str(password),
+        "options": {"data": {"nome": str(nome).strip()}},
+    })
+
+
+def gm_render_auth_test_console():
+    """Console invisível no uso normal. Abra o app com ?auth_test=1 para testar."""
+    if not GM_AUTH_TEST_MODE:
+        return
+    try:
+        enabled = str(st.query_params.get("auth_test", "0")).lower() in {"1", "true", "sim", "yes"}
+    except Exception:
+        enabled = False
+    if not enabled:
+        return
+
+    with st.expander("🔐 Diagnóstico de autenticação — ETAPA 11", expanded=True):
+        st.caption("Modo técnico de teste. O conteúdo atual do GM SCORE continua liberado.")
+        if not gm_supabase_is_configured():
+            st.error("Secrets do Supabase não foram encontrados ou estão incompletos.")
+            return
+        url, _ = gm_supabase_config()
+        ok, detail = gm_supabase_public_probe(url)
+        if ok:
+            st.success("Conexão Streamlit ↔ Supabase funcionando.")
+        else:
+            st.error(f"Não foi possível validar a conexão: {detail}")
+        if create_client is None:
+            st.error("Pacote supabase ainda não foi carregado no ambiente.")
+        else:
+            st.caption("Cliente Supabase carregado. Nenhuma Secret/Service Role Key é usada pelo app.")
+
+        if st.session_state.get("gm_auth_user_id"):
+            profile = None
+            try:
+                profile = gm_auth_get_profile(force=True)
+            except Exception as exc:
+                st.warning(f"Sessão encontrada, mas o perfil não pôde ser consultado ({type(exc).__name__}).")
+            if profile:
+                st.success(f"Usuário autenticado em teste · estado: {gm_auth_access_state(profile)}")
+                st.caption(f"Perfil: {profile.get('role', 'client')} · VIP: {profile.get('vip_status', 'pending')}")
+            if st.button("Sair da sessão de teste", key="gm_auth_test_logout"):
+                gm_auth_sign_out()
+                st.rerun()
+        else:
+            st.info("Nenhum usuário autenticado. O formulário de login será criado na próxima etapa.")
+
 # Aviso global: aparece no conteúdo principal sempre que o usuário acessa o app.
 st.info(VALIDATION_NOTICE)
+
+# Só aparece quando o administrador adiciona ?auth_test=1 à URL.
+gm_render_auth_test_console()
 
 # Guia de instalação: mantém o app intacto e ensina o cliente a criar um
 # atalho do GM SCORE na tela inicial do iPhone/iPad ou Android.
