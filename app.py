@@ -3229,11 +3229,107 @@ def valid_daily_fixture(f):
     return True
 
 
+
+
+# Fonte adicional para a agenda por data. Usa os calendários públicos da ESPN
+# apenas para descobrir partidas (não altera as bases estatísticas antigas).
+ESPN_FIXTURE_LEAGUES = {
+    "Inglaterra - Premier League": "eng.1",
+    "Espanha - La Liga": "esp.1",
+    "Itália - Serie A": "ita.1",
+    "Alemanha - Bundesliga": "ger.1",
+    "França - Ligue 1": "fra.1",
+    "Portugal - Liga Portugal": "por.1",
+    "Holanda - Eredivisie": "ned.1",
+    "Escócia - Premiership": "sco.1",
+    "Turquia - Süper Lig": "tur.1",
+    "Brasil - Série A": "bra.1",
+    "Brasil - Série B": "bra.2",
+    "Arábia Saudita - Saudi Pro League": "ksa.1",
+    "Estados Unidos - MLS": "usa.1",
+    "Argentina - Liga Profesional": "arg.1",
+    "México - Liga MX": "mex.1",
+    "Colômbia - Primera A": "col.1",
+    "CONMEBOL Libertadores": "conmebol.libertadores",
+    "CONMEBOL Sul-Americana": "conmebol.sudamericana",
+    "UEFA Champions League": "uefa.champions",
+    "UEFA Europa League": "uefa.europa",
+    "UEFA Conference League": "uefa.europa.conf",
+}
+
+
+def load_espn_fixtures_for_date(target_date):
+    """Agenda pública da ESPN para complementar a busca por data.
+
+    Esta função é deliberadamente isolada das rotinas de estatísticas: serve
+    somente para preencher a agenda lateral com os jogos das competições que
+    já existem no GM SCORE.
+    """
+    fixtures = []
+    date_token = target_date.strftime("%Y%m%d")
+    for competition, league_slug in ESPN_FIXTURE_LEAGUES.items():
+        try:
+            url = (
+                "https://site.api.espn.com/apis/site/v2/sports/soccer/"
+                f"{league_slug}/scoreboard?dates={date_token}&limit=100"
+            )
+            data = request_first([url], timeout=12).json()
+            for event in data.get("events", []) or []:
+                comps = event.get("competitions", []) or []
+                if not comps:
+                    continue
+                contest = comps[0]
+                competitors = contest.get("competitors", []) or []
+                home = away = None
+                for c in competitors:
+                    team = c.get("team", {}) or {}
+                    name = team.get("displayName") or team.get("shortDisplayName") or team.get("name")
+                    if c.get("homeAway") == "home":
+                        home = name
+                    elif c.get("homeAway") == "away":
+                        away = name
+                if not home or not away:
+                    continue
+
+                raw_dt = event.get("date")
+                br_time = ""
+                br_date = target_date
+                if raw_dt:
+                    try:
+                        dt = pd.to_datetime(raw_dt, utc=True, errors="coerce")
+                        if not pd.isna(dt):
+                            dt_br = dt.tz_convert(BRASILIA_TZ)
+                            br_date = dt_br.date()
+                            br_time = dt_br.strftime("%H:%M")
+                    except Exception:
+                        pass
+                if br_date != target_date:
+                    continue
+
+                fixtures.append({
+                    "competition": competition,
+                    "home": home,
+                    "away": away,
+                    "time": br_time,
+                    "br_date": br_date,
+                })
+        except Exception:
+            continue
+    return fixtures
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_fixtures_for_date(target_date):
     """Carrega somente jogos das competições suportadas para uma data de Brasília."""
     today = target_date
     fixtures = []
+
+    # Agenda por data: fonte ampla complementar. Ela só adiciona partidas à lista
+    # e não interfere nas fontes históricas/estatísticas usadas nas análises.
+    try:
+        fixtures.extend(load_espn_fixtures_for_date(today))
+    except Exception:
+        pass
 
     # Fonte diária abrangente: consulta também o dia UTC seguinte para não perder jogos
     # que ainda pertencem ao dia de Brasília após a conversão de fuso.
