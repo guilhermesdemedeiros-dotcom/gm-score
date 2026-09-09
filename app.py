@@ -3,6 +3,7 @@ import math
 import os
 import re
 import time
+import secrets
 import unicodedata
 from html.parser import HTMLParser
 from datetime import datetime, date, timedelta
@@ -24,6 +25,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
+GM_BUILD = "2026-09-09-session-unica-v1"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -105,6 +107,7 @@ GM_AUTH_SESSION_KEYS = (
     "gm_auth_refresh_token",
     "gm_auth_user_id",
     "gm_auth_email",
+    "gm_device_session_token",
 )
 
 
@@ -274,7 +277,55 @@ def gm_auth_access_state(profile=None):
     return "vip"
 
 
+def gm_device_session_token():
+    """Token opaco da sessão Streamlit atual; nunca é usado como credencial de login."""
+    token = st.session_state.get("gm_device_session_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        st.session_state["gm_device_session_token"] = token
+    return token
+
+
+def gm_session_rpc(function_name, params=None):
+    client = gm_auth_client_from_session()
+    if client is None:
+        raise RuntimeError("Sessão autenticada indisponível.")
+    result = client.rpc(function_name, params or {}).execute()
+    return getattr(result, "data", None)
+
+
+def gm_session_result(data):
+    """Normaliza retorno TABLE do Postgres para (ok, reason)."""
+    row = data[0] if isinstance(data, list) and data else (data if isinstance(data, dict) else {})
+    ok = bool(row.get("allowed")) if "allowed" in row else bool(row.get("valid"))
+    return ok, str(row.get("reason") or "unknown")
+
+
+def gm_start_or_validate_session():
+    token = gm_device_session_token()
+    started = bool(st.session_state.get("gm_device_session_started"))
+    fn = "gm_validate_session" if started else "gm_start_session"
+    data = gm_session_rpc(fn, {"p_session_token": token})
+    ok, reason = gm_session_result(data)
+    if ok:
+        st.session_state["gm_device_session_started"] = True
+    return ok, reason
+
+
+def gm_end_current_session():
+    token = st.session_state.get("gm_device_session_token")
+    if token and st.session_state.get("gm_auth_access_token"):
+        try:
+            gm_session_rpc("gm_end_session", {"p_session_token": token})
+        except Exception:
+            pass
+    st.session_state.pop("gm_device_session_started", None)
+
+
 def gm_auth_sign_out():
+    # Libera primeiro a trava de sessão no banco. Se este navegador não for o
+    # dono da sessão ativa, o RPC não altera a sessão legítima do outro aparelho.
+    gm_end_current_session()
     client = gm_auth_client_from_session()
     if client is not None:
         try:
@@ -468,6 +519,15 @@ def gm_render_admin_panel(profile):
                     except Exception as exc:
                         st.error("Não foi possível alterar o bloqueio.")
                         st.caption(str(exc))
+
+            if st.button("🔄 Liberar dispositivo / sessão", use_container_width=True, key=f"gm_admin_reset_session_{uid}"):
+                try:
+                    gm_admin_rpc("gm_admin_reset_session", {"p_user_id": uid})
+                    st.success("Sessão liberada. O cliente já pode entrar em outro dispositivo.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error("Não foi possível liberar a sessão do cliente.")
+                    st.caption(str(exc))
 
     st.markdown("---")
     if st.button("← Voltar ao GM SCORE", use_container_width=True, key="gm_admin_back_bottom"):
@@ -921,6 +981,20 @@ def gm_render_waiting_access(profile, state):
         st.rerun()
 
 
+def gm_render_session_conflict(profile, reason):
+    nome = str((profile or {}).get("nome") or "Cliente").strip()
+    st.error("🔒 Esta conta já está em uso em outro dispositivo ou navegador.")
+    st.write(
+        f"Olá, **{nome}**. O GM SCORE permite **1 sessão ativa por conta VIP**. "
+        "Encerre a sessão no dispositivo anterior ou peça ao administrador para liberar o acesso."
+    )
+    st.caption("Isso protege a conta contra compartilhamento e uso simultâneo não autorizado.")
+    st.link_button("✈️ Falar com o suporte no Telegram", "https://t.me/suport_gm", use_container_width=True)
+    if st.button("🚪 Sair desta tentativa de acesso", use_container_width=True, key="gm_session_conflict_logout"):
+        gm_auth_sign_out()
+        st.rerun()
+
+
 def gm_render_public_portal():
     """Retorna True somente quando o usuário pode acessar o app completo."""
     user_id = st.session_state.get("gm_auth_user_id")
@@ -933,6 +1007,26 @@ def gm_render_public_portal():
     if profile:
         state = gm_auth_access_state(profile)
         if state in {"admin", "vip"}:
+            try:
+                session_ok, session_reason = gm_start_or_validate_session()
+            except Exception:
+                session_ok, session_reason = False, "session_service_error"
+
+            if not session_ok:
+                if session_reason in {"another_session_active", "session_mismatch"}:
+                    gm_render_session_conflict(profile, session_reason)
+                elif session_reason == "blocked":
+                    gm_render_waiting_access(profile, "blocked")
+                elif session_reason in {"vip_expired", "vip_not_active"}:
+                    gm_render_waiting_access(profile, "expired")
+                else:
+                    st.error("Não foi possível validar a sessão segura do GM SCORE agora.")
+                    st.caption("Tente novamente. Se o problema continuar, fale com o suporte.")
+                    if st.button("🚪 Sair", use_container_width=True, key="gm_session_error_logout"):
+                        gm_auth_sign_out()
+                        st.rerun()
+                return False
+
             with st.sidebar:
                 st.markdown("### 👤 Minha conta")
                 st.caption(str(profile.get("nome") or profile.get("email") or "GM SCORE"))
