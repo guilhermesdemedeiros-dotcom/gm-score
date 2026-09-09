@@ -301,6 +301,187 @@ def gm_auth_sign_up(nome, email, password):
     })
 
 
+def gm_admin_rpc(function_name, params=None):
+    """Executa uma função administrativa usando a sessão autenticada do administrador."""
+    client = gm_auth_client_from_session()
+    if client is None:
+        raise RuntimeError("Sessão administrativa indisponível.")
+    result = client.rpc(function_name, params or {}).execute()
+    return getattr(result, "data", None)
+
+
+def gm_admin_list_users():
+    rows = gm_admin_rpc("gm_admin_list_users") or []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def gm_admin_format_datetime(value):
+    if not value:
+        return "—"
+    try:
+        ts = pd.to_datetime(value, utc=True)
+        return ts.tz_convert("America/Sao_Paulo").strftime("%d/%m/%Y %H:%M")
+    except Exception:
+        return str(value)
+
+
+def gm_admin_status_label(row):
+    if bool(row.get("blocked")) or row.get("vip_status") == "blocked":
+        return "⛔ Bloqueado"
+    status = str(row.get("vip_status") or "pending")
+    if status == "active":
+        return "🟢 VIP ativo"
+    if status == "expired":
+        return "⌛ Expirado"
+    return "⏳ Pendente"
+
+
+def gm_render_admin_panel(profile):
+    """Painel administrativo. Todas as alterações são validadas novamente pelo banco."""
+    if not profile or profile.get("role") != "admin":
+        st.error("Acesso administrativo não autorizado.")
+        return
+
+    st.markdown("## 🛠 Painel Administrativo")
+    st.caption("Gerencie clientes VIP. As operações são validadas no Supabase antes de qualquer alteração.")
+
+    top1, top2 = st.columns([1, 1])
+    with top1:
+        if st.button("← Voltar ao GM SCORE", use_container_width=True, key="gm_admin_back_top"):
+            st.session_state["gm_admin_panel_open"] = False
+            st.rerun()
+    with top2:
+        if st.button("🔄 Atualizar clientes", use_container_width=True, key="gm_admin_refresh"):
+            st.rerun()
+
+    try:
+        rows = gm_admin_list_users()
+    except Exception as exc:
+        st.error("Não foi possível carregar os clientes do painel administrativo.")
+        st.caption(f"Detalhe técnico: {type(exc).__name__}")
+        return
+
+    clients = [r for r in rows if r.get("role") == "client"]
+    pending = sum(1 for r in clients if r.get("vip_status") == "pending" and not r.get("blocked"))
+    active = sum(1 for r in clients if r.get("vip_status") == "active" and not r.get("blocked"))
+    expired = sum(1 for r in clients if r.get("vip_status") == "expired" and not r.get("blocked"))
+    blocked = sum(1 for r in clients if r.get("blocked") or r.get("vip_status") == "blocked")
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Pendentes", pending)
+    m2.metric("VIP ativos", active)
+    m3.metric("Expirados", expired)
+    m4.metric("Bloqueados", blocked)
+
+    if not clients:
+        st.info("Nenhum cliente cadastrado ainda.")
+        return
+
+    status_filter = st.selectbox(
+        "Filtrar clientes",
+        ["Todos", "Pendentes", "VIP ativos", "Expirados", "Bloqueados"],
+        key="gm_admin_status_filter",
+    )
+    search = st.text_input("Buscar por nome ou e-mail", key="gm_admin_search").strip().lower()
+
+    def include_row(row):
+        if search:
+            hay = f"{row.get('nome','')} {row.get('email','')}".lower()
+            if search not in hay:
+                return False
+        blocked_now = bool(row.get("blocked")) or row.get("vip_status") == "blocked"
+        status = row.get("vip_status")
+        if status_filter == "Pendentes" and not (status == "pending" and not blocked_now):
+            return False
+        if status_filter == "VIP ativos" and not (status == "active" and not blocked_now):
+            return False
+        if status_filter == "Expirados" and not (status == "expired" and not blocked_now):
+            return False
+        if status_filter == "Bloqueados" and not blocked_now:
+            return False
+        return True
+
+    filtered = [r for r in clients if include_row(r)]
+    if not filtered:
+        st.info("Nenhum cliente corresponde ao filtro selecionado.")
+        return
+
+    st.markdown(f"### Clientes ({len(filtered)})")
+    for row in filtered:
+        uid = str(row.get("id") or "")
+        nome = str(row.get("nome") or "Cliente").strip()
+        email = str(row.get("email") or "").strip()
+        status_label = gm_admin_status_label(row)
+        payment = str(row.get("payment_status") or "pending")
+        vip_until = gm_admin_format_datetime(row.get("vip_until"))
+        created = gm_admin_format_datetime(row.get("created_at"))
+        approved = gm_admin_format_datetime(row.get("approved_at"))
+
+        with st.expander(f"{status_label} · {nome} · {email}", expanded=(row.get("vip_status") == "pending")):
+            st.write(f"**Pagamento:** `{payment}`")
+            st.write(f"**VIP até:** {vip_until}")
+            st.write(f"**Cadastro:** {created}")
+            st.write(f"**Aprovado em:** {approved}")
+
+            days = st.selectbox(
+                "Período do acesso",
+                [30, 90, 180, 365],
+                format_func=lambda d: f"{d} dias",
+                key=f"gm_admin_days_{uid}",
+            )
+
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("✅ Aprovar VIP", use_container_width=True, key=f"gm_admin_approve_{uid}"):
+                    try:
+                        gm_admin_rpc("gm_admin_approve_user", {"p_user_id": uid, "p_days": int(days)})
+                        st.success("Cliente aprovado com sucesso.")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error("Não foi possível aprovar o cliente.")
+                        st.caption(str(exc))
+            with c2:
+                if st.button("➕ Renovar VIP", use_container_width=True, key=f"gm_admin_renew_{uid}"):
+                    try:
+                        gm_admin_rpc("gm_admin_renew_user", {"p_user_id": uid, "p_days": int(days)})
+                        st.success("VIP renovado com sucesso.")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error("Não foi possível renovar o VIP.")
+                        st.caption(str(exc))
+
+            p1, p2 = st.columns(2)
+            with p1:
+                if payment != "paid":
+                    if st.button("💳 Marcar pagamento como pago", use_container_width=True, key=f"gm_admin_paid_{uid}"):
+                        try:
+                            gm_admin_rpc("gm_admin_set_payment", {"p_user_id": uid, "p_status": "paid"})
+                            st.success("Pagamento atualizado.")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error("Não foi possível atualizar o pagamento.")
+                            st.caption(str(exc))
+                else:
+                    st.success("💳 Pagamento confirmado")
+            with p2:
+                blocked_now = bool(row.get("blocked")) or row.get("vip_status") == "blocked"
+                action_label = "🔓 Desbloquear" if blocked_now else "⛔ Bloquear"
+                if st.button(action_label, use_container_width=True, key=f"gm_admin_blocktoggle_{uid}"):
+                    try:
+                        fn = "gm_admin_unblock_user" if blocked_now else "gm_admin_block_user"
+                        gm_admin_rpc(fn, {"p_user_id": uid})
+                        st.success("Status do cliente atualizado.")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error("Não foi possível alterar o bloqueio.")
+                        st.caption(str(exc))
+
+    st.markdown("---")
+    if st.button("← Voltar ao GM SCORE", use_container_width=True, key="gm_admin_back_bottom"):
+        st.session_state["gm_admin_panel_open"] = False
+        st.rerun()
+
+
 def gm_render_auth_test_console():
     """Console invisível no uso normal. Abra o app com ?auth_test=1 para testar."""
     if not GM_AUTH_TEST_MODE:
@@ -614,8 +795,13 @@ def gm_render_public_portal():
                 st.markdown("### 👤 Minha conta")
                 st.caption(str(profile.get("nome") or profile.get("email") or "GM SCORE"))
                 st.success("🛠️ Administrador" if state == "admin" else "⭐ VIP ativo")
+                if state == "admin":
+                    if st.button("🛠 Painel Administrativo", use_container_width=True, key="gm_sidebar_admin_panel"):
+                        st.session_state["gm_admin_panel_open"] = True
+                        st.rerun()
                 if st.button("🚪 Sair", use_container_width=True, key="gm_sidebar_logout"):
                     gm_auth_sign_out()
+                    st.session_state.pop("gm_admin_panel_open", None)
                     st.rerun()
                 st.markdown("---")
             return True
@@ -655,11 +841,20 @@ if not gm_render_public_portal():
 
 # Aviso aparece somente dentro da área completa. O diagnóstico técnico só é exibido
 # para administrador autenticado, evitando qualquer rota de bypass do acesso VIP.
-st.info(VALIDATION_NOTICE)
 try:
     _gm_profile_after_gate = gm_auth_get_profile()
 except Exception:
     _gm_profile_after_gate = None
+
+if (
+    _gm_profile_after_gate
+    and _gm_profile_after_gate.get("role") == "admin"
+    and st.session_state.get("gm_admin_panel_open")
+):
+    gm_render_admin_panel(_gm_profile_after_gate)
+    st.stop()
+
+st.info(VALIDATION_NOTICE)
 if _gm_profile_after_gate and _gm_profile_after_gate.get("role") == "admin":
     gm_render_auth_test_console()
 
