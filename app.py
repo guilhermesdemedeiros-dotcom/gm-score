@@ -3077,7 +3077,7 @@ def _is_allowed_daily_fixture_path(path, competition):
 @st.cache_data(ttl=900, show_spinner=False)
 def load_livescore_today(source_date):
     """Fonte diária complementar. Horários são normalizados para Brasília (America/Sao_Paulo)."""
-    url = f"https://www.livescore.mobi/football/{source_date:%Y-%m-%d}/"
+    url = f"https://www.livescore.mobi/football/{source_date:%Y-%m-%d}/?tz=0"
     r = request_first([url], timeout=20)
     parser = _DailyFixtureLinkParser()
     parser.feed(r.text)
@@ -3090,12 +3090,25 @@ def load_livescore_today(source_date):
             continue
         if not _is_allowed_daily_fixture_path(href, comp):
             continue
-        m = re.search(r"/([^/]+-vs-[^/]+)/\d+/?(?:\?.*)?$", href)
-        if not m:
+        # O calendário do LiveScore muda ocasionalmente o formato do href.
+        # Primeiro tentamos extrair os clubes da URL; se isso falhar, usamos o
+        # próprio texto do link (ex.: "15:00AFC Bournemouth - Brentford").
+        clean_href = str(href).split("?", 1)[0]
+        m = re.search(r"/([^/]+-vs-[^/]+)/\d+/?$", clean_href)
+        home = away = None
+        if m:
+            matchup = m.group(1)
+            home_slug, away_slug = matchup.split("-vs-", 1)
+            home, away = _pretty_slug_team(home_slug), _pretty_slug_team(away_slug)
+        if not home or not away:
+            label_match = re.search(
+                r"(?:^|\s)(?:[0-2]?\d:[0-5]\d)?\s*([^|]+?)\s+-\s+([^|]+?)\s*$",
+                str(label or "").strip(),
+            )
+            if label_match:
+                home, away = label_match.group(1).strip(), label_match.group(2).strip()
+        if not home or not away:
             continue
-        matchup = m.group(1)
-        home_slug, away_slug = matchup.split("-vs-", 1)
-        home, away = _pretty_slug_team(home_slug), _pretty_slug_team(away_slug)
         tm = re.search(r"\b([0-2]?\d:[0-5]\d)\b", label or "")
         if tm:
             # O LiveScore.mobi entrega os horários da listagem diária em UTC.
@@ -3269,11 +3282,13 @@ def load_espn_fixtures_for_date(target_date):
     date_token = target_date.strftime("%Y%m%d")
     for competition, league_slug in ESPN_FIXTURE_LEAGUES.items():
         try:
-            url = (
+            urls = [
                 "https://site.api.espn.com/apis/site/v2/sports/soccer/"
-                f"{league_slug}/scoreboard?dates={date_token}&limit=100"
-            )
-            data = request_first([url], timeout=12).json()
+                f"{league_slug}/scoreboard?dates={date_token}&limit=100",
+                "https://site.web.api.espn.com/apis/site/v2/sports/soccer/"
+                f"{league_slug}/scoreboard?dates={date_token}&limit=100",
+            ]
+            data = request_first(urls, timeout=12).json()
             for event in data.get("events", []) or []:
                 comps = event.get("competitions", []) or []
                 if not comps:
@@ -3555,7 +3570,7 @@ _agenda_fixtures = sorted(
 )
 
 if not _agenda_fixtures:
-    st.sidebar.info("Nenhum jogo das competições do GM SCORE encontrado nesta data.")
+    st.sidebar.info("Nenhum jogo encontrado nesta data. Toque em **Atualizar agenda** para consultar novamente as fontes públicas.")
 else:
     st.sidebar.caption(f"{len(_agenda_fixtures)} jogo(s) encontrado(s)")
     _last_comp = None
