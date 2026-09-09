@@ -773,6 +773,25 @@ def gm_render_public_intro():
     with c3:
         st.markdown("**🎯 Probabilidades**  \nResultado, dupla chance, linhas, odds justas e oportunidades.")
 
+    # CTA no topo: no celular o visitante não precisa atravessar toda a vitrine para chegar ao acesso.
+    st.markdown(
+        """
+        <style>
+        .gm-access-cta{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:1rem 0 1.25rem}
+        .gm-access-cta a{display:flex;align-items:center;justify-content:center;text-decoration:none!important;
+          border-radius:12px;padding:12px 10px;font-weight:800;border:1px solid rgba(34,197,94,.55)}
+        .gm-login-cta{background:#16803a;color:white!important}
+        .gm-signup-cta{background:rgba(22,128,58,.10);color:inherit!important}
+        @media(max-width:520px){.gm-access-cta{grid-template-columns:1fr}}
+        </style>
+        <div class="gm-access-cta">
+          <a class="gm-login-cta" href="#gm-acesso">🔐 Já sou cliente — Entrar</a>
+          <a class="gm-signup-cta" href="#gm-acesso">⭐ Quero ser VIP — Criar conta</a>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
     gm_render_vip_showcase(compact=False)
 
     st.markdown("### 🔐 Como liberar seu acesso")
@@ -940,6 +959,10 @@ def gm_render_public_portal():
         gm_auth_clear_local_session()
 
     gm_render_public_intro()
+    # Destino dos botões de acesso exibidos no topo da página pública.
+    st.markdown('<div id="gm-acesso"></div>', unsafe_allow_html=True)
+    st.markdown("## 🔐 Acesse sua conta ou entre para o VIP")
+    st.caption("Já é cliente? Entre com seu e-mail e senha. Novo por aqui? Crie sua conta VIP.")
     login_tab, signup_tab = st.tabs(["🔐 Entrar", "⭐ Criar conta VIP"])
     with login_tab:
         gm_render_login_form()
