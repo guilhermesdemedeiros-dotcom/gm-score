@@ -3244,6 +3244,184 @@ def valid_daily_fixture(f):
 
 
 
+
+# Fonte principal complementar da agenda: calendário público do SofaScore.
+# O GM SCORE já usa o SofaScore para H2H/odds, portanto esta rotina reaproveita
+# a mesma fonte apenas para DESCOBRIR partidas por data. Ela não altera dados
+# históricos, estatísticas, probabilidades ou qualquer cálculo existente.
+SOFASCORE_TOURNAMENT_ALIASES = {
+    "premier league": "Inglaterra - Premier League",
+    "laliga": "Espanha - La Liga",
+    "la liga": "Espanha - La Liga",
+    "serie a": "Itália - Serie A",  # validado pelo país abaixo
+    "bundesliga": "Alemanha - Bundesliga",
+    "ligue 1": "França - Ligue 1",
+    "liga portugal": "Portugal - Liga Portugal",
+    "primeira liga": "Portugal - Liga Portugal",
+    "eredivisie": "Holanda - Eredivisie",
+    "premiership": "Escócia - Premiership",
+    "super lig": "Turquia - Süper Lig",
+    "süper lig": "Turquia - Süper Lig",
+    "brasileirao serie a": "Brasil - Série A",
+    "brasileirão série a": "Brasil - Série A",
+    "brasileirao serie b": "Brasil - Série B",
+    "brasileirão série b": "Brasil - Série B",
+    "saudi pro league": "Arábia Saudita - Saudi Pro League",
+    "mls": "Estados Unidos - MLS",
+    "major league soccer": "Estados Unidos - MLS",
+    "liga profesional": "Argentina - Liga Profesional",
+    "liga profesional de futbol": "Argentina - Liga Profesional",
+    "liga profesional de fútbol": "Argentina - Liga Profesional",
+    "liga mx": "México - Liga MX",
+    "primera a": "Colômbia - Primera A",
+    "uefa champions league": "UEFA Champions League",
+    "champions league": "UEFA Champions League",
+    "uefa europa league": "UEFA Europa League",
+    "europa league": "UEFA Europa League",
+    "uefa conference league": "UEFA Conference League",
+    "conference league": "UEFA Conference League",
+    "conmebol libertadores": "CONMEBOL Libertadores",
+    "copa libertadores": "CONMEBOL Libertadores",
+    "libertadores": "CONMEBOL Libertadores",
+    "conmebol sudamericana": "CONMEBOL Sul-Americana",
+    "copa sudamericana": "CONMEBOL Sul-Americana",
+    "sudamericana": "CONMEBOL Sul-Americana",
+}
+
+
+def _norm_fixture_label(value):
+    value = clean_col(value or "").replace("_", "-")
+    value = re.sub(r"[^a-z0-9à-ÿ -]+", " ", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _competition_from_sofascore_event(event):
+    """Mapeia somente as 21 competições cadastradas no GM SCORE.
+
+    Usa torneio + país/categoria para impedir que ligas homônimas (por exemplo,
+    Serie A de outro país) entrem na agenda.
+    """
+    tournament = event.get("tournament") or {}
+    unique = tournament.get("uniqueTournament") or {}
+    category = tournament.get("category") or unique.get("category") or {}
+
+    names = [
+        unique.get("name"), unique.get("slug"),
+        tournament.get("name"), tournament.get("slug"),
+    ]
+    joined = " ".join(_norm_fixture_label(x) for x in names if x)
+    country = _norm_fixture_label(category.get("name") or category.get("slug") or "")
+
+    # Competições continentais primeiro: independem do país da categoria.
+    continental = (
+        ("champions league", "UEFA Champions League"),
+        ("europa league", "UEFA Europa League"),
+        ("conference league", "UEFA Conference League"),
+        ("libertadores", "CONMEBOL Libertadores"),
+        ("sudamericana", "CONMEBOL Sul-Americana"),
+    )
+    for token, comp in continental:
+        if token in joined:
+            return comp
+
+    # Ligas nacionais com desambiguação por país quando necessário.
+    country_rules = [
+        (("premier league",), ("england", "inglaterra"), "Inglaterra - Premier League"),
+        (("laliga", "la liga"), ("spain", "espanha"), "Espanha - La Liga"),
+        (("serie a",), ("italy", "italia", "itália"), "Itália - Serie A"),
+        (("bundesliga",), ("germany", "alemanha"), "Alemanha - Bundesliga"),
+        (("ligue 1",), ("france", "franca", "frança"), "França - Ligue 1"),
+        (("liga portugal", "primeira liga"), ("portugal",), "Portugal - Liga Portugal"),
+        (("eredivisie",), ("netherlands", "holanda"), "Holanda - Eredivisie"),
+        (("premiership",), ("scotland", "escocia", "escócia"), "Escócia - Premiership"),
+        (("super lig", "süper lig"), ("turkey", "turkiye", "türkiye", "turquia"), "Turquia - Süper Lig"),
+        (("brasileirao serie a", "brasileirão série a", "brasileirao", "brasileirão"), ("brazil", "brasil"), "Brasil - Série A"),
+        (("serie b", "brasileirao serie b", "brasileirão série b"), ("brazil", "brasil"), "Brasil - Série B"),
+        (("saudi pro league", "professional league"), ("saudi arabia", "arabia saudita", "arábia saudita"), "Arábia Saudita - Saudi Pro League"),
+        (("mls", "major league soccer"), ("usa", "united states", "estados unidos"), "Estados Unidos - MLS"),
+        (("liga profesional",), ("argentina",), "Argentina - Liga Profesional"),
+        (("liga mx",), ("mexico", "méxico"), "México - Liga MX"),
+        (("primera a",), ("colombia", "colômbia"), "Colômbia - Primera A"),
+    ]
+    for tour_tokens, countries, comp in country_rules:
+        if any(t in joined for t in tour_tokens) and (not country or any(c in country for c in countries)):
+            # Brasileirão genérico precisa distinguir A/B pelo nome completo.
+            if comp == "Brasil - Série A" and "serie b" in joined:
+                continue
+            return comp
+    return None
+
+
+def _sofascore_schedule_json(day_iso, timeout=12):
+    errors = []
+    urls = [
+        f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{day_iso}",
+        f"https://www.sofascore.com/api/v1/sport/football/scheduled-events/{day_iso}",
+    ]
+    header_variants = [HEADERS, {"Accept": "application/json"}, None]
+    for url in urls:
+        for headers in header_variants:
+            try:
+                r = requests.get(url, headers=headers, timeout=timeout)
+                if r.status_code == 200 and r.content:
+                    data = r.json()
+                    if isinstance(data, dict) and isinstance(data.get("events"), list):
+                        return data
+                errors.append(f"{r.status_code} {url}")
+            except Exception as exc:
+                errors.append(str(exc))
+    raise RuntimeError(errors[-1] if errors else "SofaScore indisponível")
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def load_sofascore_fixtures_for_date(target_date):
+    """Retorna a agenda completa das competições do app na data de Brasília."""
+    if isinstance(target_date, pd.Timestamp):
+        target_date = target_date.date()
+    if isinstance(target_date, datetime):
+        target_date = target_date.date()
+
+    fixtures = []
+    # O endpoint é organizado por dia do calendário da fonte. Consultar os dias
+    # adjacentes evita perder partidas na virada UTC/Brasília.
+    for source_date in (target_date - timedelta(days=1), target_date, target_date + timedelta(days=1)):
+        try:
+            payload = _sofascore_schedule_json(source_date.isoformat())
+        except Exception:
+            continue
+        for ev in payload.get("events", []) or []:
+            comp = _competition_from_sofascore_event(ev)
+            if not comp or comp not in COMPETITIONS:
+                continue
+            home = str((ev.get("homeTeam") or {}).get("name") or "").strip()
+            away = str((ev.get("awayTeam") or {}).get("name") or "").strip()
+            if not home or not away:
+                continue
+
+            br_date = source_date
+            br_time = ""
+            ts = ev.get("startTimestamp")
+            if ts is not None:
+                try:
+                    dt_br = datetime.fromtimestamp(float(ts), tz=timezone.utc).astimezone(BRASILIA_TZ)
+                    br_date = dt_br.date()
+                    br_time = dt_br.strftime("%H:%M")
+                except Exception:
+                    pass
+            if br_date != target_date:
+                continue
+            fixtures.append({
+                "competition": comp,
+                "home": home,
+                "away": away,
+                "time": br_time,
+                "br_date": br_date,
+                "source": "SofaScore",
+                "event_id": ev.get("id"),
+            })
+    return fixtures
+
+
 # Fonte adicional para a agenda por data. Usa os calendários públicos da ESPN
 # apenas para descobrir partidas (não altera as bases estatísticas antigas).
 ESPN_FIXTURE_LEAGUES = {
@@ -3450,8 +3628,13 @@ def load_fixtures_for_date(target_date):
     today = target_date
     fixtures = []
 
-    # Agenda por data: fonte ampla complementar. Ela só adiciona partidas à lista
-    # e não interfere nas fontes históricas/estatísticas usadas nas análises.
+    # Agenda por data: o SofaScore é consultado primeiro porque o próprio GM SCORE
+    # já usa essa fonte pública em H2H/odds. ESPN e fontes antigas permanecem como
+    # complementos, sem alterar os dados históricos ou os cálculos de análise.
+    try:
+        fixtures.extend(load_sofascore_fixtures_for_date(today))
+    except Exception:
+        pass
     try:
         fixtures.extend(load_espn_fixtures_for_date(today))
     except Exception:
