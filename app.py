@@ -280,7 +280,7 @@ def gm_render_auth_test_console():
     if not enabled:
         return
 
-    with st.expander("🔐 Diagnóstico de autenticação — ETAPA 11", expanded=True):
+    with st.expander("🔐 Diagnóstico de autenticação — ETAPA 12", expanded=True):
         st.caption("Modo técnico de teste. O conteúdo atual do GM SCORE continua liberado.")
         if not gm_supabase_is_configured():
             st.error("Secrets do Supabase não foram encontrados ou estão incompletos.")
@@ -303,13 +303,55 @@ def gm_render_auth_test_console():
             except Exception as exc:
                 st.warning(f"Sessão encontrada, mas o perfil não pôde ser consultado ({type(exc).__name__}).")
             if profile:
-                st.success(f"Usuário autenticado em teste · estado: {gm_auth_access_state(profile)}")
-                st.caption(f"Perfil: {profile.get('role', 'client')} · VIP: {profile.get('vip_status', 'pending')}")
-            if st.button("Sair da sessão de teste", key="gm_auth_test_logout"):
+                state = gm_auth_access_state(profile)
+                labels = {
+                    "admin": "🛠️ Administrador",
+                    "vip": "⭐ VIP ativo",
+                    "pending": "⏳ Aguardando aprovação",
+                    "expired": "⌛ VIP expirado",
+                    "blocked": "⛔ Bloqueado",
+                    "anonymous": "👤 Não autenticado",
+                }
+                st.success(f"Login realizado com sucesso · {labels.get(state, state)}")
+                st.write(f"**Perfil:** `{profile.get('role', 'client')}`")
+                st.write(f"**VIP:** `{profile.get('vip_status', 'pending')}`")
+                st.write(f"**Pagamento:** `{profile.get('payment_status', 'pending')}`")
+                st.write(f"**Bloqueado:** `{'sim' if profile.get('blocked') else 'não'}`")
+                full_access = state in {"admin", "vip"}
+                st.write(f"**Acesso completo GM SCORE:** {'✅ Sim' if full_access else '❌ Não'}")
+            else:
+                st.warning("O login existe, mas não foi encontrado um perfil correspondente em gm_users.")
+            if st.button("🚪 Sair da sessão de teste", key="gm_auth_test_logout", use_container_width=True):
                 gm_auth_sign_out()
                 st.rerun()
         else:
-            st.info("Nenhum usuário autenticado. O formulário de login será criado na próxima etapa.")
+            st.markdown("#### 🔐 Testar login GM SCORE")
+            st.caption("Use primeiro o cliente de teste criado no Supabase. Não envie a senha por mensagem.")
+            with st.form("gm_auth_test_login_form", clear_on_submit=False):
+                email = st.text_input("E-mail", key="gm_auth_test_email", autocomplete="email")
+                password = st.text_input("Senha", type="password", key="gm_auth_test_password", autocomplete="current-password")
+                submitted = st.form_submit_button("Entrar", use_container_width=True)
+            if submitted:
+                if not str(email).strip() or not str(password):
+                    st.warning("Informe e-mail e senha.")
+                else:
+                    try:
+                        gm_auth_sign_in(email, password)
+                        profile = gm_auth_get_profile(force=True)
+                        if not profile:
+                            gm_auth_sign_out()
+                            st.error("Login autenticado, mas o perfil gm_users não foi encontrado. A sessão foi encerrada por segurança.")
+                        else:
+                            st.rerun()
+                    except Exception as exc:
+                        # Não expõe detalhes internos/credenciais no diagnóstico público.
+                        msg = str(exc).lower()
+                        if "invalid login credentials" in msg or "invalid_credentials" in msg:
+                            st.error("E-mail ou senha inválidos.")
+                        elif "email not confirmed" in msg:
+                            st.error("Este e-mail ainda não foi confirmado.")
+                        else:
+                            st.error("Não foi possível entrar. Verifique os dados e tente novamente.")
 
 # Aviso global: aparece no conteúdo principal sempre que o usuário acessa o app.
 st.info(VALIDATION_NOTICE)
