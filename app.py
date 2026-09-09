@@ -25,7 +25,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-09-session-persistente-v2"
+GM_BUILD = "2026-09-09-termos-v3"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -242,7 +242,7 @@ def gm_auth_get_profile(force=False):
         return None
     result = (
         client.table("gm_users")
-        .select("id,nome,email,role,vip_status,payment_status,vip_until,blocked,terms_accepted,created_at")
+        .select("id,nome,email,role,vip_status,payment_status,vip_until,blocked,terms_accepted,terms_accepted_at,created_at")
         .eq("id", user_id)
         .limit(1)
         .execute()
@@ -366,13 +366,43 @@ def gm_auth_sign_out():
     gm_clear_device_session_marker()
 
 
+def gm_accept_terms():
+    """Registra o aceite da política de uso pelo próprio cliente via RLS."""
+    client = gm_auth_client_from_session()
+    user_id = st.session_state.get("gm_auth_user_id")
+    if client is None or not user_id:
+        raise RuntimeError("Sessão autenticada indisponível.")
+
+    now_utc = pd.Timestamp.now(tz="UTC").isoformat()
+    result = (
+        client.table("gm_users")
+        .update({
+            "terms_accepted": True,
+            "terms_accepted_at": now_utc,
+            "last_seen_at": now_utc,
+            "updated_at": now_utc,
+        })
+        .eq("id", user_id)
+        .execute()
+    )
+    rows = getattr(result, "data", None) or []
+    st.session_state.pop("gm_auth_profile", None)
+    if not rows:
+        # Dependendo da configuração do PostgREST, UPDATE pode não devolver linhas.
+        # A confirmação definitiva é feita relendo o perfil protegido por RLS.
+        profile = gm_auth_get_profile(force=True)
+        if not profile or not bool(profile.get("terms_accepted")):
+            raise RuntimeError("Não foi possível registrar o aceite dos termos.")
+    return True
+
+
 def gm_auth_sign_up(nome, email, password):
-    """Infraestrutura do futuro cadastro. Ainda não há formulário público nesta etapa."""
+    """Infraestrutura auxiliar de cadastro."""
     client = gm_new_supabase_client()
     return client.auth.sign_up({
         "email": str(email).strip().lower(),
         "password": str(password),
-        "options": {"data": {"nome": str(nome).strip()}},
+        "options": {"data": {"nome": str(nome).strip(), "terms_accepted": True}},
     })
 
 
@@ -978,6 +1008,49 @@ def gm_render_signup_form():
                 st.error("Não foi possível criar a conta agora. Tente novamente ou fale com o suporte.")
 
 
+def gm_render_terms_acceptance(profile):
+    """Exige aceite explícito de contas antigas antes de qualquer acesso do cliente."""
+    nome = str((profile or {}).get("nome") or "Cliente").strip()
+    st.markdown("## 📄 Política de Uso do GM SCORE VIP")
+    st.write(
+        f"Olá, **{nome}**. Antes de continuar, precisamos registrar o seu aceite da política de uso atual do GM SCORE."
+    )
+    st.info(
+        "O acesso VIP é **individual** e permite **1 sessão ativa por conta**. "
+        "Não é permitido compartilhar o login ou utilizar a mesma conta simultaneamente em mais de um dispositivo. "
+        "Para acessos simultâneos de outras pessoas, é necessário contratar contas adicionais."
+    )
+    st.markdown(
+        "**Ao aceitar, você confirma que:**\n\n"
+        "- a conta será utilizada individualmente;\n"
+        "- o compartilhamento de login não é permitido;\n"
+        "- tentativas recorrentes de uso simultâneo podem resultar em bloqueio;\n"
+        "- a validade do VIP depende do período contratado e do status do pagamento."
+    )
+    accepted = st.checkbox(
+        "Li e concordo com a Política de Uso da Conta VIP.",
+        key="gm_existing_terms_checkbox",
+    )
+    if st.button(
+        "✅ Aceitar e continuar",
+        type="primary",
+        use_container_width=True,
+        disabled=not accepted,
+        key="gm_existing_terms_accept_button",
+    ):
+        try:
+            gm_accept_terms()
+            st.success("✅ Aceite registrado com sucesso.")
+            st.rerun()
+        except Exception:
+            st.error("Não foi possível registrar o aceite agora. Tente novamente ou fale com o suporte.")
+
+    st.link_button("✈️ Suporte pelo Telegram", "https://t.me/suport_gm", use_container_width=True)
+    if st.button("🚪 Sair da conta", use_container_width=True, key="gm_terms_logout"):
+        gm_auth_sign_out()
+        st.rerun()
+
+
 def gm_render_waiting_access(profile, state):
     nome = str(profile.get("nome") or "Cliente").strip()
     if state == "blocked":
@@ -1036,6 +1109,12 @@ def gm_render_public_portal():
         except Exception:
             profile = None
     if profile:
+        # Contas antigas precisam registrar um aceite explícito antes de continuar.
+        # Administradores ficam isentos desta etapa para evitar travar a gestão do sistema.
+        if profile.get("role") != "admin" and not bool(profile.get("terms_accepted")):
+            gm_render_terms_acceptance(profile)
+            return False
+
         state = gm_auth_access_state(profile)
         if state in {"admin", "vip"}:
             try:
