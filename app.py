@@ -166,22 +166,54 @@ def gm_auth_clear_local_session():
     st.session_state.pop("gm_auth_profile", None)
 
 
-def gm_auth_sign_in(email, password):
-    """Autentica por e-mail/senha e guarda os tokens somente nesta sessão Streamlit."""
-    client = gm_new_supabase_client()
-    response = client.auth.sign_in_with_password({
-        "email": str(email).strip().lower(),
-        "password": str(password),
-    })
-    session = getattr(response, "session", None)
-    user = getattr(response, "user", None)
-    if session is None or user is None:
+def gm_auth_store_session(access_token, refresh_token, user_id, email=""):
+    """Guarda apenas os tokens da sessão atual do navegador Streamlit."""
+    if not access_token or not refresh_token or not user_id:
         raise RuntimeError("O Supabase não retornou uma sessão válida.")
-    st.session_state["gm_auth_access_token"] = session.access_token
-    st.session_state["gm_auth_refresh_token"] = session.refresh_token
-    st.session_state["gm_auth_user_id"] = str(user.id)
-    st.session_state["gm_auth_email"] = str(user.email or "")
+    st.session_state["gm_auth_access_token"] = str(access_token)
+    st.session_state["gm_auth_refresh_token"] = str(refresh_token)
+    st.session_state["gm_auth_user_id"] = str(user_id)
+    st.session_state["gm_auth_email"] = str(email or "")
     st.session_state.pop("gm_auth_profile", None)
+
+
+def gm_auth_sign_in(email, password):
+    """Autentica por e-mail/senha. Usa Auth REST oficial para diagnóstico robusto."""
+    url, key = gm_supabase_config()
+    clean_email = str(email).strip().lower()
+    raw_password = str(password)
+    if not url or not key:
+        raise RuntimeError("Secrets [supabase] ainda não estão configurados.")
+
+    # Chamada direta ao endpoint oficial do Supabase Auth. Isso elimina diferenças
+    # de versão do cliente Python durante o diagnóstico e preserva RLS nos acessos seguintes.
+    r = requests.post(
+        f"{url}/auth/v1/token?grant_type=password",
+        headers={
+            "apikey": key,
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        },
+        json={"email": clean_email, "password": raw_password},
+        timeout=15,
+    )
+    try:
+        payload = r.json()
+    except Exception:
+        payload = {}
+
+    if r.status_code != 200:
+        code = str(payload.get("error_code") or payload.get("code") or "").strip()
+        message = str(payload.get("msg") or payload.get("message") or payload.get("error_description") or "").strip()
+        raise RuntimeError(f"GM_AUTH_HTTP_{r.status_code}|{code}|{message}")
+
+    user = payload.get("user") or {}
+    gm_auth_store_session(
+        payload.get("access_token"),
+        payload.get("refresh_token"),
+        user.get("id"),
+        user.get("email") or clean_email,
+    )
     return user
 
 
@@ -344,20 +376,32 @@ def gm_render_auth_test_console():
                         else:
                             st.rerun()
                     except Exception as exc:
-                        # Não expõe detalhes internos/credenciais no diagnóstico público.
-                        msg = str(exc).lower()
-                        if "invalid login credentials" in msg or "invalid_credentials" in msg:
-                            st.error("E-mail ou senha inválidos.")
+                        # Diagnóstico seguro: mostra categoria/status, nunca senha, token ou chave.
+                        raw = str(exc)
+                        msg = raw.lower()
+                        if raw.startswith("GM_AUTH_HTTP_"):
+                            parts = raw.split("|", 2)
+                            status = parts[0].replace("GM_AUTH_HTTP_", "")
+                            code = parts[1] if len(parts) > 1 else ""
+                            detail = parts[2] if len(parts) > 2 else ""
+                            detail_l = detail.lower()
+                            if "invalid login credentials" in detail_l or "invalid_credentials" in code.lower():
+                                st.error("O Supabase recusou as credenciais deste usuário.")
+                                st.caption(f"Diagnóstico Auth: HTTP {status} · `{code or 'credenciais recusadas'}`. Se o painel mostra Last signed in, redefina a senha deste usuário de teste e tente novamente.")
+                            elif "email not confirmed" in detail_l or "email_not_confirmed" in code.lower():
+                                st.error("O Supabase informou que este e-mail ainda não foi confirmado.")
+                                st.caption(f"Diagnóstico Auth: HTTP {status} · `{code or 'email_not_confirmed'}`")
+                            elif status in {"401", "403"}:
+                                st.error("O projeto respondeu, mas recusou a autenticação.")
+                                st.caption(f"Diagnóstico Auth: HTTP {status} · `{code or 'auth_rejected'}`")
+                            else:
+                                st.error("O Supabase respondeu ao login, mas não criou a sessão.")
+                                st.caption(f"Diagnóstico Auth: HTTP {status} · `{code or 'auth_error'}`")
                         elif "email not confirmed" in msg:
                             st.error("Este e-mail ainda não foi confirmado.")
                         else:
-                            st.error("Não foi possível entrar. Verifique os dados e tente novamente.")
-
-# Aviso global: aparece no conteúdo principal sempre que o usuário acessa o app.
-st.info(VALIDATION_NOTICE)
-
-# Só aparece quando o administrador adiciona ?auth_test=1 à URL.
-gm_render_auth_test_console()
+                            st.error("Falha técnica durante o login.")
+                            st.caption(f"Diagnóstico local: `{type(exc).__name__}`")
 
 # Guia de instalação: mantém o app intacto e ensina o cliente a criar um
 # atalho do GM SCORE na tela inicial do iPhone/iPad ou Android.
@@ -398,8 +442,226 @@ def render_install_guide():
         )
     st.caption("💡 O acesso continua usando a versão mais recente do GM SCORE publicada na internet; não é preciso reinstalar quando o site for atualizado.")
 
-if st.button("📲 Como instalar o GM SCORE no celular", use_container_width=True, type="primary"):
-    render_install_guide()
+
+# ============================================================
+# PORTAL PÚBLICO / VIP GM SCORE — ETAPA 13
+# ============================================================
+def gm_auth_test_enabled():
+    try:
+        return str(st.query_params.get("auth_test", "0")).lower() in {"1", "true", "sim", "yes"}
+    except Exception:
+        return False
+
+
+def gm_payment_url():
+    """Link opcional de pagamento. Pode ser configurado depois nos Secrets."""
+    try:
+        cfg = st.secrets.get("billing", {})
+        return str(cfg.get("payment_url", "")).strip()
+    except Exception:
+        return ""
+
+
+def gm_render_public_intro():
+    st.markdown("## ⭐ GM SCORE VIP")
+    st.markdown(
+        "Análises estatísticas de partidas com **probabilidades, odds justas, dupla chance, "
+        "expectativa de gols, escanteios, cartões, finalizações e outros indicadores** para apoiar "
+        "uma leitura mais completa do mercado esportivo."
+    )
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.markdown("**📊 Estatísticas**  \nDesempenho recente, médias e contexto das equipes.")
+    with c2:
+        st.markdown("**🎯 Probabilidades**  \nResultado, dupla chance, gols e mercados complementares.")
+    with c3:
+        st.markdown("**📈 Expectativa**  \nProjeções da partida com contexto da competição e da amostra.")
+
+    st.info(
+        "🔒 **Conteúdo completo exclusivo para clientes VIP.** Crie sua conta, efetue o pagamento "
+        "e aguarde a liberação do administrador."
+    )
+
+
+def gm_render_login_form(form_key="gm_public_login"):
+    with st.form(form_key, clear_on_submit=False):
+        email = st.text_input("E-mail", key=f"{form_key}_email", autocomplete="email")
+        password = st.text_input("Senha", type="password", key=f"{form_key}_password", autocomplete="current-password")
+        submitted = st.form_submit_button("🔐 Entrar no GM SCORE", type="primary", use_container_width=True)
+    if submitted:
+        if not str(email).strip() or not str(password):
+            st.warning("Informe seu e-mail e sua senha.")
+            return
+        try:
+            gm_auth_sign_in(email, password)
+            profile = gm_auth_get_profile(force=True)
+            if not profile:
+                gm_auth_sign_out()
+                st.error("Sua conta foi autenticada, mas o perfil GM SCORE não foi encontrado. Fale com o suporte.")
+                return
+            st.rerun()
+        except Exception as exc:
+            raw = str(exc)
+            low = raw.lower()
+            if "invalid login credentials" in low or "invalid_credentials" in low:
+                st.error("E-mail ou senha incorretos.")
+            elif "email not confirmed" in low or "email_not_confirmed" in low:
+                st.error("Confirme seu e-mail antes de entrar.")
+            else:
+                st.error("Não foi possível entrar agora. Confira os dados e tente novamente.")
+
+
+def gm_render_signup_form():
+    st.markdown("### ⭐ Criar conta VIP")
+    st.caption("Crie sua conta, confirme o e-mail, efetue o pagamento e aguarde a liberação do acesso VIP.")
+    with st.form("gm_public_signup", clear_on_submit=False):
+        nome = st.text_input("Nome", autocomplete="name")
+        email = st.text_input("E-mail", key="gm_signup_email", autocomplete="email")
+        password = st.text_input("Senha", type="password", key="gm_signup_password", autocomplete="new-password")
+        confirm = st.text_input("Confirmar senha", type="password", key="gm_signup_confirm", autocomplete="new-password")
+        st.markdown(
+            "**⚠️ Política de uso da conta VIP**  \n"
+            "O acesso GM SCORE VIP é individual. O uso simultâneo da mesma conta em mais de um "
+            "dispositivo não é permitido. Compartilhamento de acesso ou tentativas recorrentes de "
+            "uso simultâneo poderão resultar em bloqueio. Para uso simultâneo por mais pessoas, "
+            "é necessário contratar acessos adicionais, cada um com seu próprio login."
+        )
+        accepted = st.checkbox("Li e concordo com a Política de Uso da Conta VIP.")
+        submitted = st.form_submit_button("Criar minha conta", type="primary", use_container_width=True)
+
+    if submitted:
+        clean_name = str(nome).strip()
+        clean_email = str(email).strip().lower()
+        if not clean_name or not clean_email or not password or not confirm:
+            st.warning("Preencha todos os campos.")
+            return
+        if len(str(password)) < 8:
+            st.warning("A senha deve ter pelo menos 8 caracteres.")
+            return
+        if password != confirm:
+            st.warning("As senhas não coincidem.")
+            return
+        if not accepted:
+            st.warning("Para criar a conta, é necessário aceitar a Política de Uso da Conta VIP.")
+            return
+        try:
+            # O aceite também segue como metadata do cadastro. A tabela gm_users continua
+            # protegida pelo RLS e os campos VIP não são controlados pelo cliente.
+            client = gm_new_supabase_client()
+            result = client.auth.sign_up({
+                "email": clean_email,
+                "password": str(password),
+                "options": {"data": {"nome": clean_name, "terms_accepted": True}},
+            })
+            st.session_state["gm_signup_completed"] = True
+            st.success("✅ Conta criada com sucesso.")
+            st.info("📧 Confira seu e-mail e confirme o cadastro antes de tentar entrar.")
+            pay_url = gm_payment_url()
+            if pay_url:
+                st.link_button("💳 Efetuar pagamento", pay_url, type="primary", use_container_width=True)
+            else:
+                st.info("💳 O pagamento e a liberação VIP serão confirmados pelo administrador. Use o suporte para receber as orientações de pagamento.")
+            st.link_button("✈️ Falar com o suporte no Telegram", "https://t.me/suport_gm", use_container_width=True)
+        except Exception as exc:
+            text = str(exc).lower()
+            if "already registered" in text or "user_already_exists" in text:
+                st.warning("Já existe uma conta com este e-mail. Use a opção Entrar.")
+            else:
+                st.error("Não foi possível criar a conta agora. Tente novamente ou fale com o suporte.")
+
+
+def gm_render_waiting_access(profile, state):
+    nome = str(profile.get("nome") or "Cliente").strip()
+    if state == "blocked":
+        st.error("⛔ **Acesso bloqueado**")
+        st.write(f"Olá, **{nome}**. Esta conta está bloqueada. Entre em contato com o suporte para verificar a situação do acesso.")
+    elif state == "expired":
+        st.warning("⌛ **Seu acesso VIP expirou**")
+        st.write(f"Olá, **{nome}**. Renove seu acesso para continuar utilizando todas as análises do GM SCORE.")
+        pay_url = gm_payment_url()
+        if pay_url:
+            st.link_button("💳 Renovar acesso VIP", pay_url, type="primary", use_container_width=True)
+    else:
+        st.info("⏳ **Acesso VIP aguardando liberação**")
+        st.write(
+            f"Olá, **{nome}**. Sua conta foi criada corretamente. Efetue o pagamento e aguarde a confirmação do administrador. "
+            "Assim que o perfil for aprovado, o acesso completo será liberado."
+        )
+        pay_url = gm_payment_url()
+        if pay_url:
+            st.link_button("💳 Efetuar pagamento", pay_url, type="primary", use_container_width=True)
+        else:
+            st.caption("O link de pagamento ainda não foi configurado no aplicativo. Fale com o suporte para receber as instruções.")
+    st.link_button("✈️ Suporte pelo Telegram", "https://t.me/suport_gm", use_container_width=True)
+    if st.button("🚪 Sair da conta", use_container_width=True, key="gm_wait_logout"):
+        gm_auth_sign_out()
+        st.rerun()
+
+
+def gm_render_public_portal():
+    """Retorna True somente quando o usuário pode acessar o app completo."""
+    user_id = st.session_state.get("gm_auth_user_id")
+    profile = None
+    if user_id:
+        try:
+            profile = gm_auth_get_profile(force=True)
+        except Exception:
+            profile = None
+    if profile:
+        state = gm_auth_access_state(profile)
+        if state in {"admin", "vip"}:
+            with st.sidebar:
+                st.markdown("### 👤 Minha conta")
+                st.caption(str(profile.get("nome") or profile.get("email") or "GM SCORE"))
+                st.success("🛠️ Administrador" if state == "admin" else "⭐ VIP ativo")
+                if st.button("🚪 Sair", use_container_width=True, key="gm_sidebar_logout"):
+                    gm_auth_sign_out()
+                    st.rerun()
+                st.markdown("---")
+            return True
+        gm_render_waiting_access(profile, state)
+        st.markdown("---")
+        if st.button("📲 Como instalar o GM SCORE no celular", use_container_width=True):
+            render_install_guide()
+        st.link_button("✈️ Suporte pelo Telegram", "https://t.me/suport_gm", use_container_width=True)
+        return False
+
+    # Se existiam tokens inválidos/expirados, limpa a sessão antes de mostrar o portal.
+    if user_id and not profile:
+        gm_auth_clear_local_session()
+
+    gm_render_public_intro()
+    login_tab, signup_tab = st.tabs(["🔐 Entrar", "⭐ Criar conta VIP"])
+    with login_tab:
+        gm_render_login_form()
+    with signup_tab:
+        gm_render_signup_form()
+
+    st.markdown("---")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("📲 Como instalar o GM SCORE no celular", use_container_width=True, key="gm_public_install"):
+            render_install_guide()
+    with c2:
+        st.link_button("✈️ Suporte pelo Telegram", "https://t.me/suport_gm", use_container_width=True)
+    st.caption("As análises do GM SCORE são estimativas estatísticas e não garantem resultados. Aposte com responsabilidade.")
+    return False
+
+
+# Portal de acesso. Usuários anônimos, pendentes, expirados ou bloqueados param aqui.
+# VIPs e administradores seguem para o mesmo aplicativo completo já existente.
+if not gm_render_public_portal():
+    st.stop()
+
+# Aviso aparece somente dentro da área completa. O diagnóstico técnico só é exibido
+# para administrador autenticado, evitando qualquer rota de bypass do acesso VIP.
+st.info(VALIDATION_NOTICE)
+try:
+    _gm_profile_after_gate = gm_auth_get_profile()
+except Exception:
+    _gm_profile_after_gate = None
+if _gm_profile_after_gate and _gm_profile_after_gate.get("role") == "admin":
+    gm_render_auth_test_console()
 
 # Competições com estatísticas detalhadas em CSV público.
 EUROPE_LEAGUES = {
