@@ -25,7 +25,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-09-session-unica-v1"
+GM_BUILD = "2026-09-09-session-persistente-v2"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -107,7 +107,6 @@ GM_AUTH_SESSION_KEYS = (
     "gm_auth_refresh_token",
     "gm_auth_user_id",
     "gm_auth_email",
-    "gm_device_session_token",
 )
 
 
@@ -278,12 +277,43 @@ def gm_auth_access_state(profile=None):
 
 
 def gm_device_session_token():
-    """Token opaco da sessão Streamlit atual; nunca é usado como credencial de login."""
-    token = st.session_state.get("gm_device_session_token")
+    """
+    Identificador opaco da sessão/dispositivo.
+
+    O token NÃO é credencial de login. Ele também é mantido no parâmetro
+    ``gm_session`` da URL para sobreviver a recarregamentos do Streamlit.
+    Assim, um F5 não cria por engano uma segunda sessão no Supabase.
+    """
+    token = str(st.session_state.get("gm_device_session_token") or "").strip()
+
     if not token:
+        try:
+            token = str(st.query_params.get("gm_session", "") or "").strip()
+        except Exception:
+            token = ""
+
+    # Aceita somente o formato/porte esperado de um token opaco.
+    if not token or len(token) < 32 or len(token) > 128:
         token = secrets.token_urlsafe(32)
-        st.session_state["gm_device_session_token"] = token
+
+    st.session_state["gm_device_session_token"] = token
+    try:
+        if str(st.query_params.get("gm_session", "") or "") != token:
+            st.query_params["gm_session"] = token
+    except Exception:
+        pass
     return token
+
+
+def gm_clear_device_session_marker():
+    """Remove o marcador persistente somente em logout explícito."""
+    st.session_state.pop("gm_device_session_token", None)
+    st.session_state.pop("gm_device_session_started", None)
+    try:
+        if "gm_session" in st.query_params:
+            del st.query_params["gm_session"]
+    except Exception:
+        pass
 
 
 def gm_session_rpc(function_name, params=None):
@@ -333,6 +363,7 @@ def gm_auth_sign_out():
         except Exception:
             pass
     gm_auth_clear_local_session()
+    gm_clear_device_session_marker()
 
 
 def gm_auth_sign_up(nome, email, password):
