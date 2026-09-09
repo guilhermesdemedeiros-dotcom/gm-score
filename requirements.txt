@@ -1,3 +1,4 @@
 streamlit
 pandas
 requests
+supabase>=2.18,<3
