@@ -3757,6 +3757,64 @@ def load_fixtures_for_date(target_date):
     return [best[k] for k in order if valid_daily_fixture(best[k])]
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def load_competition_fixtures_for_date(competition, target_date):
+    """Agenda focada por competição + data.
+
+    A consulta focada evita depender de uma busca global com dezenas de ligas.
+    Usa primeiro o endpoint individual da competição e depois reaproveita as
+    fontes públicas antigas apenas como complemento. Não altera dados de análise.
+    """
+    if competition not in COMPETITIONS:
+        return []
+    if isinstance(target_date, pd.Timestamp):
+        target_date = target_date.date()
+    if isinstance(target_date, datetime):
+        target_date = target_date.date()
+
+    fixtures = []
+    slug = ESPN_FIXTURE_LEAGUES.get(competition)
+    if slug:
+        for qd in (target_date - timedelta(days=1), target_date, target_date + timedelta(days=1)):
+            try:
+                token = qd.strftime("%Y%m%d")
+                data = _espn_get_json(
+                    f"https://site.api.espn.com/apis/site/v2/sports/soccer/{slug}/scoreboard?dates={token}&limit=200",
+                    timeout=12,
+                )
+                fixtures.extend(_fixtures_from_espn_payload(data, target_date, competition))
+            except Exception:
+                pass
+
+    # SofaScore complementa nomes/horários e torneios continentais.
+    try:
+        fixtures.extend([f for f in load_sofascore_fixtures_for_date(target_date) if f.get("competition") == competition])
+    except Exception:
+        pass
+
+    # Mantém todas as fontes anteriores como fallback, mas somente se a consulta
+    # focada ainda não encontrou partidas.
+    if not fixtures:
+        try:
+            fixtures.extend([f for f in load_fixtures_for_date(target_date) if f.get("competition") == competition])
+        except Exception:
+            pass
+
+    best = {}
+    for f in fixtures:
+        if f.get("competition") != competition or not valid_daily_fixture(f):
+            continue
+        ff = dict(f)
+        if competition in STRICT_OFFICIAL_ROSTERS:
+            roster = CURRENT_TEAM_ROSTERS.get(competition, [])
+            ff["home"] = resolve_team_name(ff.get("home"), roster) or ff.get("home")
+            ff["away"] = resolve_team_name(ff.get("away"), roster) or ff.get("away")
+        key = (fixture_team_key(ff.get("home")), fixture_team_key(ff.get("away")))
+        if key not in best or _fixture_quality(ff) > _fixture_quality(best[key]):
+            best[key] = ff
+    return sorted(best.values(), key=lambda f: str(f.get("time") or "99:99"))
+
+
 def load_today_fixtures():
     """Compatibilidade com as telas antigas: jogos da data atual em Brasília."""
     return load_fixtures_for_date(datetime.now(BRASILIA_TZ).date())
@@ -3847,21 +3905,24 @@ def _agenda_date_label(d):
     weekdays = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"]
     return f"{weekdays[d.weekday()]} · {d:%d/%m}"
 
+_sidebar_agenda_comp = st.sidebar.selectbox(
+    "🏆 Competição",
+    list(COMPETITIONS.keys()),
+    key="sidebar_agenda_competition",
+    format_func=competition_display_name,
+)
 _selected_agenda_date = st.sidebar.selectbox(
     "📅 Data", _date_options, key="sidebar_agenda_date", format_func=_agenda_date_label
 )
-st.sidebar.caption("🕒 Horário de Brasília · somente competições do GM SCORE")
+st.sidebar.caption("🕒 Horário de Brasília · competição e data selecionadas")
 
 try:
-    with st.spinner("Buscando jogos da data..."):
-        _agenda_fixtures = [f for f in load_fixtures_for_date(_selected_agenda_date) if valid_daily_fixture(f)]
+    with st.spinner("Buscando jogos da competição..."):
+        _agenda_fixtures = load_competition_fixtures_for_date(_sidebar_agenda_comp, _selected_agenda_date)
 except Exception:
     _agenda_fixtures = []
 
-_agenda_fixtures = sorted(
-    _agenda_fixtures,
-    key=lambda f: (list(COMPETITIONS.keys()).index(f.get("competition")) if f.get("competition") in COMPETITIONS else 999, str(f.get("time") or "99:99")),
-)
+_agenda_fixtures = sorted(_agenda_fixtures, key=lambda f: str(f.get("time") or "99:99"))
 
 if not _agenda_fixtures:
     st.sidebar.info("Nenhum jogo encontrado nesta data. Toque em **Atualizar agenda** para consultar novamente as fontes públicas.")
@@ -4150,16 +4211,18 @@ def render_analysis():
     # para esta competição e só volta a aparecer quando a competição mudar.
     main_games_hidden = st.session_state.get("_main_games_hidden_competition") == league_name
     if not main_games_hidden:
-        st.markdown("### 📅 Jogos de hoje")
-        st.caption("🕒 Horário de Brasília · toque em **Analisar** para carregar o confronto")
+        st.markdown("### 📅 Jogos por data")
+        main_fixture_date = st.selectbox(
+            "📅 Data dos jogos",
+            _date_options,
+            key=f"main_fixture_date_{clean_col(league_name)}",
+            format_func=_agenda_date_label,
+        )
+        st.caption("🕒 Horário de Brasília · competição selecionada acima · toque em **Analisar** para carregar o confronto")
         try:
-            today_fixtures = [
-                f for f in load_today_fixtures()
-                if f.get("competition") == league_name and valid_daily_fixture(f)
-            ]
+            today_fixtures = load_competition_fixtures_for_date(league_name, main_fixture_date)
         except Exception:
             today_fixtures = []
-        today_fixtures = sorted(today_fixtures, key=lambda f: str(f.get("time") or "99:99"))
 
         if today_fixtures:
             for i, f in enumerate(today_fixtures):
@@ -4172,7 +4235,7 @@ def render_analysis():
                     st.markdown(f"**⚽ {game_home} × {game_away}**")
                 if st.button(
                     "🔎 Analisar",
-                    key=f"main_today_{i}_{clean_col(str(game_home))}_{clean_col(str(game_away))}",
+                    key=f"main_game_{main_fixture_date}_{i}_{clean_col(str(game_home))}_{clean_col(str(game_away))}",
                     use_container_width=True,
                 ):
                     resolved_game_home = resolve_team_name(game_home, teams)
@@ -4192,7 +4255,7 @@ def render_analysis():
                         st.rerun()
             st.markdown("---")
         else:
-            st.info("Nenhum jogo desta competição encontrado para hoje.")
+            st.info("Nenhum jogo encontrado para esta competição na data selecionada.")
             st.markdown("---")
 
     if loaded_home_now and loaded_away_now:
