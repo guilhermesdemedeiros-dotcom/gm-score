@@ -92,6 +92,48 @@ VALIDATION_NOTICE = (
 # Aviso global: aparece no conteúdo principal sempre que o usuário acessa o app.
 st.info(VALIDATION_NOTICE)
 
+# Guia de instalação: mantém o app intacto e ensina o cliente a criar um
+# atalho do GM SCORE na tela inicial do iPhone/iPad ou Android.
+@st.dialog("📲 GM SCORE no seu celular")
+def render_install_guide():
+    st.markdown(
+        "Adicione o **GM SCORE à tela inicial** para abrir o site diretamente pelo ícone, "
+        "como um aplicativo. Não é necessário baixar nada pela App Store ou Google Play."
+    )
+    ios_tab, android_tab = st.tabs(["🍎 iPhone / iPad", "🤖 Android"])
+    with ios_tab:
+        st.markdown(
+            """
+**Pelo Safari:**
+
+1. Abra o GM SCORE no **Safari**.
+2. Toque no botão **Compartilhar** (quadrado com uma seta para cima).
+3. Role as opções e toque em **Adicionar à Tela de Início**.
+4. Confirme o nome **GM SCORE** e toque em **Adicionar**.
+5. O ícone ficará na Tela de Início. Nas próximas vezes, toque nele para abrir o GM SCORE.
+
+> Se a opção não aparecer, confirme que o endereço foi aberto no Safari e procure **Editar Ações** no menu de compartilhamento.
+"""
+        )
+    with android_tab:
+        st.markdown(
+            """
+**Pelo Google Chrome:**
+
+1. Abra o GM SCORE no **Chrome**.
+2. Toque no menu **⋮** no canto superior direito.
+3. Toque em **Adicionar à tela inicial** ou **Instalar app**, conforme a opção exibida no aparelho.
+4. Confirme **GM SCORE** e toque em **Adicionar / Instalar**.
+5. O ícone ficará na tela inicial do celular para acesso rápido.
+
+> Os nomes das opções podem variar um pouco conforme a versão do Android e do Chrome.
+"""
+        )
+    st.caption("💡 O acesso continua usando a versão mais recente do GM SCORE publicada na internet; não é preciso reinstalar quando o site for atualizado.")
+
+if st.button("📲 Como instalar o GM SCORE no celular", use_container_width=True, type="primary"):
+    render_install_guide()
+
 # Competições com estatísticas detalhadas em CSV público.
 EUROPE_LEAGUES = {
     "Inglaterra - Premier League": "E0",
@@ -2427,7 +2469,142 @@ GOAL_ENVIRONMENT_PRIORS = {
 }
 
 
-def competition_adjusted_goal_total(raw_total, a, b, competition_name=None):
+
+def _safe_float(value):
+    try:
+        v = float(value)
+        return v if math.isfinite(v) else None
+    except Exception:
+        return None
+
+
+def _completed_match_stats(matches):
+    """Resume apenas partidas com placar final válido, sem inventar dados."""
+    rows = []
+    for m in matches or []:
+        hg, ag = _safe_float(m.get("hg")), _safe_float(m.get("ag"))
+        if hg is None or ag is None:
+            continue
+        rows.append((hg, ag))
+    if not rows:
+        return {"games": 0, "goal_avg": None, "btts": None, "over25": None}
+    totals = [hg + ag for hg, ag in rows]
+    return {
+        "games": len(rows),
+        "goal_avg": sum(totals) / len(totals),
+        "btts": sum(1 for hg, ag in rows if hg > 0 and ag > 0) / len(rows),
+        "over25": sum(1 for t in totals if t >= 3) / len(rows),
+    }
+
+
+def competition_learning_profile(competition_name, competition_df=None):
+    """Camada adaptativa de contexto do GM SCORE.
+
+    Ela não substitui nem reescreve os dados das fontes. Apenas mede a amostra
+    disponível e cria uma âncora dinâmica para a competição. Conforme novos
+    resultados entram nas fontes públicas, o perfil é recalculado automaticamente.
+    """
+    fixed_prior = GOAL_ENVIRONMENT_PRIORS.get(competition_name)
+    current_matches = []
+    if isinstance(competition_df, pd.DataFrame):
+        current_matches = list(competition_df.attrs.get("matches", []) or [])
+    cur = _completed_match_stats(current_matches)
+
+    hist_matches = []
+    if competition_name in CONTEXTUAL_COMPETITIONS:
+        try:
+            hist = load_competition_history_context(competition_name, int(globals().get("used_year", datetime.now().year)), lookback=5)
+            hist_matches = list((hist or {}).get("matches", []) or [])
+        except Exception:
+            hist_matches = []
+    hist = _completed_match_stats(hist_matches)
+
+    # Histórico real ajuda a estabilizar o início da temporada/fase. O prior fixo
+    # continua como último fallback e perde peso rapidamente conforme a amostra cresce.
+    background = fixed_prior
+    if hist.get("goal_avg") is not None:
+        background = hist["goal_avg"] if fixed_prior is None else (0.72 * hist["goal_avg"] + 0.28 * fixed_prior)
+    if background is None and cur.get("goal_avg") is not None:
+        background = cur["goal_avg"]
+
+    n = int(cur.get("games") or 0)
+    if cur.get("goal_avg") is not None and background is not None:
+        # 18 jogos equivalem a uma amostra de estabilização. Não existe salto
+        # brusco: a competição aprende gradualmente com a temporada vigente.
+        current_weight = max(0.0, min(0.88, n / (n + 18.0)))
+        learned_goal_avg = current_weight * cur["goal_avg"] + (1.0 - current_weight) * background
+    else:
+        current_weight = 0.0
+        learned_goal_avg = background
+
+    # Cobertura das estatísticas detalhadas realmente disponíveis na tabela.
+    detailed = ["Escanteios", "Amarelos", "Faltas", "Finalizações", "Chutes no alvo"]
+    available = 0
+    possible = 0
+    if isinstance(competition_df, pd.DataFrame) and not competition_df.empty:
+        for metric in detailed:
+            if metric not in competition_df.columns:
+                continue
+            possible += 1
+            vals = pd.to_numeric(competition_df[metric], errors="coerce")
+            if vals.notna().mean() >= 0.60:
+                available += 1
+    metric_coverage = available / possible if possible else 0.0
+
+    # Confiança informa robustez da BASE, não promessa de acerto de aposta.
+    sample_score = min(n / 40.0, 1.0)
+    history_score = min((hist.get("games") or 0) / 80.0, 1.0)
+    confidence_score = 0.60 * sample_score + 0.25 * metric_coverage + 0.15 * history_score
+    if confidence_score >= 0.72:
+        confidence = "Alta"
+    elif confidence_score >= 0.42:
+        confidence = "Média"
+    else:
+        confidence = "Cautelosa"
+
+    if n <= 5:
+        stage = "amostra inicial"
+    elif n <= 20:
+        stage = "amostra em formação"
+    else:
+        stage = "amostra consolidada"
+
+    return {
+        "current_games": n,
+        "current_goal_avg": cur.get("goal_avg"),
+        "historical_games": int(hist.get("games") or 0),
+        "historical_goal_avg": hist.get("goal_avg"),
+        "goal_prior": learned_goal_avg,
+        "current_weight": current_weight,
+        "metric_coverage": metric_coverage,
+        "confidence": confidence,
+        "confidence_score": confidence_score,
+        "stage": stage,
+        "btts": cur.get("btts"),
+        "over25": cur.get("over25"),
+    }
+
+
+def render_data_intelligence_status(competition_name, competition_df):
+    """Mostra transparência da base sem alterar o bloco visual de expectativa."""
+    profile = competition_learning_profile(competition_name, competition_df)
+    icon = {"Alta": "🟢", "Média": "🟡", "Cautelosa": "🟠"}.get(profile["confidence"], "⚪")
+    with st.expander("🧠 Qualidade e evolução da base GM SCORE", expanded=False):
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Confiança da base", f"{icon} {profile['confidence']}")
+        c2.metric("Jogos aprendidos", str(profile["current_games"]))
+        c3.metric("Cobertura detalhada", f"{profile['metric_coverage'] * 100:.0f}%")
+        if profile.get("goal_prior") is not None:
+            st.caption(
+                f"Ambiente adaptativo de gols: {profile['goal_prior']:.2f} por jogo · "
+                f"{profile['stage']}. O peso da temporada atual cresce automaticamente conforme novos jogos entram na base."
+            )
+        if profile["confidence"] == "Cautelosa":
+            st.caption("⚠️ Amostra curta ou cobertura estatística limitada: o modelo aplica regressão maior ao contexto histórico da competição para evitar conclusões extremas.")
+    return profile
+
+
+def competition_adjusted_goal_total(raw_total, a, b, competition_name=None, competition_df=None):
     """Ajusta gols ao ambiente da competição e à maturidade da amostra.
 
     No começo de copas continentais, poucos jogos não devem gerar projeções
@@ -2436,9 +2613,10 @@ def competition_adjusted_goal_total(raw_total, a, b, competition_name=None):
     Competições de perfil mais aberto/fechado também recebem sua âncora adequada.
     """
     comp = competition_name or globals().get("league_name")
-    prior = GOAL_ENVIRONMENT_PRIORS.get(comp)
+    learning = competition_learning_profile(comp, competition_df) if comp else {}
+    prior = learning.get("goal_prior") if learning else GOAL_ENVIRONMENT_PRIORS.get(comp)
     if prior is None:
-        return max(float(raw_total), 0.20), {"prior_weight": 0.0, "prior": None, "stage": "normal"}
+        return max(float(raw_total), 0.20), {"prior_weight": 0.0, "prior": None, "stage": "normal", "learning": learning}
 
     games = []
     for row in (a, b):
@@ -2467,9 +2645,9 @@ def competition_adjusted_goal_total(raw_total, a, b, competition_name=None):
     # redução evita que médias domésticas abertas sejam transportadas integralmente.
     if comp in {"CONMEBOL Libertadores", "CONMEBOL Sul-Americana"}:
         adjusted *= 0.97
-    return max(adjusted, 0.20), {"prior_weight": prior_weight, "prior": prior, "stage": stage}
+    return max(adjusted, 0.20), {"prior_weight": prior_weight, "prior": prior, "stage": stage, "learning": learning}
 
-def build_opportunities(a, b, team_a, team_b):
+def build_opportunities(a, b, team_a, team_b, competition_df=None):
     """Seleciona somente a linha mais útil por mercado.
 
     Regra: entre os overs, prefere a LINHA MAIS ALTA que ainda mantenha 80%+.
@@ -2513,7 +2691,7 @@ def build_opportunities(a, b, team_a, team_b):
         lam_a = max(((a_gf + b_ga) / 2) * 1.08, 0.05)
         lam_b = max(((b_gf + a_ga) / 2) / 1.08, 0.05)
         raw_goal_total = lam_a + lam_b
-        lam_total, goal_ctx = competition_adjusted_goal_total(raw_goal_total, a, b, league_name)
+        lam_total, goal_ctx = competition_adjusted_goal_total(raw_goal_total, a, b, league_name, competition_df)
         add_market(
             "Gols", "⚽", "gols", lam_total, (0.5, 1.5, 2.5, 3.5, 4.5, 5.5),
             f"Projeção ajustada ao perfil da competição: {lam_total:.2f} gols", min_good=65
@@ -2546,7 +2724,7 @@ def build_opportunities(a, b, team_a, team_b):
     return candidates[:6]
 
 
-def match_expectations(a, b):
+def match_expectations(a, b, competition_df=None):
     """Projeções a partir das médias atuais; só retorna mercados realmente disponíveis."""
     out = {}
     a_gf, a_ga = metric_value(a, "Gols pró"), metric_value(a, "Gols contra")
@@ -2555,7 +2733,7 @@ def match_expectations(a, b):
         lam_a = max(((a_gf + b_ga) / 2) * 1.08, 0.05)
         lam_b = max(((b_gf + a_ga) / 2) / 1.08, 0.05)
         raw_total = lam_a + lam_b
-        adjusted_total, goal_ctx = competition_adjusted_goal_total(raw_total, a, b, league_name)
+        adjusted_total, goal_ctx = competition_adjusted_goal_total(raw_total, a, b, league_name, competition_df)
         scale = adjusted_total / raw_total if raw_total > 0 else 1.0
         lam_a, lam_b = lam_a * scale, lam_b * scale
         out["Gols"] = {"total": adjusted_total, "home": lam_a, "away": lam_b, "context": goal_ctx}
@@ -2638,7 +2816,7 @@ def render_probability_matrix(title, emoji, rows, lines):
 
 
 def render_match_probability_dashboard(a, b, team_a, team_b, df):
-    ex = match_expectations(a, b)
+    ex = match_expectations(a, b, df)
     if not ex:
         return ex
     st.markdown("### 📈 Expectativa da partida")
@@ -3954,6 +4132,8 @@ if st.sidebar.button("🔄 Atualizar agenda", use_container_width=True):
 
 _SUPPORT_URL = "https://wa.me/5554996523476?text=Ol%C3%A1%2C%20eu%20vim%20do%20APP%20GM%20Score"
 st.sidebar.markdown("---")
+if st.sidebar.button("📲 Instalar GM SCORE no celular", use_container_width=True):
+    render_install_guide()
 st.sidebar.link_button("💬 Suporte pelo WhatsApp", _SUPPORT_URL, use_container_width=True)
 
 def load_current_season():
@@ -4325,6 +4505,10 @@ def render_analysis():
     else:
         st.caption(f"{league_name} · {season_text}")
 
+    # Transparência da qualidade da base: recalculada automaticamente a cada
+    # atualização das fontes, sem modificar os dados brutos já existentes.
+    data_learning = render_data_intelligence_status(league_name, df)
+
     # O modelo da própria competição é prioritário quando já há amostra. Quando
     # ela ainda é curta ou vazia, usamos a base contextual entre competições.
     comp_sample = min(int(float(raw_a.get("Jogos", 0) or 0)), int(float(raw_b.get("Jogos", 0) or 0)))
@@ -4382,6 +4566,17 @@ def render_analysis():
             eval_bits.append("mercado público como validação externa")
         st.caption("📌 Avaliação GM SCORE: " + ", ".join(eval_bits) + "." + h2txt + " O mando ajuda o time da casa, mas não supera sozinho um consenso forte de qualidade, liga e histórico. A opção favorita é definida pelo cruzamento desses dados, não pelo nome da equipe.")
 
+        # Dupla chance deriva diretamente das mesmas probabilidades finais do 1X2;
+        # não cria um segundo modelo nem altera o favoritismo calculado acima.
+        st.markdown("### 🛡️ Dupla chance")
+        dc1, dc2, dc3 = st.columns(3)
+        p_1x = max(0.0, min(100.0, float(probs['home']) + float(probs['draw'])))
+        p_x2 = max(0.0, min(100.0, float(probs['draw']) + float(probs['away'])))
+        p_12 = max(0.0, min(100.0, float(probs['home']) + float(probs['away'])))
+        dc1.metric(f"🏠 {team_a} ou Empate", f"{p_1x:.0f}%")
+        dc2.metric(f"✈️ Empate ou {team_b}", f"{p_x2:.0f}%")
+        dc3.metric("⚔️ Sem empate (12)", f"{p_12:.0f}%")
+
     if probs:
         # A odd justa é propriedade do modelo e deve aparecer mesmo quando a
         # cotação pública não estiver disponível/validada. Mercado é opcional.
@@ -4403,7 +4598,7 @@ def render_analysis():
 
     expectations = render_match_probability_dashboard(a, b, team_a, team_b, df)
 
-    opportunities = build_opportunities(a, b, team_a, team_b)
+    opportunities = build_opportunities(a, b, team_a, team_b, df)
     st.markdown("#### ⭐ Melhores linhas para observar")
     if analysis_context and comp_sample < 6:
         st.caption("Linhas projetadas com base híbrida enquanto a competição ainda tem pouca amostra. A influência dos dados domésticos diminui à medida que o torneio avança.")
