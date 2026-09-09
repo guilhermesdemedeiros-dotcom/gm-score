@@ -2398,6 +2398,77 @@ def add_candidate(items, emoji, market, probability, basis, category, direction=
         })
 
 
+
+# Perfil de gols por competição. Estes valores funcionam como âncoras de estilo
+# e são usados apenas para regressão à média; os números das equipes continuam
+# sendo a base principal da projeção.
+GOAL_ENVIRONMENT_PRIORS = {
+    "Inglaterra - Premier League": 2.95,
+    "Espanha - La Liga": 2.65,
+    "Itália - Serie A": 2.60,
+    "Alemanha - Bundesliga": 3.15,
+    "França - Ligue 1": 2.70,
+    "Portugal - Liga Portugal": 2.65,
+    "Holanda - Eredivisie": 3.15,
+    "Escócia - Premiership": 2.75,
+    "Turquia - Süper Lig": 2.80,
+    "Brasil - Série A": 2.35,
+    "Brasil - Série B": 2.20,
+    "Arábia Saudita - Saudi Pro League": 3.00,
+    "Estados Unidos - MLS": 3.05,
+    "Argentina - Liga Profesional": 2.25,
+    "México - Liga MX": 2.65,
+    "Colômbia - Primera A": 2.30,
+    "UEFA Champions League": 2.80,
+    "UEFA Europa League": 2.65,
+    "UEFA Conference League": 2.75,
+    "CONMEBOL Libertadores": 2.30,
+    "CONMEBOL Sul-Americana": 2.25,
+}
+
+
+def competition_adjusted_goal_total(raw_total, a, b, competition_name=None):
+    """Ajusta gols ao ambiente da competição e à maturidade da amostra.
+
+    No começo de copas continentais, poucos jogos não devem gerar projeções
+    extremas: há regressão mais forte à média histórica do torneio. Conforme
+    as equipes acumulam partidas na competição, o peso dos dados próprios cresce.
+    Competições de perfil mais aberto/fechado também recebem sua âncora adequada.
+    """
+    comp = competition_name or globals().get("league_name")
+    prior = GOAL_ENVIRONMENT_PRIORS.get(comp)
+    if prior is None:
+        return max(float(raw_total), 0.20), {"prior_weight": 0.0, "prior": None, "stage": "normal"}
+
+    games = []
+    for row in (a, b):
+        try:
+            g = float(row.get("Jogos", 0) if hasattr(row, "get") else row["Jogos"])
+            if math.isfinite(g): games.append(max(g, 0.0))
+        except Exception:
+            pass
+    avg_games = sum(games) / len(games) if games else 0.0
+
+    continental = comp in CONTEXTUAL_COMPETITIONS
+    if continental and avg_games <= 2:
+        prior_weight, stage = 0.58, "início / amostra curta"
+    elif continental and avg_games <= 5:
+        prior_weight, stage = 0.44, "fase inicial / intermediária"
+    elif continental:
+        prior_weight, stage = 0.30, "amostra consolidada"
+    else:
+        # Ligas nacionais também respeitam seu ambiente de gols, mas os dados
+        # das equipes têm predominância quando a amostra já é suficiente.
+        prior_weight = 0.34 if avg_games < 5 else (0.24 if avg_games < 10 else 0.16)
+        stage = "liga nacional"
+
+    adjusted = float(raw_total) * (1.0 - prior_weight) + float(prior) * prior_weight
+    # Copas sul-americanas têm historicamente contexto mais travado; a pequena
+    # redução evita que médias domésticas abertas sejam transportadas integralmente.
+    if comp in {"CONMEBOL Libertadores", "CONMEBOL Sul-Americana"}:
+        adjusted *= 0.97
+    return max(adjusted, 0.20), {"prior_weight": prior_weight, "prior": prior, "stage": stage}
+
 def build_opportunities(a, b, team_a, team_b):
     """Seleciona somente a linha mais útil por mercado.
 
@@ -2441,8 +2512,12 @@ def build_opportunities(a, b, team_a, team_b):
     if None not in (a_gf, a_ga, b_gf, b_ga):
         lam_a = max(((a_gf + b_ga) / 2) * 1.08, 0.05)
         lam_b = max(((b_gf + a_ga) / 2) / 1.08, 0.05)
-        lam_total = lam_a + lam_b
-        add_market("Gols", "⚽", "gols", lam_total, (0.5, 1.5, 2.5, 3.5, 4.5, 5.5), f"Média projetada: {lam_total:.2f} gols", min_good=65)
+        raw_goal_total = lam_a + lam_b
+        lam_total, goal_ctx = competition_adjusted_goal_total(raw_goal_total, a, b, league_name)
+        add_market(
+            "Gols", "⚽", "gols", lam_total, (0.5, 1.5, 2.5, 3.5, 4.5, 5.5),
+            f"Projeção ajustada ao perfil da competição: {lam_total:.2f} gols", min_good=65
+        )
 
     specs = [
         ("Escanteios", "⛳", "escanteios", (4.5, 5.5, 6.5, 7.5, 8.5, 9.5, 10.5, 11.5)),
@@ -2479,7 +2554,11 @@ def match_expectations(a, b):
     if None not in (a_gf, a_ga, b_gf, b_ga):
         lam_a = max(((a_gf + b_ga) / 2) * 1.08, 0.05)
         lam_b = max(((b_gf + a_ga) / 2) / 1.08, 0.05)
-        out["Gols"] = {"total": lam_a + lam_b, "home": lam_a, "away": lam_b}
+        raw_total = lam_a + lam_b
+        adjusted_total, goal_ctx = competition_adjusted_goal_total(raw_total, a, b, league_name)
+        scale = adjusted_total / raw_total if raw_total > 0 else 1.0
+        lam_a, lam_b = lam_a * scale, lam_b * scale
+        out["Gols"] = {"total": adjusted_total, "home": lam_a, "away": lam_b, "context": goal_ctx}
     ac, bc = metric_value(a, "Escanteios"), metric_value(b, "Escanteios")
     if ac is not None and bc is not None:
         out["Escanteios"] = {"total": max(ac + bc, 0.05), "home": max(ac, 0.01), "away": max(bc, 0.01)}
@@ -3151,8 +3230,9 @@ def valid_daily_fixture(f):
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def load_today_fixtures():
-    today = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
+def load_fixtures_for_date(target_date):
+    """Carrega somente jogos das competições suportadas para uma data de Brasília."""
+    today = target_date
     fixtures = []
 
     # Fonte diária abrangente: consulta também o dia UTC seguinte para não perder jogos
@@ -3271,6 +3351,11 @@ def load_today_fixtures():
             best[key] = f
     return [best[k] for k in order if valid_daily_fixture(best[k])]
 
+
+def load_today_fixtures():
+    """Compatibilidade com as telas antigas: jogos da data atual em Brasília."""
+    return load_fixtures_for_date(datetime.now(BRASILIA_TZ).date())
+
 def validate_current_data(df, season_type, competition_name):
     """Impede que uma base antiga seja apresentada como temporada atual."""
     if df is None or df.empty:
@@ -3338,26 +3423,72 @@ if "selected_home" not in st.session_state:
 if "selected_away" not in st.session_state:
     st.session_state.selected_away = None
 st.sidebar.markdown("### ⚽ GM SCORE")
-st.sidebar.caption("Configurar análise")
+st.sidebar.caption("Agenda de jogos")
 st.sidebar.info(VALIDATION_NOTICE)
-league_name = st.sidebar.selectbox(
-    "🏆 Competição", list(COMPETITIONS.keys()),
-    index=list(COMPETITIONS.keys()).index(st.session_state.selected_competition)
-    if st.session_state.selected_competition in COMPETITIONS else 0,
-    key="league_widget",
-    format_func=competition_display_name,
-)
-st.session_state.selected_competition = league_name
+
+# A competição continua sendo controlada pela tela principal. A barra lateral
+# passa a ser uma agenda independente, sem alterar as rotinas antigas de análise.
+league_name = st.session_state.selected_competition
 config = COMPETITIONS[league_name]
 used_year = current_season_year(config["season"])
-st.sidebar.caption(f"📅 Temporada atual: {season_label(used_year, config['season'])}")
-period = st.sidebar.selectbox(
-    "📊 Período", [5, 10, 20, 0], index=1,
-    format_func=lambda n: "Temporada" if n == 0 else f"Últimos {n} jogos",
+period = int(st.session_state.get("analysis_period", 10))
+
+_brasilia_today = datetime.now(BRASILIA_TZ).date()
+_date_options = [_brasilia_today + timedelta(days=i) for i in range(7)]
+
+def _agenda_date_label(d):
+    if d == _brasilia_today:
+        return f"Hoje · {d:%d/%m}"
+    weekdays = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"]
+    return f"{weekdays[d.weekday()]} · {d:%d/%m}"
+
+_selected_agenda_date = st.sidebar.selectbox(
+    "📅 Data", _date_options, key="sidebar_agenda_date", format_func=_agenda_date_label
 )
-if st.sidebar.button("🔄 Atualizar dados", type="primary"):
+st.sidebar.caption("🕒 Horário de Brasília · somente competições do GM SCORE")
+
+try:
+    with st.spinner("Buscando jogos da data..."):
+        _agenda_fixtures = [f for f in load_fixtures_for_date(_selected_agenda_date) if valid_daily_fixture(f)]
+except Exception:
+    _agenda_fixtures = []
+
+_agenda_fixtures = sorted(
+    _agenda_fixtures,
+    key=lambda f: (list(COMPETITIONS.keys()).index(f.get("competition")) if f.get("competition") in COMPETITIONS else 999, str(f.get("time") or "99:99")),
+)
+
+if not _agenda_fixtures:
+    st.sidebar.info("Nenhum jogo das competições do GM SCORE encontrado nesta data.")
+else:
+    st.sidebar.caption(f"{len(_agenda_fixtures)} jogo(s) encontrado(s)")
+    _last_comp = None
+    for i, f in enumerate(_agenda_fixtures):
+        if f.get("competition") != _last_comp:
+            _last_comp = f.get("competition")
+            st.sidebar.markdown(f"**{competition_display_name(_last_comp)}**")
+        _time_text = str(f.get("time") or "").strip()
+        _line = f"⚽ **{f['home']} × {f['away']}**"
+        if _time_text and _time_text.lower() != "nan":
+            _line += f"  \n🕒 {_time_text}"
+        st.sidebar.markdown(_line)
+        if st.sidebar.button(
+            "🔎 Analisar",
+            key=f"side_agenda_{_selected_agenda_date}_{i}_{clean_col(f['home'])}_{clean_col(f['away'])}",
+            use_container_width=True,
+        ):
+            st.session_state["_goto_comp"] = f["competition"]
+            st.session_state["_goto_home"] = f["home"]
+            st.session_state["_goto_away"] = f["away"]
+            st.session_state["_main_games_hidden_competition"] = f["competition"]
+            st.rerun()
+
+if st.sidebar.button("🔄 Atualizar agenda", use_container_width=True):
     st.cache_data.clear(); st.rerun()
 
+_SUPPORT_URL = "https://wa.me/5554996523476?text=Ol%C3%A1%2C%20eu%20vim%20do%20APP%20GM%20Score"
+st.sidebar.markdown("---")
+st.sidebar.link_button("💬 Suporte pelo WhatsApp", _SUPPORT_URL, use_container_width=True)
 
 def load_current_season():
     def roster_only_fallback(errors):
@@ -3560,6 +3691,13 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
 
 
 def render_analysis():
+    global period
+    period = st.selectbox(
+        "📊 Período da análise", [5, 10, 20, 0],
+        index=[5, 10, 20, 0].index(int(st.session_state.get("analysis_period", 10))) if int(st.session_state.get("analysis_period", 10)) in [5, 10, 20, 0] else 1,
+        format_func=lambda n: "Temporada" if n == 0 else f"Últimos {n} jogos",
+        key="analysis_period",
+    )
     # Não reaproveita uma partida carregada de outra competição.
     if st.session_state.get("loaded_competition") != league_name:
         st.session_state.loaded_home = None
@@ -3827,45 +3965,13 @@ def render_analysis():
         if rows: st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
 
 
-def render_sidebar_today():
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("### 📅 Jogos de hoje")
-    st.sidebar.caption("🕒 Horário de Brasília")
+# A agenda da barra lateral é renderizada no início da interface.
+# Mantemos apenas o botão de suporte também no final da tela principal.
 
-    try:
-        with st.spinner("Buscando jogos do dia..."):
-            fixtures = [f for f in load_today_fixtures() if f.get("competition") == league_name]
-    except Exception:
-        fixtures = []
-
-    # Segurança extra: somente a competição selecionada e confrontos válidos.
-    fixtures = [
-        f for f in fixtures
-        if f.get("competition") == league_name and valid_daily_fixture(f)
-    ]
-    fixtures = sorted(fixtures, key=lambda f: str(f.get("time") or "99:99"))
-
-    if not fixtures:
-        st.sidebar.info("Nenhum jogo desta competição hoje.")
-        return
-
-    st.sidebar.caption(f"{len(fixtures)} jogo(s) encontrado(s)")
-    for i, f in enumerate(fixtures):
-        time_text = str(f.get("time") or "").strip()
-        if time_text and time_text.lower() != "nan":
-            st.sidebar.markdown(f"**⚽ {f['home']} × {f['away']}**  \n🕒 {time_text}")
-        else:
-            st.sidebar.markdown(f"**⚽ {f['home']} × {f['away']}**")
-        if st.sidebar.button("🔎 Analisar", key=f"side_today_{i}_{clean_col(f['home'])}_{clean_col(f['away'])}", use_container_width=True):
-            st.session_state["_goto_comp"] = f["competition"]
-            st.session_state["_goto_home"] = f["home"]
-            st.session_state["_goto_away"] = f["away"]
-            st.session_state["_main_games_hidden_competition"] = f["competition"]
-            st.rerun()
-
-
-render_sidebar_today()
 render_analysis()
+
+st.markdown("---")
+st.link_button("💬 Suporte pelo WhatsApp", _SUPPORT_URL, use_container_width=True)
 
 st.caption("As chances são estimativas estatísticas da temporada vigente e não garantem resultado. Use como apoio à análise e aposte com responsabilidade.")
 
