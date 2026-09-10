@@ -25,7 +25,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-09-cortesia-admin-v5"
+GM_BUILD = "2026-09-09-admin-session-bypass-v6"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -1176,25 +1176,30 @@ def gm_render_public_portal():
 
         state = gm_auth_access_state(profile)
         if state in {"admin", "vip"}:
-            try:
-                session_ok, session_reason = gm_start_or_validate_session()
-            except Exception:
-                session_ok, session_reason = False, "session_service_error"
+            # A regra de 1 sessão ativa é exclusiva das contas VIP de clientes.
+            # O administrador precisa conseguir entrar de qualquer navegador/dispositivo
+            # para liberar sessões, bloquear contas e prestar suporte, inclusive quando
+            # um cliente fica preso no controle de sessão.
+            if state == "vip":
+                try:
+                    session_ok, session_reason = gm_start_or_validate_session()
+                except Exception:
+                    session_ok, session_reason = False, "session_service_error"
 
-            if not session_ok:
-                if session_reason in {"another_session_active", "session_mismatch"}:
-                    gm_render_session_conflict(profile, session_reason)
-                elif session_reason == "blocked":
-                    gm_render_waiting_access(profile, "blocked")
-                elif session_reason in {"vip_expired", "vip_not_active"}:
-                    gm_render_waiting_access(profile, "expired")
-                else:
-                    st.error("Não foi possível validar a sessão segura do GM SCORE agora.")
-                    st.caption("Tente novamente. Se o problema continuar, fale com o suporte.")
-                    if st.button("🚪 Sair", use_container_width=True, key="gm_session_error_logout"):
-                        gm_auth_sign_out()
-                        st.rerun()
-                return False
+                if not session_ok:
+                    if session_reason in {"another_session_active", "session_mismatch"}:
+                        gm_render_session_conflict(profile, session_reason)
+                    elif session_reason == "blocked":
+                        gm_render_waiting_access(profile, "blocked")
+                    elif session_reason in {"vip_expired", "vip_not_active"}:
+                        gm_render_waiting_access(profile, "expired")
+                    else:
+                        st.error("Não foi possível validar a sessão segura do GM SCORE agora.")
+                        st.caption("Tente novamente. Se o problema continuar, fale com o suporte.")
+                        if st.button("🚪 Sair", use_container_width=True, key="gm_session_error_logout"):
+                            gm_auth_sign_out()
+                            st.rerun()
+                    return False
 
             with st.sidebar:
                 st.markdown("### 👤 Minha conta")
