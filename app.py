@@ -25,7 +25,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-09-planos-mercadopago-v4"
+GM_BUILD = "2026-09-09-cortesia-admin-v5"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -537,14 +537,17 @@ def gm_render_admin_panel(profile):
 
             c1, c2 = st.columns(2)
             with c1:
-                if st.button("✅ Aprovar VIP", use_container_width=True, key=f"gm_admin_approve_{uid}"):
-                    try:
-                        gm_admin_rpc("gm_admin_approve_user", {"p_user_id": uid, "p_days": int(days)})
-                        st.success("Cliente aprovado com sucesso.")
-                        st.rerun()
-                    except Exception as exc:
-                        st.error("Não foi possível aprovar o cliente.")
-                        st.caption(str(exc))
+                if row.get("vip_status") == "pending":
+                    if st.button("✅ Aprovar VIP", use_container_width=True, key=f"gm_admin_approve_{uid}"):
+                        try:
+                            gm_admin_rpc("gm_admin_approve_user", {"p_user_id": uid, "p_days": int(days)})
+                            st.success("Cliente aprovado com sucesso.")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error("Não foi possível aprovar o cliente.")
+                            st.caption(str(exc))
+                else:
+                    st.caption("Aprovação inicial já concluída.")
             with c2:
                 if st.button("➕ Renovar VIP", use_container_width=True, key=f"gm_admin_renew_{uid}"):
                     try:
@@ -554,6 +557,23 @@ def gm_render_admin_panel(profile):
                     except Exception as exc:
                         st.error("Não foi possível renovar o VIP.")
                         st.caption(str(exc))
+
+            st.markdown("#### 🎁 Cortesia / liberação manual")
+            st.caption("Use para amigos, testes ou liberações sem pagamento. A operação fica registrada como cortesia, não como venda paga.")
+            courtesy_days = st.selectbox(
+                "Período da cortesia",
+                [30, 90, 180],
+                format_func=lambda d: {30: "30 dias · 1 mês", 90: "90 dias · 3 meses", 180: "180 dias · 6 meses"}[d],
+                key=f"gm_admin_courtesy_days_{uid}",
+            )
+            if st.button("🎁 Liberar cortesia", use_container_width=True, key=f"gm_admin_courtesy_{uid}"):
+                try:
+                    gm_admin_rpc("gm_admin_grant_courtesy", {"p_user_id": uid, "p_days": int(courtesy_days)})
+                    st.success(f"Cortesia de {courtesy_days} dias liberada com sucesso.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error("Não foi possível liberar a cortesia.")
+                    st.caption(str(exc))
 
             p1, p2 = st.columns(2)
             with p1:
