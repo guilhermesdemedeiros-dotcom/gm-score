@@ -5673,15 +5673,28 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
       ctx.fillStyle=C.bg; ctx.fillRect(0,0,logicalW,logicalH); watermark(ctx,logicalW,logicalH);
 
       let y=74;
-      text(ctx,'GM SCORE',70,y,50,'900',C.text);
+
+      // Cabeçalho: mede a largura real de "GM " antes de desenhar "SCORE".
+      ctx.save();
+      ctx.font='900 50px Arial';
       const gmWidth=ctx.measureText('GM ').width;
-      text(ctx,'SCORE',70+165,y,50,'900',C.green);
+      ctx.restore();
+
+      text(ctx,'GM ',70,y,50,'900',C.text);
+      text(ctx,'SCORE',70+gmWidth,y,50,'900',C.green);
+
+      text(ctx,'DADOS QUE',1015,y-22,16,'800',C.text,'right');
+      text(ctx,'TRANSFORMAM',1015,y-2,16,'800',C.text,'right');
+      text(ctx,'DADOS EM',1015,y+18,16,'800',C.text,'right');
+      text(ctx,'DECISÕES',1015,y+38,16,'800',C.green,'right');
+
       y+=38;
       text(ctx,'ANÁLISE • ESTATÍSTICAS • PROBABILIDADES',70,y,19,'700','#93e9bc');
       y+=64;
 
       rr(ctx,60,y,960,190,22,'rgba(8,35,30,.94)',C.border,2);
       text(ctx,D.league.toUpperCase(),88,y+40,22,'800',C.text);
+      text(ctx,D.title,992,y+40,18,'700',C.muted,'right');
       text(ctx,D.home,235,y+112,32,'800',C.text,'center');
       text(ctx,'VS',540,y+108,40,'900',C.green,'center');
       text(ctx,D.away,845,y+112,32,'800',C.text,'center');
@@ -5746,7 +5759,13 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
       }}
 
       text(ctx,'Estimativas estatísticas; não garantem resultado.',65,logicalH-66,17,'400',C.muted);
-      text(ctx,'GM SCORE',1015,logicalH-66,23,'900',C.green,'right');
+
+      ctx.save();
+      ctx.font='900 23px Arial';
+      const scoreW=ctx.measureText('SCORE').width;
+      ctx.restore();
+      text(ctx,'SCORE',1015,logicalH-66,23,'900',C.green,'right');
+      text(ctx,'GM ',1015-scoreW,logicalH-66,23,'900',C.text,'right');
 
       canvas.toBlob(async blob=>{{
         const safe=(D.home+'-x-'+D.away).replace(/[^a-z0-9áàãâéêíóôõúç_-]+/gi,'-').replace(/-+/g,'-');
