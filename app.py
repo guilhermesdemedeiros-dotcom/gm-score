@@ -25,7 +25,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-09-admin-session-bypass-v6"
+GM_BUILD = "2026-09-09-mercadopago-checkout-v7"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -768,33 +768,109 @@ def gm_auth_test_enabled():
         return False
 
 
-# Links oficiais de pagamento informados pelo administrador.
+# Catálogo visual dos planos VIP. Os preços efetivos são definidos no PostgreSQL
+# por gm_create_order(); o Streamlit envia somente plano + forma de pagamento.
 GM_VIP_PLANS = [
     {
-        "key": "mensal", "title": "1 mês", "badge": "🔥 PREÇO PROMOCIONAL",
+        "key": "mensal", "plan_code": "vip_30", "title": "1 mês", "badge": "🔥 PREÇO PROMOCIONAL",
         "pix_price": "R$ 15,15", "monthly": "R$ 15,15/mês",
-        "saving": "Plano de entrada", "pix_url": "https://mpago.la/1VevVQN",
-        "card_url": "", "card_text": "",
+        "saving": "Plano de entrada", "card_price": "", "card_text": "",
     },
     {
-        "key": "trimestral", "title": "3 meses", "badge": "🔥 PREÇO PROMOCIONAL",
+        "key": "trimestral", "plan_code": "vip_90", "title": "3 meses", "badge": "🔥 PREÇO PROMOCIONAL",
         "pix_price": "R$ 36,36", "monthly": "R$ 12,12/mês no Pix",
-        "saving": "Economize R$ 9,09 (20%) no Pix", "pix_url": "https://mpago.la/24MT1Lq",
-        "card_url": "https://mpago.li/1awUbbw", "card_text": "Cartão em até 2x • total máximo R$ 41,54",
+        "saving": "Economize R$ 9,09 (20%) no Pix", "card_price": "R$ 41,54",
+        "card_text": "Cartão em até 2x • total R$ 41,54",
     },
     {
-        "key": "semestral", "title": "6 meses", "badge": "⭐ MELHOR CUSTO-BENEFÍCIO",
+        "key": "semestral", "plan_code": "vip_180", "title": "6 meses", "badge": "⭐ MELHOR CUSTO-BENEFÍCIO",
         "pix_price": "R$ 60,60", "monthly": "R$ 10,10/mês no Pix",
-        "saving": "Economize R$ 30,30 (33,3%) no Pix", "pix_url": "https://mpago.la/1SkktUK",
-        "card_url": "https://mpago.li/2PzZ5Nb", "card_text": "Cartão em até 3x • total máximo R$ 70,24",
+        "saving": "Economize R$ 30,30 (33,3%) no Pix", "card_price": "R$ 70,24",
+        "card_text": "Cartão em até 3x • total R$ 70,24",
     },
 ]
 
 
+def gm_create_checkout(plan_code, payment_method):
+    """Cria um checkout individual no backend. Preço e dias nunca vêm do navegador."""
+    access_token = str(st.session_state.get("gm_auth_access_token") or "").strip()
+    if not access_token:
+        raise RuntimeError("LOGIN_REQUIRED")
+    url, anon_key = gm_supabase_config()
+    if not url or not anon_key:
+        raise RuntimeError("SUPABASE_NOT_CONFIGURED")
+
+    response = requests.post(
+        f"{url}/functions/v1/gm-create-checkout",
+        headers={
+            "apikey": anon_key,
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        },
+        json={"plan_code": plan_code, "payment_method": payment_method},
+        timeout=25,
+    )
+    try:
+        payload = response.json()
+    except Exception:
+        payload = {}
+    if response.status_code != 200 or not payload.get("ok"):
+        error = str(payload.get("error") or f"HTTP_{response.status_code}")
+        message = str(payload.get("message") or "").strip()
+        raise RuntimeError(f"{error}|{message}")
+    checkout_url = str(payload.get("checkout_url") or "").strip()
+    if not checkout_url.startswith("https://"):
+        raise RuntimeError("INVALID_CHECKOUT_URL")
+    return payload
+
+
+def gm_checkout_button(plan, payment_method, label, primary=False):
+    """Botão que cria pedido único e, em seguida, oferece o Checkout Pro oficial."""
+    key = f"gm_checkout_{plan['plan_code']}_{payment_method}"
+    checkout_state_key = f"{key}_result"
+
+    if st.button(label, key=key, type="primary" if primary else "secondary", use_container_width=True):
+        try:
+            with st.spinner("Criando checkout seguro no Mercado Pago..."):
+                checkout = gm_create_checkout(plan["plan_code"], payment_method)
+            st.session_state[checkout_state_key] = checkout
+        except Exception as exc:
+            raw = str(exc)
+            low = raw.lower()
+            if "login_required" in low or "not_authenticated" in low or "invalid_session" in low:
+                st.warning("Entre na sua conta GM SCORE para gerar o pagamento.")
+            elif "mercadopago_not_configured" in low:
+                st.warning("O checkout automático do Mercado Pago ainda está sendo finalizado. Tente novamente em breve ou fale com o suporte.")
+            elif "monthly_plan_pix_only" in low:
+                st.warning("O plano de 1 mês está disponível somente no Pix.")
+            else:
+                st.error("Não foi possível criar o checkout agora. Nenhuma liberação VIP foi realizada.")
+
+    checkout = st.session_state.get(checkout_state_key)
+    if isinstance(checkout, dict) and checkout.get("checkout_url"):
+        amount = checkout.get("amount")
+        try:
+            amount_text = f"R$ {float(amount):.2f}".replace(".", ",")
+        except Exception:
+            amount_text = "valor confirmado no checkout"
+        st.success(f"Checkout criado com segurança • {amount_text}")
+        st.link_button(
+            "↗️ Abrir Mercado Pago",
+            checkout["checkout_url"],
+            type="primary",
+            use_container_width=True,
+        )
+
+
 def gm_render_payment_plans(title="🔥 Planos VIP — preços promocionais", compact=False):
-    """Mostra os planos e leva o cliente diretamente ao checkout do Mercado Pago."""
+    """Exibe o catálogo; usuários logados geram um Checkout Pro individual por pedido."""
     st.markdown(f"### {title}")
-    st.caption("Oferta promocional. Escolha o período e a forma de pagamento. A liberação do VIP é feita pelo administrador após a confirmação do pagamento.")
+    logged_in = bool(st.session_state.get("gm_auth_access_token"))
+    if logged_in:
+        st.caption("Escolha o plano e a forma de pagamento. O GM SCORE cria um pedido individual e abre o ambiente seguro do Mercado Pago.")
+    else:
+        st.caption("Confira os planos. Para pagar, crie sua conta ou entre no GM SCORE; o checkout é individual e vinculado ao seu cadastro.")
+
     cols = st.columns(3)
     for col, plan in zip(cols, GM_VIP_PLANS):
         with col:
@@ -806,19 +882,31 @@ def gm_render_payment_plans(title="🔥 Planos VIP — preços promocionais", co
                 st.success(plan['saving'])
             else:
                 st.info(plan['saving'])
-            st.link_button("⚡ Pagar com Pix", plan['pix_url'], type="primary", use_container_width=True)
-            if plan['card_url']:
-                st.link_button("💳 Pagar com cartão", plan['card_url'], use_container_width=True)
-                st.caption(plan['card_text'])
+
+            if logged_in:
+                gm_checkout_button(plan, "pix", "⚡ Pagar com Pix", primary=True)
+                if plan.get("card_price"):
+                    gm_checkout_button(plan, "card", "💳 Pagar com cartão")
+                    st.caption(plan['card_text'])
+                else:
+                    st.caption("Pagamento mensal: somente Pix.")
             else:
-                st.caption("Pagamento mensal: somente Pix.")
+                st.button("🔐 Entre para pagar", key=f"gm_login_needed_{plan['plan_code']}", disabled=True, use_container_width=True)
+                if plan.get("card_price"):
+                    st.caption(plan['card_text'])
+                else:
+                    st.caption("Pagamento mensal: somente Pix.")
+
     if not compact:
-        st.caption("🔐 O pagamento é realizado no ambiente do Mercado Pago. O pagamento não libera o acesso automaticamente nesta etapa.")
+        if logged_in:
+            st.caption("🔐 O valor e a validade são definidos no servidor. A ativação automática ocorre somente após confirmação válida do pagamento pelo Mercado Pago.")
+        else:
+            st.caption("🔐 Nenhum pagamento é iniciado sem uma conta autenticada no GM SCORE.")
 
 
 def gm_payment_url():
-    """Compatibilidade com versões anteriores: retorna o checkout mensal."""
-    return GM_VIP_PLANS[0]["pix_url"]
+    """Compatibilidade legada: pagamentos novos usam gm-create-checkout."""
+    return ""
 
 
 GM_PUBLIC_COMPETITIONS = [
@@ -984,8 +1072,8 @@ def gm_render_public_intro():
 
     st.markdown("### 🔐 Como liberar seu acesso")
     st.info(
-        "1. Crie sua conta GM SCORE.  2. Efetue o pagamento pelo link disponibilizado.  "
-        "3. Aguarde a confirmação do administrador.  4. Entre com o mesmo login e acesse o GM SCORE VIP completo."
+        "1. Crie sua conta GM SCORE e confirme o e-mail.  2. Entre na conta e escolha seu plano.  "
+        "3. O pagamento é feito no Mercado Pago.  4. Após a confirmação válida, o VIP é ativado automaticamente."
     )
 
 def gm_render_login_form(form_key="gm_public_login"):
@@ -1018,7 +1106,7 @@ def gm_render_login_form(form_key="gm_public_login"):
 
 def gm_render_signup_form():
     st.markdown("### ⭐ Criar conta VIP")
-    st.caption("Crie sua conta, confirme o e-mail, efetue o pagamento e aguarde a liberação do acesso VIP.")
+    st.caption("Crie sua conta e confirme o e-mail. Depois, entre no GM SCORE para gerar seu checkout individual do Mercado Pago.")
     with st.form("gm_public_signup", clear_on_submit=False):
         nome = st.text_input("Nome", autocomplete="name")
         email = st.text_input("E-mail", key="gm_signup_email", autocomplete="email")
@@ -1063,7 +1151,7 @@ def gm_render_signup_form():
             st.info("📧 Confira seu e-mail e confirme o cadastro antes de tentar entrar.")
             st.markdown("---")
             gm_render_payment_plans(title="💳 Escolha seu plano VIP", compact=True)
-            st.info("Após pagar, sua conta continuará aguardando a conferência e a liberação manual do administrador.")
+            st.info("Após confirmar o e-mail, entre na conta para gerar o checkout individual. Pagamentos válidos serão processados automaticamente.")
             st.link_button("✈️ Falar com o suporte no Telegram", "https://t.me/suport_gm", use_container_width=True)
         except Exception as exc:
             text = str(exc).lower()
@@ -1123,13 +1211,13 @@ def gm_render_waiting_access(profile, state):
         st.write(f"Olá, **{nome}**. Esta conta está bloqueada. Entre em contato com o suporte para verificar a situação do acesso.")
     elif state == "expired":
         st.warning("⌛ **Seu acesso VIP expirou**")
-        st.write(f"Olá, **{nome}**. Escolha abaixo o período da renovação. Após o pagamento, a renovação será conferida e liberada pelo administrador.")
+        st.write(f"Olá, **{nome}**. Escolha abaixo o período da renovação. Após a confirmação válida do pagamento pelo Mercado Pago, a renovação será processada automaticamente.")
         gm_render_payment_plans(title="💳 Renovar GM SCORE VIP", compact=True)
     else:
         st.info("⏳ **Acesso VIP aguardando liberação**")
         st.write(
-            f"Olá, **{nome}**. Sua conta foi criada corretamente. Escolha um plano, efetue o pagamento no Mercado Pago e aguarde a confirmação do administrador. "
-            "Assim que o pagamento for conferido e o perfil aprovado, o acesso completo será liberado."
+            f"Olá, **{nome}**. Sua conta foi criada corretamente. Escolha um plano e gere seu checkout individual do Mercado Pago. "
+            "Assim que o pagamento aprovado for validado pelo GM SCORE, o acesso VIP será liberado automaticamente."
         )
         gm_render_payment_plans(title="💳 Escolha seu plano VIP", compact=True)
 
