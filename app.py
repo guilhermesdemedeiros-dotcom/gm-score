@@ -5554,25 +5554,39 @@ def resolve_team_name(candidate, teams):
 
 
 def render_share_button(team_a, team_b, league_name, probs, opportunities, expectations, a, b):
-    """Cria uma imagem longa com os dados da análise e marca d'água GM SCORE."""
+    """Gera uma arte HD no tema escuro do GM SCORE com os mesmos dados exibidos na análise."""
     import json as _json
 
     result_lines = []
     if probs:
         result_lines = [
-            [f"Vitória {team_a}", f"{probs['home']:.0f}%"],
-            ["Empate", f"{probs['draw']:.0f}%"],
-            [f"Vitória {team_b}", f"{probs['away']:.0f}%"],
+            [f"Vitória {team_a}", f"{probs['home']:.0f}%", float(probs['home'])],
+            ["Empate", f"{probs['draw']:.0f}%", float(probs['draw'])],
+            [f"Vitória {team_b}", f"{probs['away']:.0f}%", float(probs['away'])],
         ]
 
     exp_lines = []
-    for key, label in [("Gols","Gols esperados"),("Escanteios","Escanteios esperados"),("Cartões","Cartões esperados"),("Finalizações","Finalizações"),("Chutes no alvo","Chutes no alvo")]:
+    for key, label in [
+        ("Gols", "Gols esperados"),
+        ("Escanteios", "Escanteios esperados"),
+        ("Cartões", "Cartões esperados"),
+        ("Finalizações", "Finalizações esperadas"),
+        ("Chutes no alvo", "Chutes no alvo"),
+    ]:
         item = (expectations or {}).get(key)
         if item:
             exp_lines.append([label, f"{item['total']:.1f}"])
 
-    opp_lines = [[x["Mercado"], f"{x['Chance']:.0f}%", x["Base"]] for x in (opportunities or [])]
-    metric_labels = ["Jogos","Gols pró","Gols contra","Escanteios","Amarelos","Vermelhos","Faltas","Finalizações","Chutes no alvo","Posse (%)","Impedimentos"]
+    opp_lines = [
+        [x["Mercado"], f"{x['Chance']:.0f}%", float(x["Chance"]), x["Base"]]
+        for x in (opportunities or [])
+    ]
+
+    metric_labels = [
+        "Jogos", "Gols pró", "Gols contra", "Escanteios", "Amarelos",
+        "Vermelhos", "Faltas", "Finalizações", "Chutes no alvo",
+        "Posse (%)", "Impedimentos",
+    ]
     avg_lines = []
     for metric in metric_labels:
         if metric not in a.index or metric not in b.index:
@@ -5580,65 +5594,180 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
         av, bv = a[metric], b[metric]
         if pd.isna(av) and pd.isna(bv):
             continue
+
         def fmt(v):
-            if pd.isna(v): return "N/D"
+            if pd.isna(v):
+                return "N/D"
             try:
                 return str(int(v)) if metric == "Jogos" else f"{float(v):.2f}"
             except Exception:
                 return str(v)
+
         avg_lines.append([metric, fmt(av), fmt(bv)])
 
-    data = _json.dumps({
-        "title": f"{team_a} × {team_b}", "league": competition_display_name(league_name),
-        "results": result_lines, "expectations": exp_lines, "opportunities": opp_lines,
-        "averages": avg_lines, "home": team_a, "away": team_b,
-    }, ensure_ascii=False)
+    competition = competition_display_name(league_name)
+    data = _json.dumps(
+        {
+            "title": f"{team_a} × {team_b}",
+            "league": competition,
+            "results": result_lines,
+            "expectations": exp_lines,
+            "opportunities": opp_lines,
+            "averages": avg_lines,
+            "home": team_a,
+            "away": team_b,
+        },
+        ensure_ascii=False,
+    )
 
     html = f"""
-    <div style='font-family:Arial,sans-serif'>
-      <button id='shareBtn' style='width:100%;padding:12px 16px;border:0;border-radius:9px;background:#25D366;color:white;font-size:16px;font-weight:700;cursor:pointer'>📲 Compartilhar análise completa</button>
-      <div id='msg' style='font-size:12px;color:#6b7280;margin-top:6px'></div>
+    <div style='font-family:Inter,Arial,sans-serif'>
+      <button id='shareBtn' style='width:100%;padding:12px 16px;border:1px solid #1fe387;border-radius:12px;background:linear-gradient(90deg,#08783f,#10b865);color:white;font-size:16px;font-weight:800;cursor:pointer'>📲 Compartilhar análise em HD</button>
+      <div id='msg' style='font-size:12px;color:#94a3b8;margin-top:6px'></div>
     </div>
     <script>
     const D = {data};
-    function text(ctx, value, x, y, size=30, weight='normal', color='#172033') {{
-      ctx.fillStyle=color; ctx.font=`${{weight}} ${{size}}px Arial`; ctx.fillText(value,x,y);
+    const C = {{
+      bg:'#07100f', panel:'#0b1716', panel2:'#101a23', border:'#176e4b',
+      green:'#24e58b', green2:'#10b981', text:'#f8fafc', muted:'#a8b4c2',
+      soft:'#263845', line:'#1d3132', white:'#ffffff'
+    }};
+
+    function rr(ctx,x,y,w,h,r,fill,stroke=null,lw=1) {{
+      const q=Math.min(r,w/2,h/2); ctx.beginPath();
+      ctx.moveTo(x+q,y);ctx.arcTo(x+w,y,x+w,y+h,q);ctx.arcTo(x+w,y+h,x,y+h,q);
+      ctx.arcTo(x,y+h,x,y,q);ctx.arcTo(x,y,x+w,y,q);ctx.closePath();
+      if(fill){{ctx.fillStyle=fill;ctx.fill();}} if(stroke){{ctx.lineWidth=lw;ctx.strokeStyle=stroke;ctx.stroke();}}
     }}
-    function wrap(ctx, value, x, y, maxWidth, lineHeight) {{
+    function text(ctx,value,x,y,size=30,weight='400',color=C.text,align='left') {{
+      ctx.save(); ctx.fillStyle=color; ctx.font=`${{weight}} ${{size}}px Arial`; ctx.textAlign=align; ctx.textBaseline='alphabetic'; ctx.fillText(String(value),x,y); ctx.restore();
+    }}
+    function wrap(ctx,value,x,y,maxWidth,lineHeight,size=24,weight='400',color=C.muted) {{
+      ctx.save(); ctx.fillStyle=color; ctx.font=`${{weight}} ${{size}}px Arial`; ctx.textAlign='left';
       const words=String(value).split(' '); let line='', yy=y;
-      for(const w of words) {{ const t=line+w+' '; if(ctx.measureText(t).width>maxWidth && line) {{ctx.fillText(line,x,yy); yy+=lineHeight; line=w+' ';}} else line=t; }}
-      ctx.fillText(line,x,yy); return yy;
+      for(const w of words) {{ const t=line+w+' '; if(ctx.measureText(t).width>maxWidth && line) {{ctx.fillText(line.trim(),x,yy); yy+=lineHeight; line=w+' ';}} else line=t; }}
+      if(line) ctx.fillText(line.trim(),x,yy); ctx.restore(); return yy;
     }}
     function watermark(ctx,w,h) {{
-      ctx.save(); ctx.globalAlpha=.045; ctx.fillStyle='#172033'; ctx.font='bold 48px Arial'; ctx.translate(w/2,h/2); ctx.rotate(-Math.PI/7);
-      for(let y=-h;y<h;y+=180) for(let x=-w;x<w;x+=360) ctx.fillText('GM SCORE',x,y);
+      ctx.save(); ctx.globalAlpha=.055; ctx.fillStyle='#9ef8ca'; ctx.font='700 34px Arial'; ctx.translate(w/2,h/2); ctx.rotate(-Math.PI/7);
+      for(let yy=-h;yy<h;yy+=150) for(let xx=-w;xx<w;xx+=300) ctx.fillText('GM SCORE',xx,yy);
       ctx.restore();
     }}
+    function sectionTitle(ctx,label,y) {{
+      text(ctx,label,70,y,30,'800',C.text); return y+34;
+    }}
+    function bar(ctx,x,y,w,h,pct,color=C.green) {{
+      rr(ctx,x,y,w,h,h/2,C.soft); rr(ctx,x,y,Math.max(h,Math.min(w,w*pct/100)),h,h/2,color);
+    }}
+
     document.getElementById('shareBtn').onclick = async () => {{
-      const extra = D.averages.length*48 + D.opportunities.length*88 + D.expectations.length*58 + D.results.length*58;
-      const logicalW=1080, logicalH=Math.max(1900,1050+extra), scale=4/3;
-      const canvas=document.createElement('canvas'); canvas.width=Math.round(logicalW*scale); canvas.height=Math.round(logicalH*scale);
-      const ctx=canvas.getContext('2d'); ctx.scale(scale,scale); ctx.fillStyle='#fff'; ctx.fillRect(0,0,logicalW,logicalH); watermark(ctx,logicalW,logicalH);
-      let y=90; text(ctx,'⚽ GM SCORE',65,y,52,'bold'); y+=62; text(ctx,'ANÁLISE • ESTATÍSTICAS • PROBABILIDADES',65,y,23,'bold','#64748b');
-      y+=72; text(ctx,D.title,65,y,44,'bold'); y+=42; text(ctx,D.league,65,y,25,'normal','#64748b'); y+=70;
-      const section=(t)=>{{ text(ctx,t,65,y,31,'bold'); y+=30; ctx.strokeStyle='#e5e7eb'; ctx.beginPath();ctx.moveTo(65,y);ctx.lineTo(1015,y);ctx.stroke(); y+=45; }};
-      if(D.results.length) {{ section('🏆 Chance de resultado'); for(const r of D.results) {{text(ctx,r[0],80,y,27); text(ctx,r[1],930,y,30,'bold',parseInt(r[1])>=70?'#16a34a':'#172033'); y+=55;}} y+=20; }}
-      if(D.expectations.length) {{ section('📈 Expectativa da partida'); for(const r of D.expectations) {{text(ctx,r[0],80,y,27); text(ctx,r[1],930,y,29,'bold'); y+=55;}} y+=20; }}
-      if(D.opportunities.length) {{ section('⭐ Melhores linhas para observar'); for(const r of D.opportunities) {{ctx.font='bold 27px Arial';ctx.fillStyle='#172033'; y=wrap(ctx,r[0],80,y,700,34); text(ctx,r[1],930,y,30,'bold',parseInt(r[1])>=80?'#16a34a':'#b7791f'); y+=34; ctx.font='22px Arial';ctx.fillStyle='#64748b'; y=wrap(ctx,r[2],80,y,820,29); y+=45;}} }}
-      if(D.averages.length) {{ section('📊 Médias usadas na análise'); text(ctx,'Dado',80,y,23,'bold','#64748b'); text(ctx,D.home,550,y,21,'bold','#64748b'); text(ctx,D.away,820,y,21,'bold','#64748b'); y+=42; for(const r of D.averages) {{text(ctx,r[0],80,y,23);text(ctx,r[1],580,y,23,'bold');text(ctx,r[2],850,y,23,'bold');y+=46;}} }}
-      y+=45; text(ctx,'Estimativas estatísticas; não garantem resultado.',65,y,20,'normal','#94a3b8');
+      const avgH = D.averages.length*42;
+      const oppH = D.opportunities.length*88;
+      const expRows = Math.ceil(D.expectations.length/5);
+      const logicalW=1080;
+      const logicalH=Math.max(1850, 1250 + avgH + oppH + expRows*120);
+      const scale=2; // arquivo final com 2160 px de largura para preservar alta resolução
+      const canvas=document.createElement('canvas');
+      canvas.width=logicalW*scale; canvas.height=logicalH*scale;
+      const ctx=canvas.getContext('2d'); ctx.scale(scale,scale);
+      ctx.fillStyle=C.bg; ctx.fillRect(0,0,logicalW,logicalH); watermark(ctx,logicalW,logicalH);
+
+      let y=74;
+      text(ctx,'GM SCORE',70,y,50,'900',C.text);
+      const gmWidth=ctx.measureText('GM ').width;
+      text(ctx,'SCORE',70+165,y,50,'900',C.green);
+      y+=38;
+      text(ctx,'ANÁLISE • ESTATÍSTICAS • PROBABILIDADES',70,y,19,'700','#93e9bc');
+      y+=64;
+
+      rr(ctx,60,y,960,190,22,'rgba(8,35,30,.94)',C.border,2);
+      text(ctx,D.league.toUpperCase(),88,y+40,22,'800',C.text);
+      text(ctx,D.home,235,y+112,32,'800',C.text,'center');
+      text(ctx,'VS',540,y+108,40,'900',C.green,'center');
+      text(ctx,D.away,845,y+112,32,'800',C.text,'center');
+      text(ctx,'PARTIDA ANALISADA',540,y+150,17,'700',C.muted,'center');
+      y+=220;
+
+      if(D.results.length) {{
+        rr(ctx,60,y,960,185,20,C.panel,C.border,2);
+        sectionTitle(ctx,'🏆 Chance de resultado',y+40);
+        const bw=270, gap=25, sx=88;
+        D.results.forEach((r,i)=>{{
+          const x=sx+i*(bw+gap); text(ctx,r[1],x+bw/2,y+92,34,'900',C.text,'center');
+          bar(ctx,x,y+111,bw,15,r[2],i===1?'#dce6eb':C.green);
+          text(ctx,r[0],x+bw/2,y+155,18,'600',C.muted,'center');
+        }});
+        y+=210;
+      }}
+
+      if(D.expectations.length) {{
+        rr(ctx,60,y,960,170,20,C.panel,C.border,2);
+        sectionTitle(ctx,'📈 Expectativa da partida',y+40);
+        const n=D.expectations.length, gap=12, w=(900-(n-1)*gap)/n;
+        D.expectations.forEach((r,i)=>{{
+          const x=90+i*(w+gap); rr(ctx,x,y+62,w,82,14,C.panel2,'#274039',1);
+          text(ctx,r[1],x+w/2,y+99,30,'900',C.text,'center');
+          wrap(ctx,r[0],x+12,y+127,w-24,18,15,'600',C.muted);
+        }});
+        y+=195;
+      }}
+
+      if(D.opportunities.length) {{
+        const h=76 + D.opportunities.length*86;
+        rr(ctx,60,y,960,h,20,C.panel,C.border,2);
+        sectionTitle(ctx,'⭐ Melhores linhas para observar',y+40);
+        let oy=y+72;
+        D.opportunities.forEach((r)=>{{
+          text(ctx,r[0],88,oy+24,22,'800',C.text);
+          wrap(ctx,r[3],88,oy+49,500,20,15,'400',C.muted);
+          bar(ctx,610,oy+16,265,14,r[2],C.green);
+          text(ctx,r[1],960,oy+30,25,'900',C.green,'right');
+          oy+=86;
+        }});
+        y+=h+25;
+      }}
+
+      if(D.averages.length) {{
+        const h=92 + D.averages.length*42;
+        rr(ctx,60,y,960,h,20,C.panel,C.border,2);
+        sectionTitle(ctx,'📊 Médias usadas na análise',y+40);
+        let ty=y+74;
+        text(ctx,'Dado',92,ty,17,'800',C.muted);
+        text(ctx,D.home,635,ty,17,'800',C.muted,'center');
+        text(ctx,D.away,870,ty,17,'800',C.muted,'center');
+        ty+=18; ctx.strokeStyle=C.line;ctx.beginPath();ctx.moveTo(85,ty);ctx.lineTo(995,ty);ctx.stroke();ty+=28;
+        D.averages.forEach(r=>{{
+          text(ctx,r[0],92,ty,18,'500',C.text);
+          text(ctx,r[1],635,ty,18,'700',C.text,'center');
+          text(ctx,r[2],870,ty,18,'700',C.text,'center');
+          ty+=42;
+        }});
+        y+=h+28;
+      }}
+
+      text(ctx,'Estimativas estatísticas; não garantem resultado.',65,logicalH-66,17,'400',C.muted);
+      text(ctx,'GM SCORE',1015,logicalH-66,23,'900',C.green,'right');
+
       canvas.toBlob(async blob=>{{
-        const file=new File([blob],'gm-score-analise-completa-HD.jpg',{{type:'image/jpeg'}});
+        const safe=(D.home+'-x-'+D.away).replace(/[^a-z0-9áàãâéêíóôõúç_-]+/gi,'-').replace(/-+/g,'-');
+        const file=new File([blob],`GM-SCORE-${{safe}}-HD.jpg`,{{type:'image/jpeg'}});
+        const shareText=`GM SCORE — ${{D.league}} — ${{D.title}}`;
         try {{
-          if(navigator.share && (!navigator.canShare || navigator.canShare({{files:[file]}}))) {{ await navigator.share({{title:D.title,text:'GM SCORE - análise completa',files:[file]}}); document.getElementById('msg').innerText='Escolha o WhatsApp na tela de compartilhamento.'; }}
-          else {{ const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=file.name;a.click();document.getElementById('msg').innerText='A imagem completa foi salva para compartilhar no WhatsApp.'; }}
-        }} catch(e) {{ if(e.name!=='AbortError') document.getElementById('msg').innerText='Não foi possível abrir o compartilhamento neste navegador.'; }}
-      }},'image/jpeg',0.95);
+          if(navigator.share && (!navigator.canShare || navigator.canShare({{files:[file]}}))) {{
+            await navigator.share({{title:`${{D.league}} — ${{D.title}}`,text:shareText,files:[file]}});
+            document.getElementById('msg').innerText='Imagem HD criada. Escolha o WhatsApp para compartilhar.';
+          }} else {{
+            const dl=document.createElement('a'); dl.href=URL.createObjectURL(blob); dl.download=file.name; dl.click();
+            document.getElementById('msg').innerText='Imagem HD salva para compartilhamento.';
+          }}
+        }} catch(e) {{
+          if(e.name!=='AbortError') document.getElementById('msg').innerText='Não foi possível abrir o compartilhamento neste navegador.';
+        }}
+      }},'image/jpeg',0.98);
     }};
     </script>
     """
     components.html(html, height=82)
-
 
 def render_analysis():
     global period
