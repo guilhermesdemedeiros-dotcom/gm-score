@@ -26,7 +26,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-11-news-center-ui-v2"
+GM_BUILD = "2026-09-11-news-modal-brand-nav-v3"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -38,7 +38,7 @@ st.markdown("""
 <div class="gm-brand" style="margin:0 0 1.15rem 0">
   <div style="display:flex;align-items:center;gap:.65rem;line-height:1">
     <span style="font-size:2.35rem">⚽</span>
-    <span class="gm-brand-title">GM SCORE</span>
+    <span class="gm-brand-title"><span class="gm-brand-gm">GM</span><span class="gm-brand-score">SCORE</span></span>
   </div>
   <div class="gm-brand-subtitle">ANÁLISE • ESTATÍSTICAS • PROBABILIDADES</div>
 </div>
@@ -46,22 +46,23 @@ st.markdown("""
 
 st.markdown("""
 <style>
-/* Marca GM SCORE. No tema claro usamos preenchimento escuro e uma borda
-   verde de gramado REAL ao redor das letras. O text-shadow fica como fallback
-   para navegadores que tratem o text-stroke de forma diferente. */
+/* Identidade visual GM SCORE: GM branco + SCORE verde, ambos com contorno preto espesso. */
 .gm-brand-title {
+  display:inline-flex;
+  align-items:center;
+  gap:.12em;
   font-size:2.35rem;
-  font-weight:850;
-  letter-spacing:-.04em;
-  color:var(--text-color) !important;
-  -webkit-text-stroke:2px #16803a !important;
+  font-weight:950;
+  letter-spacing:-.055em;
   paint-order:stroke fill;
-  text-shadow:
-    -1px -1px 0 #16803a,
-     1px -1px 0 #16803a,
-    -1px  1px 0 #16803a,
-     1px  1px 0 #16803a;
 }
+.gm-brand-gm, .gm-brand-score {
+  -webkit-text-stroke:4px #05070a;
+  paint-order:stroke fill;
+  text-shadow:0 2px 0 #05070a, 0 4px 10px rgba(0,0,0,.45);
+}
+.gm-brand-gm { color:#ffffff !important; }
+.gm-brand-score { color:#22d36b !important; }
 .gm-brand-subtitle {
   margin-top:.55rem;
   font-size:.82rem;
@@ -74,20 +75,9 @@ st.markdown("""
   font-size:.78rem;
   color:color-mix(in srgb, var(--text-color) 54%, transparent);
 }
-
-/* No tema escuro, muda somente a cor das fontes da identidade GM SCORE. */
-@media (prefers-color-scheme: dark) {
-  .gm-brand-title {
-    color:var(--text-color) !important;
-    -webkit-text-stroke:2px #16803a !important;
-    text-shadow:
-      -1px -1px 0 #16803a,
-       1px -1px 0 #16803a,
-      -1px  1px 0 #16803a,
-       1px  1px 0 #16803a !important;
-  }
-  .gm-brand-subtitle { color:#cbd5e1 !important; }
-  .gm-brand-credit { color:#94a3b8 !important; }
+@media (max-width: 768px) {
+  .gm-brand-title { font-size:2.15rem; }
+  .gm-brand-gm, .gm-brand-score { -webkit-text-stroke:3px #05070a; }
 }
 </style>
 """, unsafe_allow_html=True)
@@ -614,70 +604,77 @@ def gm_render_top_news_bell(unread_count):
 
 
 def gm_render_news_center():
-    """Central de Novidades clara e simples para clientes VIP e administradores."""
-    st.markdown("## 🔔 Novidades do GM SCORE")
-    st.caption("Aqui você acompanha, em linguagem simples, tudo o que mudou e pode afetar sua experiência no GM SCORE.")
-
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("← Voltar ao GM SCORE", use_container_width=True, key="gm_news_back"):
-            st.session_state["gm_news_open"] = False
-            st.rerun()
-    with c2:
-        if st.button("✓ Marcar todas como lidas", use_container_width=True, key="gm_news_mark_all"):
-            try:
-                gm_news_rpc("gm_mark_all_news_read")
-                st.success("Todas as novidades foram marcadas como lidas.")
-                st.rerun()
-            except Exception:
-                st.error("Não foi possível atualizar as leituras agora.")
-
+    """Abre as novidades em uma janela flutuante, mantendo o histórico acessível."""
     try:
         rows = gm_list_news()
     except Exception:
-        st.error("Não foi possível carregar as novidades agora. Tente novamente em instantes.")
-        return
+        rows = []
 
-    if not rows:
-        st.info("Nenhuma novidade publicada no momento.")
-        return
+    hidden = set(st.session_state.get("gm_news_hidden_session", []))
+    visible_rows = [r for r in rows if str(r.get("id") or "") not in hidden]
+    unread = sum(1 for row in visible_rows if not bool(row.get("is_read")))
 
-    unread = sum(1 for row in rows if not bool(row.get("is_read")))
-    if unread:
-        st.info(f"🔔 Você tem {unread} novidade{'s' if unread != 1 else ''} não lida{'s' if unread != 1 else ''}.")
-    else:
-        st.success("✓ Você está em dia com as novidades.")
+    @st.dialog("🔔 Novidades", width="large")
+    def _gm_news_dialog():
+        st.caption("Acompanhe aqui as últimas alterações do GM SCORE. As publicações lidas continuam disponíveis para consulta.")
 
-    for row in rows:
-        news_id = str(row.get("id") or "")
-        title = str(row.get("title") or "Novidade")
-        message = str(row.get("message") or "")
-        category = str(row.get("category") or "novidade")
-        category_label = GM_NEWS_CATEGORIES.get(category, "🆕 Novidade")
-        featured = bool(row.get("is_featured"))
-        is_read = bool(row.get("is_read"))
+        if unread:
+            st.caption(f"🔴 {unread} não lida{'s' if unread != 1 else ''}")
+        else:
+            st.caption("Você está em dia. O histórico continua disponível abaixo.")
 
-        with st.container(border=True):
-            status_label = "🔴 NOVA" if not is_read else "✓ Lida"
-            if featured:
-                status_label += "  •  ⭐ Destaque"
-            st.caption(f"{status_label}  •  {category_label}")
-            st.markdown(f"### {title}")
-            st.write(message)
-            st.caption(f"Publicado em {gm_news_format_datetime(row.get('published_at'))}")
+        if not visible_rows:
+            st.info("Nenhuma novidade para exibir nesta sessão.")
+        else:
+            for row in visible_rows:
+                news_id = str(row.get("id") or "")
+                title = str(row.get("title") or "Novidade")
+                message = str(row.get("message") or "")
+                category = str(row.get("category") or "novidade")
+                category_label = GM_NEWS_CATEGORIES.get(category, "🆕 Novidade")
+                is_read = bool(row.get("is_read"))
+                featured = bool(row.get("is_featured"))
 
-            if not is_read and news_id:
-                if st.button(
-                    "✓ Entendi — marcar como lida",
-                    use_container_width=True,
-                    key=f"gm_news_read_{news_id}",
-                ):
-                    try:
-                        gm_news_rpc("gm_mark_news_read", {"p_news_id": news_id})
-                        st.rerun()
-                    except Exception:
-                        st.error("Não foi possível marcar esta novidade como lida.")
+                with st.container(border=True):
+                    meta = ("🔵 NÃO LIDA" if not is_read else "⚪ LIDA") + f"  •  {category_label}"
+                    if featured:
+                        meta += "  •  ⭐ Destaque"
+                    st.caption(meta)
+                    st.markdown(f"### {title}")
+                    st.caption(message)
+                    st.caption(f"{gm_news_format_datetime(row.get('published_at'))}")
 
+                    a, b = st.columns([1, 1])
+                    with a:
+                        if not is_read and news_id:
+                            if st.button("✓ Ler", use_container_width=True, key=f"gm_news_modal_read_{news_id}"):
+                                try:
+                                    gm_news_rpc("gm_mark_news_read", {"p_news_id": news_id})
+                                    st.rerun()
+                                except Exception:
+                                    st.error("Não foi possível marcar como lida agora.")
+                        elif is_read:
+                            st.caption("✓ Já lida")
+                    with b:
+                        if news_id and st.button("Ocultar", use_container_width=True, key=f"gm_news_modal_hide_{news_id}", help="Oculta apenas nesta sessão; não apaga a publicação."):
+                            hidden_now = set(st.session_state.get("gm_news_hidden_session", []))
+                            hidden_now.add(news_id)
+                            st.session_state["gm_news_hidden_session"] = list(hidden_now)
+                            st.rerun()
+
+        if visible_rows:
+            if st.button("✓ Marcar todas como lidas", use_container_width=True, key="gm_news_modal_mark_all"):
+                try:
+                    gm_news_rpc("gm_mark_all_news_read")
+                    st.rerun()
+                except Exception:
+                    st.error("Não foi possível atualizar as leituras agora.")
+
+        if st.button("Fechar", use_container_width=True, key="gm_news_modal_close"):
+            st.session_state["gm_news_open"] = False
+            st.rerun()
+
+    _gm_news_dialog()
 
 def gm_render_admin_news_manager():
     """Publicação e gestão de novidades. A autorização real continua nas RPCs do Supabase."""
@@ -1934,7 +1931,6 @@ if _gm_profile_after_gate:
 
 if _gm_profile_after_gate and st.session_state.get("gm_news_open"):
     gm_render_news_center()
-    st.stop()
 
 if (
     _gm_profile_after_gate
@@ -5876,77 +5872,13 @@ if "selected_home" not in st.session_state:
     st.session_state.selected_home = None
 if "selected_away" not in st.session_state:
     st.session_state.selected_away = None
-st.sidebar.markdown("### ⚽ GM SCORE")
-st.sidebar.caption("Agenda de jogos")
-
-# A competição continua sendo controlada pela tela principal. A barra lateral
-# passa a ser uma agenda independente, sem alterar as rotinas antigas de análise.
+# A barra lateral autenticada fica dedicada exclusivamente à conta, VIP/renovação
+# e, para administradores, ao acesso do painel administrativo.
+# Os controles de análise permanecem na área principal.
 league_name = st.session_state.selected_competition
 config = COMPETITIONS[league_name]
 used_year = current_season_year(config["season"])
 period = int(st.session_state.get("analysis_period", 10))
-
-_brasilia_today = datetime.now(BRASILIA_TZ).date()
-_date_options = [_brasilia_today + timedelta(days=i) for i in range(7)]
-
-def _agenda_date_label(d):
-    if d == _brasilia_today:
-        return f"Hoje · {d:%d/%m}"
-    weekdays = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"]
-    return f"{weekdays[d.weekday()]} · {d:%d/%m}"
-
-_sidebar_agenda_comp = st.sidebar.selectbox(
-    "🏆 Competição",
-    list(COMPETITIONS.keys()),
-    key="sidebar_agenda_competition",
-    format_func=competition_display_name,
-)
-_selected_agenda_date = st.sidebar.selectbox(
-    "📅 Data", _date_options, key="sidebar_agenda_date", format_func=_agenda_date_label
-)
-st.sidebar.caption("🕒 Horário de Brasília · competição e data selecionadas")
-
-try:
-    with st.spinner("Buscando jogos da competição..."):
-        _agenda_fixtures = load_competition_fixtures_for_date(_sidebar_agenda_comp, _selected_agenda_date)
-except Exception:
-    _agenda_fixtures = []
-
-_agenda_fixtures = sorted(_agenda_fixtures, key=lambda f: str(f.get("time") or "99:99"))
-
-if not _agenda_fixtures:
-    st.sidebar.info("Nenhum jogo encontrado nesta data. Toque em **Atualizar agenda** para consultar novamente as fontes públicas.")
-else:
-    st.sidebar.caption(f"{len(_agenda_fixtures)} jogo(s) encontrado(s)")
-    _last_comp = None
-    for i, f in enumerate(_agenda_fixtures):
-        if f.get("competition") != _last_comp:
-            _last_comp = f.get("competition")
-            st.sidebar.markdown(f"**{competition_display_name(_last_comp)}**")
-        _time_text = str(f.get("time") or "").strip()
-        _line = f"⚽ **{f['home']} × {f['away']}**"
-        if _time_text and _time_text.lower() != "nan":
-            _line += f"  \n🕒 {_time_text}"
-        st.sidebar.markdown(_line)
-        if st.sidebar.button(
-            "🔎 Analisar",
-            key=f"side_agenda_{_selected_agenda_date}_{i}_{clean_col(f['home'])}_{clean_col(f['away'])}",
-            use_container_width=True,
-        ):
-            st.session_state["_goto_comp"] = f["competition"]
-            st.session_state["_goto_home"] = f["home"]
-            st.session_state["_goto_away"] = f["away"]
-            st.session_state["_main_games_hidden_competition"] = f["competition"]
-            st.rerun()
-
-if st.sidebar.button("🔄 Atualizar agenda", use_container_width=True):
-    st.cache_data.clear(); st.rerun()
-
-_SUPPORT_URL = "https://t.me/suport_gm"
-st.sidebar.markdown("---")
-if st.sidebar.button("📲 Instalar GM SCORE no celular", use_container_width=True):
-    render_install_guide()
-st.sidebar.link_button("✈️ Suporte pelo Telegram", _SUPPORT_URL, use_container_width=True)
 
 def load_current_season():
     def roster_only_fallback(errors):
@@ -6150,6 +6082,11 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
     function text(ctx,value,x,y,size=30,weight='400',color=C.text,align='left') {{
       ctx.save(); ctx.fillStyle=color; ctx.font=`${{weight}} ${{size}}px Arial`; ctx.textAlign=align; ctx.textBaseline='alphabetic'; ctx.fillText(String(value),x,y); ctx.restore();
     }}
+    function outlinedText(ctx,value,x,y,size=30,weight='900',fill='#ffffff',align='left',stroke='#05070a',strokeWidth=8) {{
+      ctx.save(); ctx.font=`${weight} ${size}px Arial`; ctx.textAlign=align; ctx.textBaseline='alphabetic';
+      ctx.lineJoin='round'; ctx.miterLimit=2; ctx.lineWidth=strokeWidth; ctx.strokeStyle=stroke; ctx.strokeText(String(value),x,y);
+      ctx.fillStyle=fill; ctx.fillText(String(value),x,y); ctx.restore();
+    }}
     function wrap(ctx,value,x,y,maxWidth,lineHeight,size=24,weight='400',color=C.muted) {{
       ctx.save(); ctx.fillStyle=color; ctx.font=`${{weight}} ${{size}}px Arial`; ctx.textAlign='left';
       const words=String(value).split(' '); let line='', yy=y;
@@ -6188,8 +6125,8 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
       const gmWidth=ctx.measureText('GM ').width;
       ctx.restore();
 
-      text(ctx,'GM ',70,y,50,'900',C.text);
-      text(ctx,'SCORE',70+gmWidth,y,50,'900',C.green);
+      outlinedText(ctx,'GM ',70,y,50,'900','#ffffff','left','#05070a',10);
+      outlinedText(ctx,'SCORE',70+gmWidth,y,50,'900',C.green,'left','#05070a',10);
 
       text(ctx,'DADOS QUE',1015,y-22,16,'800',C.text,'right');
       text(ctx,'TRANSFORMAM',1015,y-2,16,'800',C.text,'right');
@@ -6272,8 +6209,8 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
       ctx.font='900 23px Arial';
       const scoreW=ctx.measureText('SCORE').width;
       ctx.restore();
-      text(ctx,'SCORE',1015,logicalH-66,23,'900',C.green,'right');
-      text(ctx,'GM ',1015-scoreW,logicalH-66,23,'900',C.text,'right');
+      outlinedText(ctx,'SCORE',1015,logicalH-66,23,'900',C.green,'right','#05070a',5);
+      outlinedText(ctx,'GM ',1015-scoreW,logicalH-66,23,'900','#ffffff','right','#05070a',5);
 
       canvas.toBlob(async blob=>{{
         const safe=(D.home+'-x-'+D.away).replace(/[^a-z0-9áàãâéêíóôõúç_-]+/gi,'-').replace(/-+/g,'-');
