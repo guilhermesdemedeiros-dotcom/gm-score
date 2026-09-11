@@ -1473,6 +1473,57 @@ def gm_render_public_portal():
                 st.markdown("### 👤 Minha conta")
                 st.caption(str(profile.get("nome") or profile.get("email") or "GM SCORE"))
                 st.success("🛠️ Administrador" if state == "admin" else "⭐ VIP ativo")
+
+                # Renovação simples para clientes que já estão com o VIP ativo.
+                # Reutiliza exatamente o checkout individual já existente:
+                # pedido no servidor -> Mercado Pago -> webhook -> extensão do VIP.
+                if state == "vip":
+                    renewal_open = bool(
+                        st.session_state.get("gm_sidebar_renewal_open", False)
+                    )
+
+                    if st.button(
+                        "💳 Renovar VIP",
+                        use_container_width=True,
+                        key="gm_sidebar_renew_vip",
+                    ):
+                        st.session_state["gm_sidebar_renewal_open"] = not renewal_open
+                        st.rerun()
+
+                    if st.session_state.get("gm_sidebar_renewal_open", False):
+                        st.markdown("#### ⭐ Renovação VIP")
+                        st.caption(
+                            "Escolha o período. O novo prazo é acrescentado ao seu VIP atual "
+                            "somente após a confirmação válida do pagamento."
+                        )
+
+                        for plan in GM_VIP_PLANS:
+                            st.markdown(f"**{plan['badge']} VIP {plan['title']}**")
+                            st.caption(f"{plan['pix_price']} no Pix • {plan['monthly']}")
+                            gm_checkout_button(
+                                plan,
+                                "pix",
+                                "⚡ Renovar com Pix",
+                                primary=True,
+                            )
+
+                            if plan.get("card_price"):
+                                gm_checkout_button(
+                                    plan,
+                                    "card",
+                                    "💳 Renovar com cartão",
+                                )
+                                st.caption(plan["card_text"])
+                            else:
+                                st.caption("Pagamento mensal: somente Pix.")
+
+                            st.markdown("---")
+
+                        st.caption(
+                            "🔐 A renovação é automática após o Mercado Pago confirmar "
+                            "o pagamento aprovado."
+                        )
+
                 if state == "admin":
                     if st.button("🛠 Painel Administrativo", use_container_width=True, key="gm_sidebar_admin_panel"):
                         st.session_state["gm_admin_panel_open"] = True
