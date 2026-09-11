@@ -26,7 +26,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-11-senior-male-fixtures-v2"
+GM_BUILD = "2026-09-11-match-choice-flow-v1"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -6421,124 +6421,137 @@ def render_analysis():
         on_change=_on_main_competition_change,
     )
 
-    # Jogos de hoje também aparecem na tela principal. Depois que o usuário
-    # carrega um confronto (pela lista ou manualmente), a lista fica oculta
-    # para esta competição e só volta a aparecer quando a competição mudar.
+    # O confronto pode ser escolhido de duas formas logo após a competição:
+    # 1) pelos jogos oficiais da data; 2) manualmente entre as equipes da liga.
+    # No celular usamos duas opções horizontais, em vez de duas colunas fixas,
+    # para preservar a legibilidade dos nomes e dos horários.
     main_games_hidden = st.session_state.get("_main_games_hidden_competition") == league_name
+
     if not main_games_hidden:
-        st.markdown("### 📅 Jogos por data")
-        main_fixture_date = st.selectbox(
-            "📅 Data dos jogos",
-            _date_options,
-            key=f"main_fixture_date_{clean_col(league_name)}",
-            format_func=_agenda_date_label,
+        st.markdown("### ⚽ Escolha o confronto")
+        choice_key = f"main_match_choice_{clean_col(league_name)}"
+        choice_mode = st.radio(
+            "Forma de seleção",
+            ["📅 Jogos da data", "🎯 Selecionar equipes"],
+            horizontal=True,
+            key=choice_key,
+            label_visibility="collapsed",
         )
-        st.caption("🕒 Horário de Brasília · competição selecionada acima · toque em **Analisar** para carregar o confronto")
-        try:
-            today_fixtures = load_competition_fixtures_for_date(league_name, main_fixture_date)
-        except Exception:
-            today_fixtures = []
 
-        # Barreira final fora do cache: a agenda exibida deve conter somente
-        # equipes principais que também existam no elenco profissional carregado
-        # para a competição. Isso impede que um resultado antigo em cache ou uma
-        # fonte externa rotulada incorretamente exponha U21/U23/base/reservas.
-        safe_fixtures = []
-        for f in today_fixtures:
-            if not valid_daily_fixture(f):
-                continue
-            resolved_home = resolve_team_name(f.get("home"), teams)
-            resolved_away = resolve_team_name(f.get("away"), teams)
-            if not resolved_home or not resolved_away:
-                continue
-            ff = dict(f)
-            ff["home"] = resolved_home
-            ff["away"] = resolved_away
-            safe_fixtures.append(ff)
-        today_fixtures = safe_fixtures
+        if choice_mode == "📅 Jogos da data":
+            main_fixture_date = st.selectbox(
+                "📅 Data dos jogos",
+                _date_options,
+                key=f"main_fixture_date_{clean_col(league_name)}",
+                format_func=_agenda_date_label,
+            )
+            st.caption("🕒 Horário de Brasília · toque em **Analisar** para carregar o confronto")
+            try:
+                today_fixtures = load_competition_fixtures_for_date(league_name, main_fixture_date)
+            except Exception:
+                today_fixtures = []
 
-        if today_fixtures:
-            for i, f in enumerate(today_fixtures):
-                game_home = f.get("home")
-                game_away = f.get("away")
-                time_text = str(f.get("time") or "").strip()
-                if time_text and time_text.lower() != "nan":
-                    st.markdown(f"**⚽ {game_home} × {game_away}**  \n🕒 {time_text}")
-                else:
-                    st.markdown(f"**⚽ {game_home} × {game_away}**")
-                if st.button(
-                    "🔎 Analisar",
-                    key=f"main_game_{main_fixture_date}_{i}_{clean_col(str(game_home))}_{clean_col(str(game_away))}",
-                    use_container_width=True,
-                ):
-                    resolved_game_home = resolve_team_name(game_home, teams)
-                    resolved_game_away = resolve_team_name(game_away, teams)
-                    if not resolved_game_home or not resolved_game_away:
-                        st.warning("Não consegui associar este jogo às equipes da competição.")
+            # Barreira final fora do cache: a agenda exibida deve conter somente
+            # equipes principais que também existam no elenco profissional carregado
+            # para a competição. Isso impede U21/U23/base/reservas.
+            safe_fixtures = []
+            for f in today_fixtures:
+                if not valid_daily_fixture(f):
+                    continue
+                resolved_fixture_home = resolve_team_name(f.get("home"), teams)
+                resolved_fixture_away = resolve_team_name(f.get("away"), teams)
+                if not resolved_fixture_home or not resolved_fixture_away:
+                    continue
+                ff = dict(f)
+                ff["home"] = resolved_fixture_home
+                ff["away"] = resolved_fixture_away
+                safe_fixtures.append(ff)
+            today_fixtures = safe_fixtures
+
+            if today_fixtures:
+                for i, f in enumerate(today_fixtures):
+                    game_home = f.get("home")
+                    game_away = f.get("away")
+                    time_text = str(f.get("time") or "").strip()
+                    if time_text and time_text.lower() != "nan":
+                        st.markdown(f"**⚽ {game_home} × {game_away}**  \n🕒 {time_text}")
                     else:
-                        st.session_state.selected_home = resolved_game_home
-                        st.session_state.selected_away = resolved_game_away
-                        st.session_state.loaded_home = resolved_game_home
-                        st.session_state.loaded_away = resolved_game_away
-                        st.session_state.loaded_competition = league_name
-                        st.session_state["_main_games_hidden_competition"] = league_name
-                        st.session_state["home_widget"] = resolved_game_home
-                        st.session_state["away_widget"] = resolved_game_away
-                        st.session_state["_synced_loaded_signature"] = f"{league_name}|{resolved_game_home}|{resolved_game_away}"
-                        st.rerun()
-            st.markdown("---")
+                        st.markdown(f"**⚽ {game_home} × {game_away}**")
+                    if st.button(
+                        "🔎 Analisar",
+                        key=f"main_game_{main_fixture_date}_{i}_{clean_col(str(game_home))}_{clean_col(str(game_away))}",
+                        use_container_width=True,
+                    ):
+                        resolved_game_home = resolve_team_name(game_home, teams)
+                        resolved_game_away = resolve_team_name(game_away, teams)
+                        if not resolved_game_home or not resolved_game_away:
+                            st.warning("Não consegui associar este jogo às equipes da competição.")
+                        else:
+                            st.session_state.selected_home = resolved_game_home
+                            st.session_state.selected_away = resolved_game_away
+                            st.session_state.loaded_home = resolved_game_home
+                            st.session_state.loaded_away = resolved_game_away
+                            st.session_state.loaded_competition = league_name
+                            st.session_state["_main_games_hidden_competition"] = league_name
+                            st.session_state["home_widget"] = resolved_game_home
+                            st.session_state["away_widget"] = resolved_game_away
+                            st.session_state["_synced_loaded_signature"] = f"{league_name}|{resolved_game_home}|{resolved_game_away}"
+                            st.rerun()
+            else:
+                st.info("Nenhum jogo profissional masculino encontrado para esta competição na data selecionada. Você ainda pode usar **🎯 Selecionar equipes**.")
+
         else:
-            st.info("Nenhum jogo encontrado para esta competição na data selecionada.")
-            st.markdown("---")
+            st.caption("Escolha qualquer confronto entre as equipes profissionais da competição, mesmo sem jogo marcado nesta data.")
+            manual_c1, manual_c2 = st.columns(2)
+            with manual_c1:
+                manual_team_a = st.selectbox(
+                    "🏠 Time da casa",
+                    teams,
+                    index=teams.index(default_home),
+                    key="home_widget",
+                )
+            with manual_c2:
+                manual_team_b = st.selectbox(
+                    "✈️ Time visitante",
+                    teams,
+                    index=teams.index(default_away),
+                    key="away_widget",
+                )
 
-    if loaded_home_now and loaded_away_now:
-        st.caption(f"✅ Jogo carregado: {loaded_home_now} × {loaded_away_now}")
+            if manual_team_a == manual_team_b:
+                st.warning("Selecione duas equipes diferentes.")
+            elif st.button(
+                "⚽ Carregar equipes",
+                type="primary",
+                use_container_width=True,
+                key="load_teams_btn",
+            ):
+                st.session_state.selected_home = manual_team_a
+                st.session_state.selected_away = manual_team_b
+                st.session_state.loaded_home = manual_team_a
+                st.session_state.loaded_away = manual_team_b
+                st.session_state.loaded_competition = league_name
+                st.session_state["_main_games_hidden_competition"] = league_name
+                st.session_state["_synced_loaded_signature"] = f"{league_name}|{manual_team_a}|{manual_team_b}"
+                st.rerun()
 
-        # Sincroniza os widgets SOMENTE quando o confronto carregado muda
-        # (por exemplo, ao tocar em "Analisar" nos jogos do dia). Não fazemos
-        # isso em todo rerun, pois isso impediria o usuário de escolher outra
-        # equipe e faria o botão "Carregar equipes" parecer não funcionar.
-        loaded_signature = f"{league_name}|{loaded_home_now}|{loaded_away_now}"
-        if st.session_state.get("_synced_loaded_signature") != loaded_signature:
-            st.session_state["home_widget"] = loaded_home_now
-            st.session_state["away_widget"] = loaded_away_now
-            st.session_state["_synced_loaded_signature"] = loaded_signature
-
-    c1, c2 = st.columns(2)
-    with c1:
-        team_a = st.selectbox("🏠 Time da casa", teams, index=teams.index(default_home), key="home_widget")
-    with c2:
-        team_b = st.selectbox("✈️ Time visitante", teams, index=teams.index(default_away), key="away_widget")
-    # A seleção só passa a valer quando o usuário confirma. Isso evita que
-    # uma análise antiga permaneça na tela enquanto os seletores já mostram
-    # outras equipes (especialmente no celular).
-    if team_a == team_b:
-        st.warning("Selecione duas equipes diferentes.")
-        return
-
-    if st.button("⚽ Carregar equipes", type="primary", use_container_width=True, key="load_teams_btn"):
-        st.session_state.selected_home = team_a
-        st.session_state.selected_away = team_b
-        st.session_state.loaded_home = team_a
-        st.session_state.loaded_away = team_b
-        st.session_state["_main_games_hidden_competition"] = league_name
-        st.session_state["_synced_loaded_signature"] = f"{league_name}|{team_a}|{team_b}"
-        st.rerun()
+        st.markdown("---")
 
     loaded_home = resolve_team_name(st.session_state.get("loaded_home"), teams)
     loaded_away = resolve_team_name(st.session_state.get("loaded_away"), teams)
 
-    # Se o usuário mexeu nos seletores, não deixamos uma análise antiga visível
-    # com nomes diferentes. A nova seleção só entra após "Carregar equipes".
-    if loaded_home and loaded_away and (team_a != loaded_home or team_b != loaded_away):
-        st.info("Você alterou o confronto. Toque em **⚽ Carregar equipes** para carregar esta nova análise.")
-        return
-
-    # Na primeira abertura da competição, não exibe uma partida aleatória.
-    # Depois do clique, a análise abaixo sempre corresponde exatamente aos
-    # dois clubes confirmados no botão Carregar equipes.
-    if not loaded_home or not loaded_away:
-        st.info("Selecione os dois times e toque em **⚽ Carregar equipes** para gerar a análise.")
+    if loaded_home and loaded_away:
+        st.caption(f"✅ Jogo carregado: {loaded_home} × {loaded_away}")
+        if st.button("↩️ Escolher outro confronto", use_container_width=True, key="choose_another_match"):
+            st.session_state.loaded_home = None
+            st.session_state.loaded_away = None
+            st.session_state.selected_home = None
+            st.session_state.selected_away = None
+            st.session_state.pop("_main_games_hidden_competition", None)
+            st.session_state.pop("_synced_loaded_signature", None)
+            st.rerun()
+    else:
+        st.info("Escolha um jogo da data ou selecione as equipes manualmente para gerar a análise.")
         return
 
     team_a, team_b = loaded_home, loaded_away
