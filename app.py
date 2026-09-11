@@ -26,7 +26,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-10-visual-public-vip-v1"
+GM_BUILD = "2026-09-11-news-center-v1"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -487,6 +487,209 @@ def gm_admin_list_users():
     return [row for row in rows if isinstance(row, dict)]
 
 
+# ============================================================
+# CENTRAL DE NOVIDADES
+# ============================================================
+GM_NEWS_CATEGORIES = {
+    "novidade": "🆕 Novidade",
+    "melhoria": "✨ Melhoria",
+    "vip": "⭐ VIP",
+    "seguranca": "🔐 Segurança",
+    "manutencao": "🛠️ Manutenção",
+    "importante": "📣 Importante",
+}
+
+
+def gm_news_rpc(function_name, params=None):
+    """Executa RPCs da Central de Novidades com a sessão autenticada atual."""
+    client = gm_auth_client_from_session()
+    if client is None:
+        raise RuntimeError("Sessão autenticada indisponível.")
+    result = client.rpc(function_name, params or {}).execute()
+    return getattr(result, "data", None)
+
+
+def gm_list_news():
+    rows = gm_news_rpc("gm_list_news") or []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def gm_unread_news_count():
+    data = gm_news_rpc("gm_unread_news_count")
+    if isinstance(data, list):
+        data = data[0] if data else 0
+    try:
+        return max(0, int(data or 0))
+    except Exception:
+        return 0
+
+
+def gm_news_format_datetime(value):
+    if not value:
+        return "—"
+    try:
+        ts = pd.to_datetime(value, utc=True)
+        return ts.tz_convert("America/Sao_Paulo").strftime("%d/%m/%Y às %H:%M")
+    except Exception:
+        return str(value)
+
+
+def gm_render_news_center():
+    """Central de Novidades para clientes VIP e administradores autenticados."""
+    st.markdown("## 🔔 Novidades do GM SCORE")
+    st.caption("Atualizações que podem melhorar ou alterar sua experiência dentro do GM SCORE.")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("← Voltar ao GM SCORE", use_container_width=True, key="gm_news_back"):
+            st.session_state["gm_news_open"] = False
+            st.rerun()
+    with c2:
+        if st.button("✓ Marcar todas como lidas", use_container_width=True, key="gm_news_mark_all"):
+            try:
+                gm_news_rpc("gm_mark_all_news_read")
+                st.success("Todas as novidades foram marcadas como lidas.")
+                st.rerun()
+            except Exception:
+                st.error("Não foi possível atualizar as leituras agora.")
+
+    try:
+        rows = gm_list_news()
+    except Exception:
+        st.error("Não foi possível carregar as novidades agora.")
+        return
+
+    if not rows:
+        st.info("Nenhuma novidade publicada no momento.")
+        return
+
+    unread = sum(1 for row in rows if not bool(row.get("is_read")))
+    st.info(f"🔔 {unread} novidade{'s' if unread != 1 else ''} não lida{'s' if unread != 1 else ''}.") if unread else st.success("✓ Você está em dia com as novidades.")
+
+    for row in rows:
+        news_id = str(row.get("id") or "")
+        title = str(row.get("title") or "Novidade")
+        message = str(row.get("message") or "")
+        category = str(row.get("category") or "novidade")
+        category_label = GM_NEWS_CATEGORIES.get(category, "🆕 Novidade")
+        featured = bool(row.get("is_featured"))
+        is_read = bool(row.get("is_read"))
+        prefix = "⭐ " if featured else ("🔵 " if not is_read else "")
+
+        with st.container(border=True):
+            st.markdown(f"### {prefix}{title}")
+            st.caption(f"{category_label} • {gm_news_format_datetime(row.get('published_at'))}")
+            st.write(message)
+            if not is_read and news_id:
+                if st.button("✓ Marcar como lida", use_container_width=True, key=f"gm_news_read_{news_id}"):
+                    try:
+                        gm_news_rpc("gm_mark_news_read", {"p_news_id": news_id})
+                        st.rerun()
+                    except Exception:
+                        st.error("Não foi possível marcar esta novidade como lida.")
+
+
+def gm_render_admin_news_manager():
+    """Publicação e gestão de novidades. A autorização real continua nas RPCs do Supabase."""
+    st.markdown("### 🔔 Central de Novidades")
+    st.caption("Publique somente mudanças relevantes para a experiência dos clientes.")
+
+    with st.expander("➕ Publicar nova novidade", expanded=False):
+        with st.form("gm_admin_news_publish_form", clear_on_submit=True):
+            title = st.text_input("Título", max_chars=140)
+            message = st.text_area("Mensagem", height=130, max_chars=2000)
+            category = st.selectbox(
+                "Categoria",
+                list(GM_NEWS_CATEGORIES.keys()),
+                format_func=lambda x: GM_NEWS_CATEGORIES.get(x, x),
+            )
+            featured = st.checkbox("Destacar esta novidade")
+            submitted = st.form_submit_button("📣 Publicar novidade", type="primary", use_container_width=True)
+        if submitted:
+            if not title.strip() or not message.strip():
+                st.warning("Informe título e mensagem.")
+            else:
+                try:
+                    gm_admin_rpc("gm_admin_publish_news", {
+                        "p_title": title.strip(),
+                        "p_message": message.strip(),
+                        "p_category": category,
+                        "p_is_featured": bool(featured),
+                    })
+                    st.success("Novidade publicada com sucesso.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error("Não foi possível publicar a novidade.")
+                    st.caption(str(exc))
+
+    try:
+        news_rows = gm_admin_rpc("gm_admin_list_news") or []
+    except Exception as exc:
+        st.error("Não foi possível carregar as novidades administrativas.")
+        st.caption(str(exc))
+        return
+
+    if not news_rows:
+        st.info("Nenhuma novidade cadastrada.")
+        return
+
+    st.caption(f"{len(news_rows)} publicação(ões) cadastrada(s).")
+    for row in news_rows:
+        news_id = str(row.get("id") or "")
+        title_now = str(row.get("title") or "Novidade")
+        active_now = bool(row.get("is_active"))
+        status = "🟢 Ativa" if active_now else "⚪ Inativa"
+        with st.expander(f"{status} · {title_now}", expanded=False):
+            st.caption(f"{GM_NEWS_CATEGORIES.get(str(row.get('category') or 'novidade'), '🆕 Novidade')} • {gm_news_format_datetime(row.get('published_at'))}")
+            with st.form(f"gm_admin_news_edit_{news_id}"):
+                edit_title = st.text_input("Título", value=title_now, key=f"gm_admin_news_title_{news_id}")
+                edit_message = st.text_area("Mensagem", value=str(row.get("message") or ""), height=130, key=f"gm_admin_news_message_{news_id}")
+                categories = list(GM_NEWS_CATEGORIES.keys())
+                current_category = str(row.get("category") or "novidade")
+                category_index = categories.index(current_category) if current_category in categories else 0
+                edit_category = st.selectbox("Categoria", categories, index=category_index, format_func=lambda x: GM_NEWS_CATEGORIES.get(x, x), key=f"gm_admin_news_category_{news_id}")
+                edit_featured = st.checkbox("Destacar", value=bool(row.get("is_featured")), key=f"gm_admin_news_featured_{news_id}")
+                save = st.form_submit_button("💾 Salvar alterações", use_container_width=True)
+            if save:
+                if not edit_title.strip() or not edit_message.strip():
+                    st.warning("Título e mensagem são obrigatórios.")
+                else:
+                    try:
+                        gm_admin_rpc("gm_admin_update_news", {
+                            "p_news_id": news_id,
+                            "p_title": edit_title.strip(),
+                            "p_message": edit_message.strip(),
+                            "p_category": edit_category,
+                            "p_is_featured": bool(edit_featured),
+                        })
+                        st.success("Novidade atualizada.")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error("Não foi possível atualizar a novidade.")
+                        st.caption(str(exc))
+
+            a1, a2 = st.columns(2)
+            with a1:
+                toggle_label = "⏸ Desativar" if active_now else "▶️ Ativar"
+                if st.button(toggle_label, use_container_width=True, key=f"gm_admin_news_toggle_{news_id}"):
+                    try:
+                        gm_admin_rpc("gm_admin_set_news_active", {"p_news_id": news_id, "p_is_active": not active_now})
+                        st.rerun()
+                    except Exception as exc:
+                        st.error("Não foi possível alterar o status da novidade.")
+                        st.caption(str(exc))
+            with a2:
+                confirm_delete = st.checkbox("Confirmar exclusão", key=f"gm_admin_news_confirm_delete_{news_id}")
+                if st.button("🗑️ Excluir", use_container_width=True, disabled=not confirm_delete, key=f"gm_admin_news_delete_{news_id}"):
+                    try:
+                        gm_admin_rpc("gm_admin_delete_news", {"p_news_id": news_id})
+                        st.success("Novidade excluída.")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error("Não foi possível excluir a novidade.")
+                        st.caption(str(exc))
+
+
 def gm_admin_format_datetime(value):
     if not value:
         return "—"
@@ -516,6 +719,10 @@ def gm_render_admin_panel(profile):
 
     st.markdown("## 🛠 Painel Administrativo")
     st.caption("Gerencie clientes VIP. As operações são validadas no Supabase antes de qualquer alteração.")
+
+    gm_render_admin_news_manager()
+    st.markdown("---")
+    st.markdown("### 👥 Gestão de clientes VIP")
 
     top1, top2 = st.columns([1, 1])
     with top1:
@@ -1565,6 +1772,15 @@ def gm_render_public_portal():
                             "o pagamento aprovado."
                         )
 
+                try:
+                    news_unread = gm_unread_news_count()
+                except Exception:
+                    news_unread = 0
+                news_label = f"🔔 Novidades ({news_unread})" if news_unread > 0 else "🔔 Novidades"
+                if st.button(news_label, use_container_width=True, key="gm_sidebar_news"):
+                    st.session_state["gm_news_open"] = True
+                    st.rerun()
+
                 if state == "admin":
                     if st.button("🛠 Painel Administrativo", use_container_width=True, key="gm_sidebar_admin_panel"):
                         st.session_state["gm_admin_panel_open"] = True
@@ -1572,6 +1788,7 @@ def gm_render_public_portal():
                 if st.button("🚪 Sair", use_container_width=True, key="gm_sidebar_logout"):
                     gm_auth_sign_out()
                     st.session_state.pop("gm_admin_panel_open", None)
+                    st.session_state.pop("gm_news_open", None)
                     st.rerun()
                 st.markdown("---")
             return True
@@ -1624,6 +1841,10 @@ try:
     _gm_profile_after_gate = gm_auth_get_profile()
 except Exception:
     _gm_profile_after_gate = None
+
+if _gm_profile_after_gate and st.session_state.get("gm_news_open"):
+    gm_render_news_center()
+    st.stop()
 
 if (
     _gm_profile_after_gate
