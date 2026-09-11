@@ -26,7 +26,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-11-news-modal-brand-nav-v3.1"
+GM_BUILD = "2026-09-11-news-compact-v1"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -604,7 +604,7 @@ def gm_render_top_news_bell(unread_count):
 
 
 def gm_render_news_center():
-    """Abre as novidades em uma janela flutuante, mantendo o histórico acessível."""
+    """Central compacta de novidades em formato de lista, otimizada para celular."""
     try:
         rows = gm_list_news()
     except Exception:
@@ -616,53 +616,84 @@ def gm_render_news_center():
 
     @st.dialog("🔔 Novidades", width="large")
     def _gm_news_dialog():
-        st.caption("Acompanhe aqui as últimas alterações do GM SCORE. As publicações lidas continuam disponíveis para consulta.")
-
-        if unread:
-            st.caption(f"🔴 {unread} não lida{'s' if unread != 1 else ''}")
-        else:
-            st.caption("Você está em dia. O histórico continua disponível abaixo.")
+        st.markdown(
+            """
+            <style>
+            div[data-testid="stDialog"] div[data-testid="stVerticalBlock"] { gap: .55rem; }
+            .gm-news-head { margin:-.15rem 0 .35rem 0; color:#9ca3af; font-size:.88rem; line-height:1.35; }
+            .gm-news-card { border:1px solid rgba(148,163,184,.20); background:rgba(20,25,34,.72); border-radius:14px; padding:.72rem .82rem .62rem .82rem; margin:.15rem 0 .22rem 0; }
+            .gm-news-card.unread { border-left:4px solid #22c55e; }
+            .gm-news-card.read { opacity:.78; }
+            .gm-news-row { display:flex; align-items:flex-start; gap:.65rem; }
+            .gm-news-icon { font-size:1.25rem; line-height:1.3; width:1.45rem; flex:0 0 1.45rem; }
+            .gm-news-body { min-width:0; flex:1; }
+            .gm-news-title { color:#f8fafc; font-size:1rem; font-weight:780; line-height:1.22; margin:0; }
+            .gm-news-msg { color:#aeb6c2; font-size:.84rem; line-height:1.32; margin:.22rem 0 0 0; }
+            .gm-news-meta { color:#7f8997; font-size:.72rem; line-height:1.2; margin-top:.34rem; }
+            .gm-news-new { color:#34d399; font-weight:800; }
+            @media (max-width:768px) { .gm-news-card { border-radius:12px; padding:.62rem .68rem .54rem .68rem; } .gm-news-title { font-size:.96rem; } .gm-news-msg { font-size:.81rem; } }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f'<div class="gm-news-head">Atualizações do GM SCORE'
+            + (f' • <span class="gm-news-new">{unread} nova{"s" if unread != 1 else ""}</span>' if unread else ' • tudo lido')
+            + '</div>',
+            unsafe_allow_html=True,
+        )
 
         if not visible_rows:
             st.info("Nenhuma novidade para exibir nesta sessão.")
         else:
+            icon_by_category = {"vip": "⭐", "melhoria": "📊", "novidade": "🎁", "seguranca": "🛡️", "manutencao": "🔧", "importante": "📣"}
+            label_by_category = {"vip": "VIP", "melhoria": "MELHORIA", "novidade": "NOVIDADE", "seguranca": "SEGURANÇA", "manutencao": "ATUALIZAÇÃO", "importante": "IMPORTANTE"}
+
             for row in visible_rows:
                 news_id = str(row.get("id") or "")
                 title = str(row.get("title") or "Novidade")
-                message = str(row.get("message") or "")
+                message = " ".join(str(row.get("message") or "").split())
+                if len(message) > 145:
+                    message = message[:142].rstrip() + "…"
                 category = str(row.get("category") or "novidade")
-                category_label = GM_NEWS_CATEGORIES.get(category, "🆕 Novidade")
                 is_read = bool(row.get("is_read"))
                 featured = bool(row.get("is_featured"))
+                icon = icon_by_category.get(category, "🔔")
+                label = label_by_category.get(category, "NOVIDADE")
+                state_class = "read" if is_read else "unread"
+                state_label = "Lida" if is_read else "Nova"
+                featured_label = " • Destaque" if featured else ""
+                safe_title = html.escape(title)
+                safe_message = html.escape(message)
+                safe_meta = html.escape(f"{label} • {state_label}{featured_label} • {gm_news_format_datetime(row.get('published_at'))}")
 
-                with st.container(border=True):
-                    meta = ("🔵 NÃO LIDA" if not is_read else "⚪ LIDA") + f"  •  {category_label}"
-                    if featured:
-                        meta += "  •  ⭐ Destaque"
-                    st.caption(meta)
-                    st.markdown(f"### {title}")
-                    st.caption(message)
-                    st.caption(f"{gm_news_format_datetime(row.get('published_at'))}")
+                st.markdown(
+                    f"""<div class="gm-news-card {state_class}">
+                        <div class="gm-news-row"><div class="gm-news-icon">{icon}</div><div class="gm-news-body">
+                        <div class="gm-news-title">{safe_title}</div><div class="gm-news-msg">{safe_message}</div>
+                        <div class="gm-news-meta">{safe_meta}</div></div></div></div>""",
+                    unsafe_allow_html=True,
+                )
 
-                    a, b = st.columns([1, 1])
-                    with a:
-                        if not is_read and news_id:
-                            if st.button("✓ Ler", use_container_width=True, key=f"gm_news_modal_read_{news_id}"):
-                                try:
-                                    gm_news_rpc("gm_mark_news_read", {"p_news_id": news_id})
-                                    st.rerun()
-                                except Exception:
-                                    st.error("Não foi possível marcar como lida agora.")
-                        elif is_read:
-                            st.caption("✓ Já lida")
-                    with b:
-                        if news_id and st.button("Ocultar", use_container_width=True, key=f"gm_news_modal_hide_{news_id}", help="Oculta apenas nesta sessão; não apaga a publicação."):
-                            hidden_now = set(st.session_state.get("gm_news_hidden_session", []))
-                            hidden_now.add(news_id)
-                            st.session_state["gm_news_hidden_session"] = list(hidden_now)
-                            st.rerun()
+                action_left, action_right = st.columns([4, 1])
+                with action_left:
+                    if not is_read and news_id:
+                        if st.button("Ler", use_container_width=True, key=f"gm_news_modal_read_{news_id}"):
+                            try:
+                                gm_news_rpc("gm_mark_news_read", {"p_news_id": news_id})
+                                st.rerun()
+                            except Exception:
+                                st.error("Não foi possível marcar como lida agora.")
+                    else:
+                        st.caption("✓ Lida")
+                with action_right:
+                    if news_id and st.button("×", use_container_width=True, key=f"gm_news_modal_hide_{news_id}", help="Ocultar desta lista"):
+                        hidden_now = set(st.session_state.get("gm_news_hidden_session", []))
+                        hidden_now.add(news_id)
+                        st.session_state["gm_news_hidden_session"] = list(hidden_now)
+                        st.rerun()
 
-        if visible_rows:
+        if visible_rows and unread:
             if st.button("✓ Marcar todas como lidas", use_container_width=True, key="gm_news_modal_mark_all"):
                 try:
                     gm_news_rpc("gm_mark_all_news_read")
