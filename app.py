@@ -26,7 +26,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-11-senior-male-fixtures-v1"
+GM_BUILD = "2026-09-11-senior-male-fixtures-v2"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -6439,10 +6439,28 @@ def render_analysis():
         except Exception:
             today_fixtures = []
 
+        # Barreira final fora do cache: a agenda exibida deve conter somente
+        # equipes principais que também existam no elenco profissional carregado
+        # para a competição. Isso impede que um resultado antigo em cache ou uma
+        # fonte externa rotulada incorretamente exponha U21/U23/base/reservas.
+        safe_fixtures = []
+        for f in today_fixtures:
+            if not valid_daily_fixture(f):
+                continue
+            resolved_home = resolve_team_name(f.get("home"), teams)
+            resolved_away = resolve_team_name(f.get("away"), teams)
+            if not resolved_home or not resolved_away:
+                continue
+            ff = dict(f)
+            ff["home"] = resolved_home
+            ff["away"] = resolved_away
+            safe_fixtures.append(ff)
+        today_fixtures = safe_fixtures
+
         if today_fixtures:
             for i, f in enumerate(today_fixtures):
-                game_home = resolve_team_name(f.get("home"), teams) or f.get("home")
-                game_away = resolve_team_name(f.get("away"), teams) or f.get("away")
+                game_home = f.get("home")
+                game_away = f.get("away")
                 time_text = str(f.get("time") or "").strip()
                 if time_text and time_text.lower() != "nan":
                     st.markdown(f"**⚽ {game_home} × {game_away}**  \n🕒 {time_text}")
