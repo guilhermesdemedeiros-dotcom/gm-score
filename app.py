@@ -26,7 +26,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-11-github-regression-audit-v1"
+GM_BUILD = "2026-09-11-navigation-polish-v1"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -78,6 +78,26 @@ st.markdown("""
 @media (max-width: 768px) {
   .gm-brand-title { font-size:2.15rem; }
   .gm-brand-gm, .gm-brand-score { -webkit-text-stroke:3px #05070a; }
+}
+
+/* Navegação interna: botões sempre visíveis, porém discretos. */
+.st-key-gm_admin_back_top button,
+.st-key-gm_admin_back_bottom button,
+.st-key-gm_news_modal_close button,
+.st-key-gm_install_guide_close button {
+  min-height:2.45rem !important;
+  border:1px solid rgba(148,163,184,.24) !important;
+  background:rgba(15,23,42,.20) !important;
+  color:color-mix(in srgb, var(--text-color) 78%, transparent) !important;
+  font-weight:650 !important;
+  box-shadow:none !important;
+}
+.st-key-gm_admin_back_top button:hover,
+.st-key-gm_admin_back_bottom button:hover,
+.st-key-gm_news_modal_close button:hover,
+.st-key-gm_install_guide_close button:hover {
+  border-color:rgba(34,197,94,.52) !important;
+  color:var(--text-color) !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -870,18 +890,19 @@ def gm_render_admin_panel(profile):
     st.markdown("## 🛠 Painel Administrativo")
     st.caption("Gerencie clientes VIP. As operações são validadas no Supabase antes de qualquer alteração.")
 
-    gm_render_admin_news_manager()
-    st.markdown("---")
-    st.markdown("### 👥 Gestão de clientes VIP")
-
+    # Navegação principal fica realmente no topo do painel, antes das seções longas.
     top1, top2 = st.columns([1, 1])
     with top1:
-        if st.button("← Voltar ao GM SCORE", use_container_width=True, key="gm_admin_back_top"):
+        if st.button("← Voltar", use_container_width=True, key="gm_admin_back_top", help="Retornar ao GM SCORE"):
             st.session_state["gm_admin_panel_open"] = False
             st.rerun()
     with top2:
-        if st.button("🔄 Atualizar clientes", use_container_width=True, key="gm_admin_refresh"):
+        if st.button("🔄 Atualizar", use_container_width=True, key="gm_admin_refresh", help="Atualizar dados do painel"):
             st.rerun()
+
+    gm_render_admin_news_manager()
+    st.markdown("---")
+    st.markdown("### 👥 Gestão de clientes VIP")
 
     try:
         rows = gm_admin_list_users()
@@ -1035,7 +1056,7 @@ def gm_render_admin_panel(profile):
                     st.caption(str(exc))
 
     st.markdown("---")
-    if st.button("← Voltar ao GM SCORE", use_container_width=True, key="gm_admin_back_bottom"):
+    if st.button("← Voltar", use_container_width=True, key="gm_admin_back_bottom", help="Retornar ao GM SCORE"):
         st.session_state["gm_admin_panel_open"] = False
         st.rerun()
 
