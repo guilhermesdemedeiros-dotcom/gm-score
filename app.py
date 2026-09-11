@@ -26,7 +26,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-11-stat-audit-v2"
+GM_BUILD = "2026-09-11-agenda-date-status-fix-v1"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -5704,7 +5704,47 @@ def valid_daily_fixture(f):
     return True
 
 
+def _fixture_is_finished(f):
+    """Bloqueia partidas já encerradas na agenda de análise pré-jogo."""
+    terminal_tokens = {
+        "ft", "aet", "ap", "pen", "finished", "completed", "complete",
+        "final", "ended", "after extra time", "after penalties", "encerrado",
+        "encerrada", "finalizado", "finalizada",
+    }
+    values = [
+        f.get("status"), f.get("state"), f.get("status_type"),
+        f.get("time"), f.get("display_status"),
+    ]
+    for value in values:
+        txt = str(value or "").strip().lower()
+        if not txt:
+            continue
+        if txt in terminal_tokens:
+            return True
+        if re.search(r"\b(?:ft|finished|completed|final|ended)\b", txt, re.I):
+            return True
+    return False
 
+
+def fixture_matches_selected_date(f, target_date):
+    """Validação final da agenda usando a data local de Brasília."""
+    if isinstance(target_date, pd.Timestamp):
+        target_date = target_date.date()
+    if isinstance(target_date, datetime):
+        target_date = target_date.date()
+
+    br_date = f.get("br_date")
+    if isinstance(br_date, pd.Timestamp):
+        br_date = br_date.date()
+    if isinstance(br_date, datetime):
+        br_date = br_date.astimezone(BRASILIA_TZ).date() if br_date.tzinfo else br_date.date()
+    if isinstance(br_date, str):
+        try:
+            br_date = pd.to_datetime(br_date, errors="coerce").date()
+        except Exception:
+            br_date = None
+
+    return br_date == target_date and not _fixture_is_finished(f)
 
 
 # Fonte principal complementar da agenda: calendário público do SofaScore.
@@ -5878,6 +5918,7 @@ def load_sofascore_fixtures_for_date(target_date):
                     pass
             if br_date != target_date:
                 continue
+            status_obj = ev.get("status") or {}
             fixtures.append({
                 "competition": comp,
                 "home": home,
@@ -5886,6 +5927,8 @@ def load_sofascore_fixtures_for_date(target_date):
                 "br_date": br_date,
                 "source": "SofaScore",
                 "event_id": ev.get("id"),
+                "status": status_obj.get("description") or status_obj.get("type") or "",
+                "status_type": status_obj.get("type") or "",
             })
     return fixtures
 
@@ -6032,6 +6075,10 @@ def _fixtures_from_espn_payload(data, target_date, fallback_competition=None):
         if br_date != target_date:
             continue
 
+        status_obj = contest.get("status") or event.get("status") or {}
+        status_type = status_obj.get("type") if isinstance(status_obj, dict) else {}
+        if not isinstance(status_type, dict):
+            status_type = {}
         fixtures.append({
             "competition": competition,
             "home": home,
@@ -6039,6 +6086,9 @@ def _fixtures_from_espn_payload(data, target_date, fallback_competition=None):
             "time": br_time,
             "br_date": br_date,
             "source": "ESPN",
+            "status": status_type.get("description") or status_type.get("detail") or "",
+            "state": status_type.get("state") or "",
+            "status_type": status_type.get("name") or status_type.get("shortDetail") or "",
         })
     return fixtures
 
@@ -6208,7 +6258,7 @@ def load_fixtures_for_date(target_date):
     best = {}
     order = []
     for f in fixtures:
-        if not valid_daily_fixture(f):
+        if not valid_daily_fixture(f) or not fixture_matches_selected_date(f, today):
             continue
         comp = f.get("competition")
         if comp in STRICT_OFFICIAL_ROSTERS:
@@ -6270,7 +6320,11 @@ def load_competition_fixtures_for_date(competition, target_date):
 
     best = {}
     for f in fixtures:
-        if f.get("competition") != competition or not valid_daily_fixture(f):
+        if (
+            f.get("competition") != competition
+            or not valid_daily_fixture(f)
+            or not fixture_matches_selected_date(f, target_date)
+        ):
             continue
         ff = dict(f)
         if competition in STRICT_OFFICIAL_ROSTERS:
@@ -6811,7 +6865,7 @@ def render_analysis():
             # para a competição. Isso impede U21/U23/base/reservas.
             safe_fixtures = []
             for f in today_fixtures:
-                if not valid_daily_fixture(f):
+                if not valid_daily_fixture(f) or not fixture_matches_selected_date(f, main_fixture_date):
                     continue
                 resolved_fixture_home = resolve_team_name(f.get("home"), teams)
                 resolved_fixture_away = resolve_team_name(f.get("away"), teams)
