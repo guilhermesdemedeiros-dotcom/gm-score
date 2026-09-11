@@ -26,7 +26,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-11-news-modal-brand-nav-v3"
+GM_BUILD = "2026-09-11-news-modal-brand-nav-v3.1"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -5872,6 +5872,18 @@ if "selected_home" not in st.session_state:
     st.session_state.selected_home = None
 if "selected_away" not in st.session_state:
     st.session_state.selected_away = None
+
+# Datas da agenda usadas pela tela principal.
+# Mantidas fora da sidebar para que a navegação lateral possa ficar exclusiva
+# para conta/VIP/Admin sem remover dependências da agenda de jogos.
+_brasilia_today = datetime.now(BRASILIA_TZ).date()
+_date_options = [_brasilia_today + timedelta(days=i) for i in range(7)]
+
+def _agenda_date_label(d):
+    if d == _brasilia_today:
+        return f"Hoje · {d:%d/%m}"
+    weekdays = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"]
+    return f"{weekdays[d.weekday()]} · {d:%d/%m}"
 # A barra lateral autenticada fica dedicada exclusivamente à conta, VIP/renovação
 # e, para administradores, ao acesso do painel administrativo.
 # Os controles de análise permanecem na área principal.
