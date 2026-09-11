@@ -26,7 +26,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-11-news-center-v1"
+GM_BUILD = "2026-09-11-news-center-ui-v2"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -534,10 +534,89 @@ def gm_news_format_datetime(value):
         return str(value)
 
 
+def gm_render_top_news_bell(unread_count):
+    """Sino flutuante da Central de Novidades, com badge vermelho de não lidas."""
+    try:
+        unread = max(0, int(unread_count or 0))
+    except Exception:
+        unread = 0
+
+    badge_text = "99+" if unread > 99 else str(unread)
+    if unread > 0:
+        badge_css = f"""
+        .st-key-gm_top_news_floating::after {{
+            content: "{badge_text}";
+            position: absolute;
+            top: -5px;
+            right: -5px;
+            min-width: 22px;
+            height: 22px;
+            padding: 0 5px;
+            border-radius: 999px;
+            background: #ff3347;
+            color: #ffffff;
+            border: 2px solid #0b0f14;
+            font-size: 12px;
+            font-weight: 800;
+            line-height: 18px;
+            text-align: center;
+            box-sizing: border-box;
+            pointer-events: none;
+        }}
+        """
+    else:
+        badge_css = ".st-key-gm_top_news_floating::after { display: none; }"
+
+    st.markdown(
+        f"""
+        <style>
+        .st-key-gm_top_news_floating {{
+            position: fixed;
+            top: 5.4rem;
+            right: 1rem;
+            z-index: 999999;
+            width: 52px !important;
+        }}
+        .st-key-gm_top_news_floating button {{
+            width: 52px !important;
+            height: 52px !important;
+            min-height: 52px !important;
+            padding: 0 !important;
+            border-radius: 50% !important;
+            border: 1px solid rgba(255,255,255,.20) !important;
+            background: #171c24 !important;
+            box-shadow: 0 8px 24px rgba(0,0,0,.28) !important;
+            font-size: 23px !important;
+        }}
+        .st-key-gm_top_news_floating button:hover {{
+            border-color: #22c55e !important;
+        }}
+        {badge_css}
+        @media (max-width: 768px) {{
+            .st-key-gm_top_news_floating {{
+                top: 5.2rem;
+                right: .85rem;
+            }}
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    with st.container(key="gm_top_news_floating"):
+        if st.button(
+            "🔔",
+            key="gm_top_news_button",
+            help=(f"{unread} novidade(s) não lida(s)" if unread else "Novidades do GM SCORE"),
+        ):
+            st.session_state["gm_news_open"] = True
+            st.rerun()
+
+
 def gm_render_news_center():
-    """Central de Novidades para clientes VIP e administradores autenticados."""
+    """Central de Novidades clara e simples para clientes VIP e administradores."""
     st.markdown("## 🔔 Novidades do GM SCORE")
-    st.caption("Atualizações que podem melhorar ou alterar sua experiência dentro do GM SCORE.")
+    st.caption("Aqui você acompanha, em linguagem simples, tudo o que mudou e pode afetar sua experiência no GM SCORE.")
 
     c1, c2 = st.columns(2)
     with c1:
@@ -556,7 +635,7 @@ def gm_render_news_center():
     try:
         rows = gm_list_news()
     except Exception:
-        st.error("Não foi possível carregar as novidades agora.")
+        st.error("Não foi possível carregar as novidades agora. Tente novamente em instantes.")
         return
 
     if not rows:
@@ -564,7 +643,10 @@ def gm_render_news_center():
         return
 
     unread = sum(1 for row in rows if not bool(row.get("is_read")))
-    st.info(f"🔔 {unread} novidade{'s' if unread != 1 else ''} não lida{'s' if unread != 1 else ''}.") if unread else st.success("✓ Você está em dia com as novidades.")
+    if unread:
+        st.info(f"🔔 Você tem {unread} novidade{'s' if unread != 1 else ''} não lida{'s' if unread != 1 else ''}.")
+    else:
+        st.success("✓ Você está em dia com as novidades.")
 
     for row in rows:
         news_id = str(row.get("id") or "")
@@ -574,14 +656,22 @@ def gm_render_news_center():
         category_label = GM_NEWS_CATEGORIES.get(category, "🆕 Novidade")
         featured = bool(row.get("is_featured"))
         is_read = bool(row.get("is_read"))
-        prefix = "⭐ " if featured else ("🔵 " if not is_read else "")
 
         with st.container(border=True):
-            st.markdown(f"### {prefix}{title}")
-            st.caption(f"{category_label} • {gm_news_format_datetime(row.get('published_at'))}")
+            status_label = "🔴 NOVA" if not is_read else "✓ Lida"
+            if featured:
+                status_label += "  •  ⭐ Destaque"
+            st.caption(f"{status_label}  •  {category_label}")
+            st.markdown(f"### {title}")
             st.write(message)
+            st.caption(f"Publicado em {gm_news_format_datetime(row.get('published_at'))}")
+
             if not is_read and news_id:
-                if st.button("✓ Marcar como lida", use_container_width=True, key=f"gm_news_read_{news_id}"):
+                if st.button(
+                    "✓ Entendi — marcar como lida",
+                    use_container_width=True,
+                    key=f"gm_news_read_{news_id}",
+                ):
                     try:
                         gm_news_rpc("gm_mark_news_read", {"p_news_id": news_id})
                         st.rerun()
@@ -1772,15 +1862,6 @@ def gm_render_public_portal():
                             "o pagamento aprovado."
                         )
 
-                try:
-                    news_unread = gm_unread_news_count()
-                except Exception:
-                    news_unread = 0
-                news_label = f"🔔 Novidades ({news_unread})" if news_unread > 0 else "🔔 Novidades"
-                if st.button(news_label, use_container_width=True, key="gm_sidebar_news"):
-                    st.session_state["gm_news_open"] = True
-                    st.rerun()
-
                 if state == "admin":
                     if st.button("🛠 Painel Administrativo", use_container_width=True, key="gm_sidebar_admin_panel"):
                         st.session_state["gm_admin_panel_open"] = True
@@ -1841,6 +1922,15 @@ try:
     _gm_profile_after_gate = gm_auth_get_profile()
 except Exception:
     _gm_profile_after_gate = None
+
+# Sino de novidades no canto superior direito da área autenticada.
+# O contador vem do Supabase; nenhuma regra de VIP, sessão ou pagamento é alterada.
+if _gm_profile_after_gate:
+    try:
+        _gm_news_unread_top = gm_unread_news_count()
+    except Exception:
+        _gm_news_unread_top = 0
+    gm_render_top_news_bell(_gm_news_unread_top)
 
 if _gm_profile_after_gate and st.session_state.get("gm_news_open"):
     gm_render_news_center()
