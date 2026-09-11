@@ -1478,6 +1478,47 @@ def gm_render_public_portal():
                 # Reutiliza exatamente o checkout individual já existente:
                 # pedido no servidor -> Mercado Pago -> webhook -> extensão do VIP.
                 if state == "vip":
+                    # Mostra ao próprio cliente a validade atual do VIP.
+                    vip_until_raw = profile.get("vip_until")
+                    if vip_until_raw:
+                        try:
+                            vip_until_dt = datetime.fromisoformat(
+                                str(vip_until_raw).replace("Z", "+00:00")
+                            )
+                            now_vip = datetime.now(vip_until_dt.tzinfo)
+                            remaining_seconds = (
+                                vip_until_dt - now_vip
+                            ).total_seconds()
+                            remaining_days = max(
+                                0,
+                                math.ceil(
+                                    remaining_seconds / 86400
+                                ),
+                            )
+
+                            st.markdown("#### ⭐ Seu VIP")
+                            st.caption(
+                                "Vencimento: "
+                                f"{vip_until_dt.astimezone(ZoneInfo('America/Sao_Paulo')).strftime('%d/%m/%Y às %H:%M')}"
+                            )
+
+                            if remaining_days > 1:
+                                st.info(
+                                    f"⏳ {remaining_days} dias restantes"
+                                )
+                            elif remaining_days == 1:
+                                st.warning(
+                                    "⏳ 1 dia restante"
+                                )
+                            else:
+                                st.warning(
+                                    "⏳ Vencimento hoje"
+                                )
+                        except Exception:
+                            # Se houver algum formato inesperado de data,
+                            # não interfere no acesso VIP nem no checkout.
+                            pass
+
                     renewal_open = bool(
                         st.session_state.get("gm_sidebar_renewal_open", False)
                     )
