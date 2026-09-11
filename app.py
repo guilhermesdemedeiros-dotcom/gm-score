@@ -7,7 +7,7 @@ import time
 import secrets
 import unicodedata
 from html.parser import HTMLParser
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -26,7 +26,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-11-news-badge-sync-v1"
+GM_BUILD = "2026-09-11-github-regression-audit-v1"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -1180,6 +1180,8 @@ def render_install_guide():
 """
         )
     st.caption("💡 O acesso continua usando a versão mais recente do GM SCORE publicada na internet; não é preciso reinstalar quando o site for atualizado.")
+    if st.button("Fechar", use_container_width=True, key="gm_install_guide_close"):
+        st.rerun()
 
 
 # ============================================================
@@ -6182,7 +6184,7 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
       ctx.save(); ctx.fillStyle=color; ctx.font=`${{weight}} ${{size}}px Arial`; ctx.textAlign=align; ctx.textBaseline='alphabetic'; ctx.fillText(String(value),x,y); ctx.restore();
     }}
     function outlinedText(ctx,value,x,y,size=30,weight='900',fill='#ffffff',align='left',stroke='#05070a',strokeWidth=8) {{
-      ctx.save(); ctx.font=`${weight} ${size}px Arial`; ctx.textAlign=align; ctx.textBaseline='alphabetic';
+      ctx.save(); ctx.font=`${{weight}} ${{size}}px Arial`; ctx.textAlign=align; ctx.textBaseline='alphabetic';
       ctx.lineJoin='round'; ctx.miterLimit=2; ctx.lineWidth=strokeWidth; ctx.strokeStyle=stroke; ctx.strokeText(String(value),x,y);
       ctx.fillStyle=fill; ctx.fillText(String(value),x,y); ctx.restore();
     }}
