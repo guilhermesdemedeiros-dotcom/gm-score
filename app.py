@@ -619,7 +619,10 @@ def gm_render_news_center():
         st.markdown(
             """
             <style>
-            div[data-testid="stDialog"] div[data-testid="stVerticalBlock"] { gap: .55rem; }
+            div[data-testid="stDialog"] div[data-testid="stVerticalBlock"] { gap: .48rem; }
+            div[data-testid="stDialog"] div[data-testid="stHorizontalBlock"] { flex-wrap:nowrap !important; gap:.5rem !important; }
+            div[data-testid="stDialog"] div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] { min-width:0 !important; width:50% !important; flex:1 1 50% !important; }
+            div[data-testid="stDialog"] div[data-testid="stHorizontalBlock"] button { min-height:2.65rem; }
             .gm-news-head { margin:-.15rem 0 .35rem 0; color:#9ca3af; font-size:.88rem; line-height:1.35; }
             .gm-news-card { border:1px solid rgba(148,163,184,.20); background:rgba(20,25,34,.72); border-radius:14px; padding:.72rem .82rem .62rem .82rem; margin:.15rem 0 .22rem 0; }
             .gm-news-card.unread { border-left:4px solid #22c55e; }
@@ -653,8 +656,8 @@ def gm_render_news_center():
                 news_id = str(row.get("id") or "")
                 title = str(row.get("title") or "Novidade")
                 message = " ".join(str(row.get("message") or "").split())
-                if len(message) > 145:
-                    message = message[:142].rstrip() + "…"
+                if len(message) > 112:
+                    message = message[:109].rstrip() + "…"
                 category = str(row.get("category") or "novidade")
                 is_read = bool(row.get("is_read"))
                 featured = bool(row.get("is_featured"))
@@ -675,19 +678,19 @@ def gm_render_news_center():
                     unsafe_allow_html=True,
                 )
 
-                action_left, action_right = st.columns([4, 1])
+                action_left, action_right = st.columns(2, gap="small")
                 with action_left:
                     if not is_read and news_id:
-                        if st.button("Ler", use_container_width=True, key=f"gm_news_modal_read_{news_id}"):
+                        if st.button("👁 Ler", use_container_width=True, key=f"gm_news_modal_read_{news_id}"):
                             try:
                                 gm_news_rpc("gm_mark_news_read", {"p_news_id": news_id})
                                 st.rerun()
                             except Exception:
                                 st.error("Não foi possível marcar como lida agora.")
                     else:
-                        st.caption("✓ Lida")
+                        st.button("✓ Lida", use_container_width=True, key=f"gm_news_modal_read_done_{news_id}", disabled=True)
                 with action_right:
-                    if news_id and st.button("×", use_container_width=True, key=f"gm_news_modal_hide_{news_id}", help="Ocultar desta lista"):
+                    if news_id and st.button("🗑 Apagar", use_container_width=True, key=f"gm_news_modal_hide_{news_id}", help="Remove esta novidade da sua lista atual"):
                         hidden_now = set(st.session_state.get("gm_news_hidden_session", []))
                         hidden_now.add(news_id)
                         st.session_state["gm_news_hidden_session"] = list(hidden_now)
