@@ -26,7 +26,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-11-core-markets-v1"
+GM_BUILD = "2026-09-11-core-markets-v2"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -4818,6 +4818,45 @@ def _gm_market_card(title, status_tuple, projection=None, lines=None, note=None,
     )
 
 
+def _gm_team_market_card(title, status_tuple, team_a, team_b, home_projection=None, away_projection=None,
+                         home_lines=None, away_lines=None, note=None):
+    """Card de mercado por equipe, com projeção e linhas individuais sem fabricar dados."""
+    state, icon, label = status_tuple
+    status_color = {"conclusivo":"#22d36b", "cautela":"#f59e0b", "inconclusivo":"#94a3b8"}.get(state, "#94a3b8")
+
+    def _team_block(team, projection, lines):
+        if state == "inconclusivo" or projection is None:
+            return (
+                '<div class="gm-team-mkt">'
+                f'<div class="gm-team-name">{html.escape(str(team))}</div>'
+                '<div class="gm-team-empty">Dados insuficientes</div>'
+                '</div>'
+            )
+        line_html = ''
+        if lines:
+            line_html = '<div class="gm-team-lines">' + ''.join(
+                f'<div><span>+{str(line).replace(".",",")}</span><b>{pct:.0f}%</b></div>'
+                for line, pct in lines
+            ) + '</div>'
+        proj_txt = f"{float(projection):.2f}".replace('.', ',')
+        return (
+            '<div class="gm-team-mkt">'
+            f'<div class="gm-team-name">{html.escape(str(team))}</div>'
+            f'<div class="gm-team-proj"><span>Projeção GM</span><b>{proj_txt}</b></div>'
+            f'{line_html}'
+            '</div>'
+        )
+
+    body = '<div class="gm-team-grid">' + _team_block(team_a, home_projection, home_lines) + _team_block(team_b, away_projection, away_lines) + '</div>'
+    if note:
+        body += f'<div class="gm-mkt-note">{html.escape(str(note))}</div>'
+    st.markdown(
+        f'<div class="gm-mkt-card"><div class="gm-mkt-head"><strong>{title}</strong>'
+        f'<span style="color:{status_color}">{icon} {label}</span></div>{body}</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def render_core_markets_dashboard(a, b, team_a, team_b, df, probs=None, sample_games=0):
     """Painel oficial de mercados GM SCORE.
 
@@ -4841,7 +4880,10 @@ def render_core_markets_dashboard(a, b, team_a, team_b, df, probs=None, sample_g
     .gm-mkt-lines span,.gm-mkt-rows span{display:block;color:#94a3b8;font-size:.68rem}.gm-mkt-lines b,.gm-mkt-rows b{display:block;color:#f8fafc;font-size:.93rem;margin-top:2px}
     .gm-mkt-rows{display:grid;grid-template-columns:repeat(2,1fr);gap:6px}
     .gm-mkt-note,.gm-mkt-empty{color:#94a3b8;font-size:.72rem;line-height:1.4;margin-top:8px}.gm-mkt-empty{padding:7px 1px}
-    @media(max-width:520px){.gm-mkt-lines{grid-template-columns:repeat(3,1fr)}}
+    .gm-team-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.gm-team-mkt{background:#101923;border:1px solid rgba(148,163,184,.12);border-radius:12px;padding:10px;min-width:0}
+    .gm-team-name{font-weight:800;color:#f8fafc;font-size:.84rem;margin-bottom:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.gm-team-proj{display:flex;justify-content:space-between;align-items:end;gap:6px;margin-bottom:8px}.gm-team-proj span{color:#94a3b8;font-size:.64rem}.gm-team-proj b{color:#fff;font-size:1.05rem}
+    .gm-team-lines{display:grid;grid-template-columns:repeat(2,1fr);gap:5px}.gm-team-lines div{background:#0d141c;border:1px solid rgba(148,163,184,.12);border-radius:8px;padding:6px;text-align:center}.gm-team-lines span{display:block;color:#94a3b8;font-size:.62rem}.gm-team-lines b{display:block;color:#f8fafc;font-size:.84rem;margin-top:1px}.gm-team-empty{color:#94a3b8;font-size:.7rem}
+    @media(max-width:520px){.gm-mkt-lines{grid-template-columns:repeat(3,1fr)}.gm-team-grid{grid-template-columns:1fr 1fr}}
     </style>
     ''', unsafe_allow_html=True)
 
@@ -4908,9 +4950,14 @@ def render_core_markets_dashboard(a, b, team_a, team_b, df, probs=None, sample_g
         inc = _gm_market_status(sample_games, available=False)
         _gm_market_card("⏱️ Escanteios — 1º tempo", inc, note="A fonte atual não fornece separação por tempo com cobertura suficiente.")
         _gm_market_card("⏱️ Escanteios — 2º tempo", inc, note="A fonte atual não fornece separação por tempo com cobertura suficiente.")
-        rows=[(team_a,f"{c['home']:.2f}".replace('.',',')),(team_b,f"{c['away']:.2f}".replace('.',','))] if c else None
-        _gm_market_card("👥 Escanteios por equipe", c_status, compact_rows=rows,
-                        note="Médias/projeções por equipe; probabilidades detalhadas ficam condicionadas à qualidade da base." if c else None)
+        _gm_team_market_card(
+            "👥 Escanteios por equipe", c_status, team_a, team_b,
+            home_projection=c['home'] if c else None,
+            away_projection=c['away'] if c else None,
+            home_lines=_gm_pct_lines(c['home'], [2.5,3.5,4.5,5.5]) if c else None,
+            away_lines=_gm_pct_lines(c['away'], [2.5,3.5,4.5,5.5]) if c else None,
+            note="Linhas individuais calculadas somente a partir da projeção disponível para cada equipe; a confiança segue a qualidade da base." if c else None,
+        )
 
     with tabs[2]:
         c = ex.get("Cartões")
@@ -4919,8 +4966,14 @@ def render_core_markets_dashboard(a, b, team_a, team_b, df, probs=None, sample_g
                         projection=f"{c['total']:.2f}".replace('.', ',') if c else None,
                         lines=_gm_pct_lines(c['total'], [1.5,2.5,3.5,4.5,5.5]) if c else None,
                         note="Cartões são tratados como estimativa estatística; média alta não gera recomendação automaticamente." if c else None)
-        rows=[(team_a,f"{c['home']:.2f}".replace('.',',')),(team_b,f"{c['away']:.2f}".replace('.',','))] if c else None
-        _gm_market_card("👥 Cartões por equipe", c_status, compact_rows=rows)
+        _gm_team_market_card(
+            "👥 Cartões por equipe", c_status, team_a, team_b,
+            home_projection=c['home'] if c else None,
+            away_projection=c['away'] if c else None,
+            home_lines=_gm_pct_lines(c['home'], [0.5,1.5,2.5,3.5]) if c else None,
+            away_lines=_gm_pct_lines(c['away'], [0.5,1.5,2.5,3.5]) if c else None,
+            note="Probabilidades individuais são estimativas do modelo; média elevada não implica recomendação automática." if c else None,
+        )
         if c:
             both1=(prob_over_half_line(c['home'],0.5) or 0)*(prob_over_half_line(c['away'],0.5) or 0)*100
             both2=(prob_over_half_line(c['home'],1.5) or 0)*(prob_over_half_line(c['away'],1.5) or 0)*100
