@@ -93,6 +93,12 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
+# URL pública usada somente em fluxos de retorno do Supabase (ex.: confirmação de e-mail).
+# Não autentica o usuário e não inicia sessão VIP automaticamente.
+GM_PUBLIC_APP_URL = "https://gmscore.streamlit.app"
+GM_EMAIL_CONFIRM_REDIRECT = f"{GM_PUBLIC_APP_URL}/?gm_email_confirmed=1"
+
+
 # ============================================================
 # AUTENTICAÇÃO GM SCORE — ETAPA 11 (MODO DE TESTE)
 # ============================================================
@@ -398,12 +404,15 @@ def gm_accept_terms():
 
 
 def gm_auth_sign_up(nome, email, password):
-    """Infraestrutura auxiliar de cadastro."""
+    """Cadastro com retorno público seguro após a confirmação do e-mail."""
     client = gm_new_supabase_client()
     return client.auth.sign_up({
         "email": str(email).strip().lower(),
         "password": str(password),
-        "options": {"data": {"nome": str(nome).strip(), "terms_accepted": True}},
+        "options": {
+            "data": {"nome": str(nome).strip(), "terms_accepted": True},
+            "email_redirect_to": GM_EMAIL_CONFIRM_REDIRECT,
+        },
     })
 
 
@@ -1220,12 +1229,7 @@ def gm_render_signup_form():
         try:
             # O aceite também segue como metadata do cadastro. A tabela gm_users continua
             # protegida pelo RLS e os campos VIP não são controlados pelo cliente.
-            client = gm_new_supabase_client()
-            result = client.auth.sign_up({
-                "email": clean_email,
-                "password": str(password),
-                "options": {"data": {"nome": clean_name, "terms_accepted": True}},
-            })
+            result = gm_auth_sign_up(clean_name, clean_email, password)
             st.session_state["gm_signup_completed"] = True
             st.success("✅ Conta criada com sucesso.")
             st.info("📧 Confira seu e-mail e confirme o cadastro antes de tentar entrar.")
@@ -1326,6 +1330,39 @@ def gm_render_session_conflict(profile, reason):
         st.rerun()
 
 
+def gm_render_email_confirmation_notice():
+    """Mostra uma confirmação pública sem criar/loginar uma sessão VIP."""
+    try:
+        confirmed = str(st.query_params.get("gm_email_confirmed", "") or "").strip().lower() in {"1", "true", "sim", "yes"}
+    except Exception:
+        confirmed = False
+
+    if not confirmed:
+        return False
+
+    st.markdown(
+        """
+        <div style="max-width:720px;margin:8vh auto 1.5rem auto;padding:2rem 1.4rem;
+                    border:1px solid rgba(36,229,139,.35);border-radius:24px;
+                    background:linear-gradient(145deg,#07100f,#0b1716);text-align:center;
+                    box-shadow:0 18px 55px rgba(0,0,0,.28)">
+          <div style="font-size:3rem;line-height:1">✅</div>
+          <div style="font-size:1.8rem;font-weight:900;margin-top:.7rem;color:#f8fafc">E-mail confirmado com sucesso</div>
+          <div style="font-size:1rem;line-height:1.6;margin-top:.8rem;color:#b9c6c3">
+            Sua conta GM SCORE foi validada. Você já pode fechar esta aba e retornar ao aplicativo para entrar com seu e-mail e senha.
+          </div>
+          <div style="margin-top:1rem;font-size:.9rem;color:#7f918d">
+            Esta página não inicia uma nova sessão VIP e não interfere em um acesso que já esteja aberto em outra aba ou dispositivo.
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.link_button("🔐 Voltar para o GM SCORE", GM_PUBLIC_APP_URL, use_container_width=True)
+    st.caption("Se você já estava usando o GM SCORE em outra aba, pode simplesmente fechar esta página e continuar por lá.")
+    return True
+
+
 def gm_render_public_portal():
     """Retorna True somente quando o usuário pode acessar o app completo."""
     user_id = st.session_state.get("gm_auth_user_id")
@@ -1415,6 +1452,11 @@ def gm_render_public_portal():
     st.caption("As análises do GM SCORE são estimativas estatísticas e não garantem resultados. Aposte com responsabilidade.")
     return False
 
+
+# Retorno da confirmação de e-mail: exibe apenas a mensagem pública.
+# Não troca tokens, não autentica automaticamente e não inicia a trava de sessão VIP.
+if gm_render_email_confirmation_notice():
+    st.stop()
 
 # Portal de acesso. Usuários anônimos, pendentes, expirados ou bloqueados param aqui.
 # VIPs e administradores seguem para o mesmo aplicativo completo já existente.
