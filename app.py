@@ -26,7 +26,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-11-news-compact-v1"
+GM_BUILD = "2026-09-11-news-badge-sync-v1"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -611,6 +611,27 @@ def gm_render_news_center():
         rows = []
 
     hidden = set(st.session_state.get("gm_news_hidden_session", []))
+
+    # Sincroniza itens que já foram ocultados nesta sessão, mas ainda constam como
+    # não lidos no Supabase. Isso evita o sino exibir um contador maior do que a
+    # quantidade de novidades realmente visíveis para o usuário.
+    hidden_unread_ids = [
+        str(r.get("id") or "")
+        for r in rows
+        if str(r.get("id") or "") in hidden and not bool(r.get("is_read"))
+    ]
+    hidden_unread_ids = [news_id for news_id in hidden_unread_ids if news_id]
+    if hidden_unread_ids:
+        sync_ok = True
+        for news_id in hidden_unread_ids:
+            try:
+                gm_news_rpc("gm_mark_news_read", {"p_news_id": news_id})
+            except Exception:
+                sync_ok = False
+                break
+        if sync_ok:
+            st.rerun()
+
     visible_rows = [r for r in rows if str(r.get("id") or "") not in hidden]
     unread = sum(1 for row in visible_rows if not bool(row.get("is_read")))
 
@@ -691,10 +712,18 @@ def gm_render_news_center():
                         st.button("✓ Lida", use_container_width=True, key=f"gm_news_modal_read_done_{news_id}", disabled=True)
                 with action_right:
                     if news_id and st.button("🗑 Apagar", use_container_width=True, key=f"gm_news_modal_hide_{news_id}", help="Remove esta novidade da sua lista atual"):
-                        hidden_now = set(st.session_state.get("gm_news_hidden_session", []))
-                        hidden_now.add(news_id)
-                        st.session_state["gm_news_hidden_session"] = list(hidden_now)
-                        st.rerun()
+                        try:
+                            # Ao apagar uma novidade ainda não lida, marcamos como lida
+                            # antes de ocultar. Assim o contador do sino permanece
+                            # sincronizado com o que o usuário realmente consegue ver.
+                            if not is_read:
+                                gm_news_rpc("gm_mark_news_read", {"p_news_id": news_id})
+                            hidden_now = set(st.session_state.get("gm_news_hidden_session", []))
+                            hidden_now.add(news_id)
+                            st.session_state["gm_news_hidden_session"] = list(hidden_now)
+                            st.rerun()
+                        except Exception:
+                            st.error("Não foi possível apagar esta novidade agora.")
 
         if visible_rows and unread:
             if st.button("✓ Marcar todas como lidas", use_container_width=True, key="gm_news_modal_mark_all"):
