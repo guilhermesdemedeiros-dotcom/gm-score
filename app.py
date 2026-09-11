@@ -346,7 +346,64 @@ def gm_start_or_validate_session():
     ok, reason = gm_session_result(data)
     if ok:
         st.session_state["gm_device_session_started"] = True
+        # Marca quando esta sessão foi validada no servidor. O heartbeat usa
+        # este relógio local apenas para evitar chamadas duplicadas logo após
+        # um rerun normal do Streamlit; a autoridade continua sendo o Supabase.
+        st.session_state["gm_session_last_validation_monotonic"] = time.monotonic()
     return ok, reason
+
+
+def gm_session_heartbeat_tick():
+    """
+    Mantém last_seen_at atualizado enquanto a área VIP permanece aberta.
+
+    A função só valida a sessão já iniciada; nunca chama gm_start_session e,
+    portanto, nunca toma a sessão de outro aparelho. Se o Supabase indicar que
+    esta aba perdeu a sessão, força um rerun completo para que a tela normal de
+    conflito/bloqueio seja exibida pelo portal.
+    """
+    if not st.session_state.get("gm_device_session_started"):
+        return
+
+    if not st.session_state.get("gm_auth_access_token"):
+        return
+
+    # Um rerun normal do app acabou de validar a sessão. Evita uma segunda RPC
+    # imediata quando o fragmento é montado.
+    last_check = st.session_state.get("gm_session_last_validation_monotonic")
+    if isinstance(last_check, (int, float)):
+        if (time.monotonic() - float(last_check)) < 90:
+            return
+
+    token = str(st.session_state.get("gm_device_session_token") or "").strip()
+    if not token:
+        return
+
+    try:
+        data = gm_session_rpc("gm_validate_session", {"p_session_token": token})
+        ok, reason = gm_session_result(data)
+    except Exception:
+        # Uma falha transitória de rede não deve expulsar o cliente.
+        return
+
+    if ok:
+        st.session_state["gm_session_last_validation_monotonic"] = time.monotonic()
+        return
+
+    st.session_state["gm_session_heartbeat_reason"] = str(reason or "unknown")
+    st.rerun()
+
+
+# Streamlit atual oferece fragments com rerun periódico sem recarregar o app
+# inteiro. Mantemos um fallback para que uma versão antiga do Streamlit não
+# derrube o GM SCORE; nesse caso, os reruns normais ainda validam a sessão.
+if hasattr(st, "fragment"):
+    @st.fragment(run_every="2m")
+    def gm_render_session_heartbeat():
+        gm_session_heartbeat_tick()
+else:
+    def gm_render_session_heartbeat():
+        return
 
 
 def gm_end_current_session():
@@ -1405,6 +1462,12 @@ def gm_render_public_portal():
                             gm_auth_sign_out()
                             st.rerun()
                     return False
+
+                # Heartbeat leve: enquanto a área VIP estiver realmente aberta,
+                # revalida o mesmo token a cada ~2 minutos. Isso mantém
+                # last_seen_at recente e permite que a janela de 7 minutos no
+                # Supabase diferencie uma sessão ativa de uma aba abandonada.
+                gm_render_session_heartbeat()
 
             with st.sidebar:
                 st.markdown("### 👤 Minha conta")
