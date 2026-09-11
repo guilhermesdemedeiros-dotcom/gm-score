@@ -1826,19 +1826,46 @@ def gm_render_public_portal():
                         st.rerun()
 
                     if st.session_state.get("gm_sidebar_renewal_open", False):
-                        st.markdown("#### ⭐ Renovação VIP")
-                        st.caption(
-                            "Escolha o período. O novo prazo é acrescentado ao seu VIP atual "
-                            "somente após a confirmação válida do pagamento."
-                        )
+                        st.markdown("#### 👑 Renovação de planos VIP")
+                        st.caption("Escolha o período e mantenha seu acesso completo ao GM SCORE.")
 
+                        # Apresentação compacta e comercial dos planos. Mantém exatamente
+                        # os mesmos plan_code, preços efetivos e botões de checkout existentes.
                         for plan in GM_VIP_PLANS:
-                            st.markdown(f"**{plan['badge']} VIP {plan['title']}**")
-                            st.caption(f"{plan['pix_price']} no Pix • {plan['monthly']}")
+                            is_monthly = plan.get("plan_code") == "vip_30"
+                            is_semester = plan.get("plan_code") == "vip_180"
+
+                            if is_monthly:
+                                top_line = "🔥 PROMOÇÃO ESPECIAL • 1 MÊS"
+                            elif is_semester:
+                                top_line = "⭐ MELHOR CUSTO-BENEFÍCIO • 6 MESES"
+                            else:
+                                top_line = "🔥 PREÇO PROMOCIONAL • 3 MESES"
+
+                            saving = str(plan.get("saving") or "").strip()
+                            monthly = str(plan.get("monthly") or "").replace(" no Pix", "")
+
+                            st.markdown(
+                                f"""
+<div style="margin:.65rem 0 .35rem 0;padding:.85rem .9rem;border:1px solid rgba(46,204,113,.38);border-radius:16px;background:linear-gradient(135deg,rgba(22,128,58,.16),rgba(17,24,39,.20));">
+  <div style="font-size:.78rem;font-weight:900;letter-spacing:.035em;color:#ffcf4a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{html.escape(top_line)}</div>
+  <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:.5rem;margin-top:.55rem;">
+    <div style="font-size:1.65rem;font-weight:900;line-height:1;color:#f8fafc;">VIP {html.escape(str(plan['title']).upper())}</div>
+    <div style="text-align:right;">
+      <div style="font-size:1.55rem;font-weight:950;line-height:1;color:#2ee67d;">{html.escape(str(plan['pix_price']))}</div>
+      <div style="margin-top:.22rem;font-size:.78rem;color:#cbd5e1;">no Pix • {html.escape(monthly)}</div>
+    </div>
+  </div>
+  <div style="margin-top:.55rem;font-size:.76rem;font-weight:700;color:#a7f3d0;">{html.escape(saving)}</div>
+</div>
+                                """,
+                                unsafe_allow_html=True,
+                            )
+
                             gm_checkout_button(
                                 plan,
                                 "pix",
-                                "⚡ Renovar com Pix",
+                                "⚡ Renovar agora com Pix",
                                 primary=True,
                             )
 
@@ -1850,13 +1877,11 @@ def gm_render_public_portal():
                                 )
                                 st.caption(plan["card_text"])
                             else:
-                                st.caption("Pagamento mensal: somente Pix.")
-
-                            st.markdown("---")
+                                st.caption("🔒 Plano mensal disponível somente no Pix.")
 
                         st.caption(
-                            "🔐 A renovação é automática após o Mercado Pago confirmar "
-                            "o pagamento aprovado."
+                            "🔐 O novo prazo é acrescentado ao seu VIP atual somente após "
+                            "a confirmação válida do pagamento pelo Mercado Pago."
                         )
 
                 if state == "admin":
