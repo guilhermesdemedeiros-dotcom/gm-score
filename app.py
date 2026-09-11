@@ -26,7 +26,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-11-stat-audit-v1"
+GM_BUILD = "2026-09-11-stat-audit-v2"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -2911,6 +2911,9 @@ def to_num(value):
         return None
 
 
+HIDDEN_OPP_METRICS = ["Finalizações contra", "Chutes no alvo contra"]
+
+
 def empty_team(name):
     return {
         "Time": name,
@@ -2919,6 +2922,8 @@ def empty_team(name):
         "Gols contra": 0.0,
         **{m: 0.0 for m in DISPLAY_METRICS if m not in ("Jogos", "Gols pró", "Gols contra")},
         **{f"_n_{m}": 0 for m in DISPLAY_METRICS if m not in ("Jogos", "Gols pró", "Gols contra")},
+        **{m: 0.0 for m in HIDDEN_OPP_METRICS},
+        **{f"_n_{m}": 0 for m in HIDDEN_OPP_METRICS},
     }
 
 
@@ -2943,6 +2948,13 @@ def finish_averages(acc):
                 continue
             n = item.get(f"_n_{metric}", 0)
             row[metric] = round(item[metric] / n, 2) if n else None
+            # Cobertura fica disponível internamente para o motor de confiança,
+            # sem aparecer na tabela do cliente.
+            row[f"_n_{metric}"] = int(n)
+        for metric in HIDDEN_OPP_METRICS:
+            n = item.get(f"_n_{metric}", 0)
+            row[metric] = round(item[metric] / n, 2) if n else None
+            row[f"_n_{metric}"] = int(n)
         rows.append(row)
     return pd.DataFrame(rows).sort_values("Time").reset_index(drop=True) if rows else pd.DataFrame()
 
@@ -3001,11 +3013,18 @@ def averages_football_data(df, last_games_per_team=0):
             H["Gols pró"] += hg; H["Gols contra"] += ag
             for metric, (hc, ac) in FD_STATS.items():
                 if hc in df.columns: add_metric(H, metric, g.get(hc))
+            # Para projeção ofensiva real, também guardamos quanto o time CEDEU
+            # ao adversário. Isso evita tratar duas médias ofensivas iguais como
+            # se implicassem uma divisão 50/50 do confronto futuro.
+            if "AS" in df.columns: add_metric(H, "Finalizações contra", g.get("AS"))
+            if "AST" in df.columns: add_metric(H, "Chutes no alvo contra", g.get("AST"))
         if use_a:
             A["Jogos"] += 1
             A["Gols pró"] += ag; A["Gols contra"] += hg
             for metric, (hc, ac) in FD_STATS.items():
                 if ac in df.columns: add_metric(A, metric, g.get(ac))
+            if "HS" in df.columns: add_metric(A, "Finalizações contra", g.get("HS"))
+            if "HST" in df.columns: add_metric(A, "Chutes no alvo contra", g.get("HST"))
     out = finish_averages(acc)
     out.attrs["updated_until"] = df.attrs.get("updated_until")
     raw_matches = []
@@ -4636,9 +4655,8 @@ def build_opportunities(a, b, team_a, team_b, competition_df=None):
     specs = [
         ("Escanteios", "⛳", "escanteios", (4.5, 5.5, 6.5, 7.5, 8.5, 9.5, 10.5, 11.5)),
         ("Cartões", "🟨", "cartões", (1.5, 2.5, 3.5, 4.5, 5.5, 6.5)),
-        # Faltas e finalizações totais ainda são exibidas no painel estatístico,
-        # mas não viram oportunidade antes da calibração histórica específica.
-        ("Chutes no alvo", "🥅", "chutes no alvo", (3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5)),
+        # Faltas, finalizações e chutes no alvo continuam visíveis como projeção,
+        # mas ficam fora de Oportunidades até calibração histórica específica.
     ]
     for metric, emoji, label, lines in specs:
         # Cartões usa amarelos + vermelhos e substitui a antiga duplicidade Amarelos/Cartões.
@@ -4658,6 +4676,57 @@ def build_opportunities(a, b, team_a, team_b, competition_df=None):
     # Exibe primeiro as linhas fortes; uma única sugestão por categoria.
     candidates.sort(key=lambda x: (-x["Chance"], x["Categoria"]))
     return candidates[:6]
+
+
+def _gm_attack_defense_count_projection(team_row, opponent_row, metric, against_metric, venue="neutral"):
+    """Cruza produção própria com volume cedido pelo adversário.
+
+    Só classifica a projeção individual como robusta quando os dois lados do
+    cruzamento existem e têm cobertura mínima. A média ofensiva isolada continua
+    utilizável como referência, mas não recebe confiança artificial.
+    """
+    own = metric_value(team_row, metric)
+    opp_allowed = metric_value(opponent_row, against_metric)
+    if own is None:
+        return None
+
+    try:
+        own_n = int(float(team_row.get(f"_n_{metric}", 0) or 0))
+    except Exception:
+        own_n = 0
+    try:
+        allowed_n = int(float(opponent_row.get(f"_n_{against_metric}", 0) or 0))
+    except Exception:
+        allowed_n = 0
+
+    if opp_allowed is not None and own_n >= 5 and allowed_n >= 5:
+        # Produção própria pesa ligeiramente mais; concessão adversária impede
+        # que a projeção seja uma simples repetição da média do time.
+        value = 0.56 * float(own) + 0.44 * float(opp_allowed)
+        reliable = True
+        method = "ataque + concessão adversária"
+        coverage = min(own_n, allowed_n)
+    else:
+        value = float(own)
+        reliable = False
+        method = "produção própria apenas"
+        coverage = own_n
+
+    # Ajuste de mando pequeno e simétrico. Não cria volume novo; apenas reflete
+    # a tendência contextual quando já existe uma base quantitativa.
+    if venue == "home":
+        value *= 1.025
+    elif venue == "away":
+        value *= 0.975
+
+    return {
+        "value": max(value, 0.01),
+        "reliable": reliable,
+        "method": method,
+        "coverage": coverage,
+        "own": own,
+        "opp_allowed": opp_allowed,
+    }
 
 
 def match_expectations(a, b, competition_df=None):
@@ -4681,20 +4750,31 @@ def match_expectations(a, b, competition_df=None):
     if ay is not None and by is not None:
         home_cards, away_cards = ay + (ar or 0), by + (br or 0)
         out["Cartões"] = {"total": max(home_cards + away_cards, 0.05), "home": max(home_cards, 0.01), "away": max(away_cards, 0.01)}
-    sa, sb = metric_value(a, "Finalizações"), metric_value(b, "Finalizações")
-    if sa is not None and sb is not None:
-        # O total combinado pode ser mostrado como expectativa-base. Já a divisão
-        # individual só é tratada como projeção quando a base realmente diferencia
-        # as equipes. Igualdade quase exata, sobretudo com SOT distintos, é sinal de
-        # fallback/blend e não deve ser vendida como previsão 50/50 confiável.
-        individual_reliable = abs(float(sa) - float(sb)) >= 0.15
+    shot_h = _gm_attack_defense_count_projection(a, b, "Finalizações", "Finalizações contra", "home")
+    shot_a = _gm_attack_defense_count_projection(b, a, "Finalizações", "Finalizações contra", "away")
+    if shot_h is not None and shot_a is not None:
+        reliable = bool(shot_h["reliable"] and shot_a["reliable"])
         out["Finalizações"] = {
-            "total": max(sa + sb, 0.05), "home": sa, "away": sb,
-            "individual_reliable": individual_reliable,
+            "total": max(shot_h["value"] + shot_a["value"], 0.05),
+            "home": shot_h["value"], "away": shot_a["value"],
+            "individual_reliable": reliable,
+            "method": "ataque x defesa" if reliable else "referência ofensiva parcial",
+            "home_detail": shot_h, "away_detail": shot_a,
+            "probabilities_calibrated": False,
         }
-    ta, tb = metric_value(a, "Chutes no alvo"), metric_value(b, "Chutes no alvo")
-    if ta is not None and tb is not None:
-        out["Chutes no alvo"] = {"total": ta + tb, "home": ta, "away": tb}
+
+    sot_h = _gm_attack_defense_count_projection(a, b, "Chutes no alvo", "Chutes no alvo contra", "home")
+    sot_a = _gm_attack_defense_count_projection(b, a, "Chutes no alvo", "Chutes no alvo contra", "away")
+    if sot_h is not None and sot_a is not None:
+        reliable = bool(sot_h["reliable"] and sot_a["reliable"])
+        out["Chutes no alvo"] = {
+            "total": max(sot_h["value"] + sot_a["value"], 0.05),
+            "home": sot_h["value"], "away": sot_a["value"],
+            "individual_reliable": reliable,
+            "method": "ataque x defesa" if reliable else "referência ofensiva parcial",
+            "home_detail": sot_h, "away_detail": sot_a,
+            "probabilities_calibrated": False,
+        }
     return out
 
 
@@ -5004,24 +5084,41 @@ def render_core_markets_dashboard(a, b, team_a, team_b, df, probs=None, sample_g
     with tabs[3]:
         s = ex.get("Finalizações")
         s_status = _gm_market_status(sample_games, available=bool(s))
-        _gm_market_card("🎯 Total de finalizações na partida", s_status,
-                        projection=f"{s['total']:.2f}".replace('.', ',') if s else None,
-                        lines=_gm_pct_lines(s['total'], [19.5,24.5,29.5,34.5]) if s else None)
+        _gm_market_card(
+            "🎯 Total de finalizações na partida", s_status,
+            projection=f"{s['total']:.2f}".replace('.', ',') if s else None,
+            lines=None,
+            note=("Projeção de volume pelo cruzamento ataque × concessão adversária quando a fonte possui os dois lados. "
+                  "Percentuais por linha ficam suspensos até a calibração histórica específica de finalizações.") if s else None,
+        )
         t = ex.get("Chutes no alvo")
         t_status = _gm_market_status(sample_games, available=bool(t))
-        _gm_market_card("🥅 Finalizações no alvo na partida", t_status,
-                        projection=f"{t['total']:.2f}".replace('.', ',') if t else None,
-                        lines=_gm_pct_lines(t['total'], [5.5,6.5,7.5,8.5,9.5]) if t else None)
+        _gm_market_card(
+            "🥅 Finalizações no alvo na partida", t_status,
+            projection=f"{t['total']:.2f}".replace('.', ',') if t else None,
+            lines=None,
+            note=("Projeção de volume pelo cruzamento ataque × concessão adversária quando disponível. "
+                  "Probabilidades de over/under não são exibidas antes da calibração histórica desse mercado.") if t else None,
+        )
         individual_shots_ok = bool(s and s.get("individual_reliable", False))
         s_team_status = _gm_market_status(sample_games, available=individual_shots_ok)
         srows=[(team_a,f"{s['home']:.2f}".replace('.',',')),(team_b,f"{s['away']:.2f}".replace('.',','))] if individual_shots_ok else None
         _gm_market_card(
             "👥 Finalizações por equipe", s_team_status, compact_rows=srows,
-            note=("A base atual não diferencia com segurança o volume individual das equipes; "
-                  "o total permanece como referência, sem forçar uma divisão 50/50.") if s and not individual_shots_ok else None,
+            note=(("Projeção individual cruza produção ofensiva e finalizações cedidas pelo adversário.")
+                  if individual_shots_ok else
+                  ("A fonte atual não oferece cobertura suficiente de produção + concessão para as duas equipes; "
+                   "a divisão individual fica Inconclusiva em vez de assumir 50/50.")) if s else None,
         )
-        trows=[(team_a,f"{t['home']:.2f}".replace('.',',')),(team_b,f"{t['away']:.2f}".replace('.',','))] if t else None
-        _gm_market_card("👥 Finalizações no alvo por equipe", t_status, compact_rows=trows)
+        individual_sot_ok = bool(t and t.get("individual_reliable", False))
+        t_team_status = _gm_market_status(sample_games, available=individual_sot_ok)
+        trows=[(team_a,f"{t['home']:.2f}".replace('.',',')),(team_b,f"{t['away']:.2f}".replace('.',','))] if individual_sot_ok else None
+        _gm_market_card(
+            "👥 Finalizações no alvo por equipe", t_team_status, compact_rows=trows,
+            note=(("Projeção individual cruza chutes no alvo produzidos e cedidos pelo adversário.")
+                  if individual_sot_ok else
+                  ("Cobertura defensiva insuficiente para separar as equipes com segurança; mercado individual mantido Inconclusivo.")) if t else None,
+        )
 
     with st.expander("➕ Outros dados gerados", expanded=False):
         extras=[]
