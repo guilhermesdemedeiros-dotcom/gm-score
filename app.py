@@ -26,7 +26,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-11-match-choice-flow-v1"
+GM_BUILD = "2026-09-11-vip-dashboard-identity-v1"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -4712,35 +4712,56 @@ def expected_goals_by_half(team_a, team_b, matches, total_expected):
 
 def _prob_color(pct):
     if pct >= 80:
-        return "#16a34a", "#f0fdf4"
+        return "#22d36b", "rgba(34,211,107,.13)"
     if pct >= 65:
-        return "#d97706", "#fffbeb"
-    return "#dc2626", "#fef2f2"
+        return "#f59e0b", "rgba(245,158,11,.11)"
+    return "#64748b", "rgba(100,116,139,.10)"
 
 
 def _prob_circle(pct):
     border, bg = _prob_color(pct)
-    return f'<div style="width:46px;height:46px;border-radius:50%;border:3px solid {border};background:{bg};display:flex;align-items:center;justify-content:center;font-weight:750;font-size:12px;color:#172033;margin:auto">{pct:.0f}%</div>'
+    return f'<div style="min-width:48px;height:36px;border-radius:10px;border:1px solid {border};background:{bg};display:flex;align-items:center;justify-content:center;font-weight:850;font-size:12px;color:#f8fafc;margin:auto">{pct:.0f}%</div>'
 
 
 def render_probability_matrix(title, emoji, rows, lines):
     line_headers = "".join(
-        f'<div style="text-align:center;font-size:11px;color:#64748b;font-weight:650">+{str(line).replace(".", ",")}</div>'
+        f'<div style="text-align:center;font-size:10px;color:#94a3b8;font-weight:750">+{str(line).replace(".", ",")}</div>'
         for line in lines
     )
     html = (
-        f'<div style="background:#ffffff;border:1px solid #e5e7eb;border-radius:13px;padding:13px 14px 11px;margin:7px 0 14px;box-shadow:0 1px 2px rgba(15,23,42,.03)">'
-        f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:11px">'
-        f'<div style="font-weight:700;color:#172033;font-size:14px">{emoji} {title}</div>'
-        f'<div style="font-size:10px;color:#94a3b8">probabilidade estimada</div></div>'
-        f'<div style="display:grid;grid-template-columns:minmax(105px,1.45fr) repeat({len(lines)},minmax(52px,1fr));gap:7px;align-items:center"><div></div>{line_headers}'
+        f'<div style="background:#0d141c;border:1px solid rgba(34,211,107,.28);border-radius:16px;padding:13px 12px 11px;margin:7px 0 14px;overflow-x:auto">'
+        f'<div style="display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:12px">'
+        f'<div style="font-weight:850;color:#f8fafc;font-size:14px">{emoji} {title}</div>'
+        f'<div style="font-size:10px;color:#64748b;white-space:nowrap">probabilidade estimada</div></div>'
+        f'<div style="min-width:{150 + 58*len(lines)}px;display:grid;grid-template-columns:135px repeat({len(lines)},52px);gap:6px;align-items:center"><div></div>{line_headers}'
     )
     for label, lam in rows:
-        html += f'<div style="font-size:11px;color:#334155;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="{label}">{label}</div>'
+        html += f'<div style="font-size:11px;color:#cbd5e1;font-weight:750;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="{label}">{label}</div>'
         for line in lines:
             pct = prob_over_half_line(max(float(lam), 0.01), line) * 100
             html += _prob_circle(pct)
-    html += '</div><div style="margin-top:9px;font-size:10px;color:#94a3b8">🟢 80%+ &nbsp; • &nbsp; 🟡 65–79% &nbsp; • &nbsp; 🔴 abaixo de 65%</div></div>'
+    html += '</div><div style="margin-top:10px;font-size:10px;color:#64748b">🟢 80%+ &nbsp; • &nbsp; 🟠 65–79% &nbsp; • &nbsp; ⚪ abaixo de 65%</div></div>'
+    st.markdown(html, unsafe_allow_html=True)
+
+
+def _gm_expectation_card(cards):
+    if not cards:
+        return
+    items = "".join(
+        f'<div class="gm-ex-item"><b>{value:.1f}</b><span>{label}</span></div>' for label, value in cards
+    )
+    html = f"""
+    <style>
+    .gm-ex-wrap{{background:#0d141c;border:1px solid rgba(34,211,107,.28);border-radius:18px;padding:14px;margin:.45rem 0 1rem}}
+    .gm-ex-title{{font-weight:900;color:#f8fafc;font-size:1.05rem;margin-bottom:11px}}
+    .gm-ex-grid{{display:grid;grid-template-columns:repeat(5,1fr);gap:7px}}
+    .gm-ex-item{{background:#111b27;border:1px solid rgba(148,163,184,.14);border-radius:12px;padding:10px 6px;text-align:center;min-width:0}}
+    .gm-ex-item b{{display:block;color:#fff;font-size:1.15rem;line-height:1.1}}
+    .gm-ex-item span{{display:block;color:#94a3b8;font-size:.64rem;line-height:1.15;margin-top:5px}}
+    @media(max-width:520px){{.gm-ex-grid{{grid-template-columns:repeat(3,1fr)}}}}
+    </style>
+    <section class="gm-ex-wrap"><div class="gm-ex-title">📈 Expectativa da partida</div><div class="gm-ex-grid">{items}</div></section>
+    """
     st.markdown(html, unsafe_allow_html=True)
 
 
@@ -4748,17 +4769,13 @@ def render_match_probability_dashboard(a, b, team_a, team_b, df):
     ex = match_expectations(a, b, df)
     if not ex:
         return ex
-    st.markdown("### 📈 Expectativa da partida")
     cards = []
-    if "Gols" in ex: cards.append(("⚽ Gols esperados", ex["Gols"]["total"]))
-    if "Escanteios" in ex: cards.append(("⛳ Escanteios esperados", ex["Escanteios"]["total"]))
-    if "Cartões" in ex: cards.append(("🟨 Cartões esperados", ex["Cartões"]["total"]))
-    if "Finalizações" in ex: cards.append(("🎯 Finalizações", ex["Finalizações"]["total"]))
-    if "Chutes no alvo" in ex: cards.append(("🥅 No alvo", ex["Chutes no alvo"]["total"]))
-    if cards:
-        cols = st.columns(len(cards))
-        for col, (label, value) in zip(cols, cards):
-            col.metric(label, f"{value:.1f}".replace(".", ","))
+    if "Gols" in ex: cards.append(("Gols esperados", ex["Gols"]["total"]))
+    if "Escanteios" in ex: cards.append(("Escanteios", ex["Escanteios"]["total"]))
+    if "Cartões" in ex: cards.append(("Cartões", ex["Cartões"]["total"]))
+    if "Finalizações" in ex: cards.append(("Finalizações", ex["Finalizações"]["total"]))
+    if "Chutes no alvo" in ex: cards.append(("No alvo", ex["Chutes no alvo"]["total"]))
+    _gm_expectation_card(cards)
     if "Gols" in ex:
         split = expected_goals_by_half(team_a, team_b, df.attrs.get("matches", []), ex["Gols"]["total"])
         if split:
@@ -4767,10 +4784,10 @@ def render_match_probability_dashboard(a, b, team_a, team_b, df):
             c1.metric("1º tempo", f"{split['first']:.2f}".replace(".", ","))
             c2.metric("Jogo todo", f"{ex['Gols']['total']:.2f}".replace(".", ","))
             c3.metric("2º tempo", f"{split['second']:.2f}".replace(".", ","))
-            st.caption(f"Distribuição baseada em {split['games']} partidas com placar de intervalo disponível.")
+            st.caption(f"Base específica: {split['games']} partidas com placar de intervalo disponível.")
         else:
-            st.caption("⏱️ Separação por 1º/2º tempo indisponível nesta fonte — o app não divide a média artificialmente.")
-    st.markdown("#### 🎯 Probabilidades — Mais de")
+            st.caption("⏱️ Separação por tempos indisponível nesta fonte — o GM SCORE não divide a projeção artificialmente.")
+    st.markdown("#### 🎯 Probabilidades por mercado")
     tab_names = []
     if "Gols" in ex: tab_names.append("⚽ Gols")
     if "Escanteios" in ex: tab_names.append("⛳ Escanteios")
@@ -4781,17 +4798,16 @@ def render_match_probability_dashboard(a, b, team_a, team_b, df):
     i = 0
     if "Gols" in ex:
         with tabs[i]:
-            render_probability_matrix("Frequência de gols", "⚽", [("Partida", ex["Gols"]["total"]), (team_a, ex["Gols"]["home"]), (team_b, ex["Gols"]["away"])], [0.5, 1.5, 2.5, 3.5, 4.5])
+            render_probability_matrix("Gols", "⚽", [("Partida", ex["Gols"]["total"]), (team_a, ex["Gols"]["home"]), (team_b, ex["Gols"]["away"])], [0.5, 1.5, 2.5, 3.5, 4.5])
         i += 1
     if "Escanteios" in ex:
         with tabs[i]:
-            render_probability_matrix("Frequência de escanteios", "⛳", [("Partida", ex["Escanteios"]["total"]), (team_a, ex["Escanteios"]["home"]), (team_b, ex["Escanteios"]["away"])], [2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5])
+            render_probability_matrix("Escanteios", "⛳", [("Partida", ex["Escanteios"]["total"]), (team_a, ex["Escanteios"]["home"]), (team_b, ex["Escanteios"]["away"])], [2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5])
         i += 1
     if "Cartões" in ex:
         with tabs[i]:
-            render_probability_matrix("Frequência de cartões", "🟨", [("Partida", ex["Cartões"]["total"]), (team_a, ex["Cartões"]["home"]), (team_b, ex["Cartões"]["away"])], [0.5, 1.5, 2.5, 3.5, 4.5, 5.5])
+            render_probability_matrix("Cartões", "🟨", [("Partida", ex["Cartões"]["total"]), (team_a, ex["Cartões"]["home"]), (team_b, ex["Cartões"]["away"])], [0.5, 1.5, 2.5, 3.5, 4.5, 5.5])
     return ex
-
 
 def _team_form(team, matches, n=5):
     pts = 0.0
@@ -6616,33 +6632,23 @@ def render_analysis():
     data_learning = render_data_intelligence_status(league_name, df)
 
     if probs:
-        st.markdown("### 🏆 Chance de resultado")
-        x, y, z = st.columns(3)
-        x.metric(f"🏠 Vitória {team_a}", f"{probs['home']:.0f}%")
-        y.metric("🤝 Empate", f"{probs['draw']:.0f}%")
-        z.metric(f"✈️ Vitória {team_b}", f"{probs['away']:.0f}%")
-        # Explicação curta e útil: evita expor pesos e detalhes técnicos demais.
+        # O 1X2 principal já está no cabeçalho da partida; evitamos repetir os mesmos números.
         eval_bits = ["força atual", "potencial ofensivo/defensivo", "forma recente", "nível da liga"]
-        h2txt = ""
         if analysis_context and analysis_context.get("h2h_games", 0):
-            n = int(analysis_context.get("h2h_games", 0))
-            hw = int(analysis_context.get("h2h_home_wins", 0)); aw = int(analysis_context.get("h2h_away_wins", 0)); dd = int(analysis_context.get("h2h_draws", 0))
-            eval_bits.append(f"confronto direto histórico verificado ({n} jogo(s))")
-            h2txt = f" H2H encontrado: {team_a} {hw}V · {dd}E · {team_b} {aw}V."
+            eval_bits.append("confronto direto histórico verificado")
         if moneyline:
             eval_bits.append("mercado público como validação externa")
-        st.caption("📌 Avaliação GM SCORE: " + ", ".join(eval_bits) + "." + h2txt + " O mando ajuda o time da casa, mas não supera sozinho um consenso forte de qualidade, liga e histórico. A opção favorita é definida pelo cruzamento desses dados, não pelo nome da equipe.")
+        st.caption("📌 Leitura GM SCORE considera " + ", ".join(eval_bits) + ". O favoritismo é uma estimativa do cruzamento dos dados, não uma garantia de resultado.")
 
-        # Dupla chance deriva diretamente das mesmas probabilidades finais do 1X2;
-        # não cria um segundo modelo nem altera o favoritismo calculado acima.
-        st.markdown("### 🛡️ Dupla chance")
-        dc1, dc2, dc3 = st.columns(3)
         p_1x = max(0.0, min(100.0, float(probs['home']) + float(probs['draw'])))
         p_x2 = max(0.0, min(100.0, float(probs['draw']) + float(probs['away'])))
         p_12 = max(0.0, min(100.0, float(probs['home']) + float(probs['away'])))
-        dc1.metric(f"🏠 {team_a} ou Empate", f"{p_1x:.0f}%")
-        dc2.metric(f"✈️ Empate ou {team_b}", f"{p_x2:.0f}%")
-        dc3.metric("⚔️ Sem empate (12)", f"{p_12:.0f}%")
+        with st.expander("🛡️ Dupla chance — ver cenários"):
+            st.caption("Os cenários abaixo se sobrepõem e, por isso, não devem ser somados entre si.")
+            dc1, dc2, dc3 = st.columns(3)
+            dc1.metric(f"{team_a} ou empate", f"{p_1x:.0f}%")
+            dc2.metric(f"Empate ou {team_b}", f"{p_x2:.0f}%")
+            dc3.metric("Sem empate (12)", f"{p_12:.0f}%")
 
     if probs:
         # A odd justa é propriedade do modelo e deve aparecer mesmo quando a
@@ -6650,23 +6656,22 @@ def render_analysis():
         if moneyline:
             render_market_value_panel(team_a, team_b, probs, moneyline)
         else:
-            st.markdown("### 🎯 Odds justas GM SCORE")
-            st.caption("Calculadas exclusivamente a partir das probabilidades finais exibidas acima (odd justa = 1 ÷ probabilidade).")
-            fair_labels = [("home", f"🏠 {team_a}"), ("draw", "🤝 Empate"), ("away", f"✈️ {team_b}")]
-            fair_cols = st.columns(3)
-            for col, (key, label) in zip(fair_cols, fair_labels):
-                p_final = max(min(float(probs.get(key, 0.0)), 99.5), 0.5)
-                fair_odd = 100.0 / p_final
-                with col:
-                    st.markdown(f"**{label}**")
-                    st.markdown(f"Chance GM: **{p_final:.1f}%**")
-                    st.markdown(f"Odd justa: **{fair_odd:.2f}**")
-            st.caption("💹 Mercado público 1X2 não confirmado para o evento exato. A odd justa permanece disponível; valor/edge só é calculado quando houver cotação de mercado validada.")
+            with st.expander("🎯 Odds justas GM SCORE"):
+                st.caption("Derivadas das probabilidades finais do modelo (odd justa = 1 ÷ probabilidade). Não representam cotação disponível em casa de apostas.")
+                fair_labels = [("home", f"🏠 {team_a}"), ("draw", "🤝 Empate"), ("away", f"✈️ {team_b}")]
+                fair_cols = st.columns(3)
+                for col, (key, label) in zip(fair_cols, fair_labels):
+                    p_final = max(min(float(probs.get(key, 0.0)), 99.5), 0.5)
+                    fair_odd = 100.0 / p_final
+                    with col:
+                        st.markdown(f"**{label}**")
+                        st.markdown(f"{p_final:.1f}% • **{fair_odd:.2f}**")
+                st.caption("Mercado público 1X2 não confirmado para o evento exato; valor/edge só é calculado quando houver cotação validada.")
 
     expectations = render_match_probability_dashboard(a, b, team_a, team_b, df)
 
     opportunities = build_opportunities(a, b, team_a, team_b, df)
-    st.markdown("#### ⭐ Melhores linhas para observar")
+    st.markdown("#### ⭐ Oportunidades GM SCORE")
     if analysis_context and comp_sample < 6:
         st.caption("Linhas projetadas com base híbrida enquanto a competição ainda tem pouca amostra. A influência dos dados domésticos diminui à medida que o torneio avança.")
     if opportunities:
@@ -6679,7 +6684,7 @@ def render_analysis():
             c3.markdown(f"**{item['Leitura']}**")
             st.divider()
     else:
-        st.info("Ainda não há dados suficientes para destacar uma oportunidade.")
+        st.info("🔎 Nenhuma oportunidade atingiu os critérios atuais do GM SCORE para destaque nesta partida.")
 
     st.markdown("### 📲 Compartilhar")
     render_share_button(team_a, team_b, league_name, probs, opportunities, expectations, a, b)
