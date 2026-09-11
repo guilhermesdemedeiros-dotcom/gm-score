@@ -26,7 +26,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-11-core-markets-v2"
+GM_BUILD = "2026-09-11-stat-audit-v1"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -4577,20 +4577,27 @@ def competition_adjusted_goal_total(raw_total, a, b, competition_name=None, comp
     return max(adjusted, 0.20), {"prior_weight": prior_weight, "prior": prior, "stage": stage, "learning": learning}
 
 def build_opportunities(a, b, team_a, team_b, competition_df=None):
-    """Seleciona somente a linha mais útil por mercado.
+    """Seleciona destaques apenas quando a base já é estatisticamente utilizável.
 
-    Regra: entre os overs, prefere a LINHA MAIS ALTA que ainda mantenha 80%+.
-    Se nenhuma chegar a 80%, escolhe a de maior probabilidade com pelo menos 70%.
-    Isso evita sequências repetitivas (+15,5 e +17,5 do mesmo mercado) e linhas
-    excessivamente fáceis quando existe uma alternativa mais ajustada ao jogo.
+    Oportunidade não é sinônimo de média alta. Enquanto a amostra da competição
+    estiver em Cautela/Inconclusiva, o mercado continua visível no painel, mas não
+    recebe selo de oportunidade. Finalizações e faltas permanecem fora dos destaques
+    até que a calibração histórica específica desses mercados seja concluída.
     """
     candidates = []
+
+    try:
+        sample_games = int(min(float(a.get("Jogos", 0) or 0), float(b.get("Jogos", 0) or 0)))
+    except Exception:
+        sample_games = 0
+    if sample_games < 8:
+        return []
 
     def add_market(group, emoji, label, lam, lines, basis, min_good=70):
         opts = []
         for line in lines:
             pct = prob_over_half_line(max(float(lam), 0.05), line) * 100
-            if pct >= min_good:
+            if min_good <= pct <= 92:
                 opts.append((line, pct))
         if not opts:
             return
@@ -4629,8 +4636,8 @@ def build_opportunities(a, b, team_a, team_b, competition_df=None):
     specs = [
         ("Escanteios", "⛳", "escanteios", (4.5, 5.5, 6.5, 7.5, 8.5, 9.5, 10.5, 11.5)),
         ("Cartões", "🟨", "cartões", (1.5, 2.5, 3.5, 4.5, 5.5, 6.5)),
-        ("Faltas", "🚫", "faltas", (13.5, 15.5, 17.5, 19.5, 21.5, 23.5, 25.5, 27.5)),
-        ("Finalizações", "🎯", "finalizações", (13.5, 15.5, 17.5, 19.5, 21.5, 23.5, 25.5)),
+        # Faltas e finalizações totais ainda são exibidas no painel estatístico,
+        # mas não viram oportunidade antes da calibração histórica específica.
         ("Chutes no alvo", "🥅", "chutes no alvo", (3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5)),
     ]
     for metric, emoji, label, lines in specs:
@@ -4676,7 +4683,15 @@ def match_expectations(a, b, competition_df=None):
         out["Cartões"] = {"total": max(home_cards + away_cards, 0.05), "home": max(home_cards, 0.01), "away": max(away_cards, 0.01)}
     sa, sb = metric_value(a, "Finalizações"), metric_value(b, "Finalizações")
     if sa is not None and sb is not None:
-        out["Finalizações"] = {"total": sa + sb, "home": sa, "away": sb}
+        # O total combinado pode ser mostrado como expectativa-base. Já a divisão
+        # individual só é tratada como projeção quando a base realmente diferencia
+        # as equipes. Igualdade quase exata, sobretudo com SOT distintos, é sinal de
+        # fallback/blend e não deve ser vendida como previsão 50/50 confiável.
+        individual_reliable = abs(float(sa) - float(sb)) >= 0.15
+        out["Finalizações"] = {
+            "total": max(sa + sb, 0.05), "home": sa, "away": sb,
+            "individual_reliable": individual_reliable,
+        }
     ta, tb = metric_value(a, "Chutes no alvo"), metric_value(b, "Chutes no alvo")
     if ta is not None and tb is not None:
         out["Chutes no alvo"] = {"total": ta + tb, "home": ta, "away": tb}
@@ -4997,8 +5012,14 @@ def render_core_markets_dashboard(a, b, team_a, team_b, df, probs=None, sample_g
         _gm_market_card("🥅 Finalizações no alvo na partida", t_status,
                         projection=f"{t['total']:.2f}".replace('.', ',') if t else None,
                         lines=_gm_pct_lines(t['total'], [5.5,6.5,7.5,8.5,9.5]) if t else None)
-        srows=[(team_a,f"{s['home']:.2f}".replace('.',',')),(team_b,f"{s['away']:.2f}".replace('.',','))] if s else None
-        _gm_market_card("👥 Finalizações por equipe", s_status, compact_rows=srows)
+        individual_shots_ok = bool(s and s.get("individual_reliable", False))
+        s_team_status = _gm_market_status(sample_games, available=individual_shots_ok)
+        srows=[(team_a,f"{s['home']:.2f}".replace('.',',')),(team_b,f"{s['away']:.2f}".replace('.',','))] if individual_shots_ok else None
+        _gm_market_card(
+            "👥 Finalizações por equipe", s_team_status, compact_rows=srows,
+            note=("A base atual não diferencia com segurança o volume individual das equipes; "
+                  "o total permanece como referência, sem forçar uma divisão 50/50.") if s and not individual_shots_ok else None,
+        )
         trows=[(team_a,f"{t['home']:.2f}".replace('.',',')),(team_b,f"{t['away']:.2f}".replace('.',','))] if t else None
         _gm_market_card("👥 Finalizações no alvo por equipe", t_status, compact_rows=trows)
 
@@ -6893,8 +6914,10 @@ def render_analysis():
 
     opportunities = build_opportunities(a, b, team_a, team_b, df)
     st.markdown("#### ⭐ Oportunidades GM SCORE")
-    if analysis_context and comp_sample < 6:
-        st.caption("Linhas projetadas com base híbrida enquanto a competição ainda tem pouca amostra. A influência dos dados domésticos diminui à medida que o torneio avança.")
+    if comp_sample < 8:
+        st.caption("Destaques suspensos nesta partida: a base ainda está em Cautela. Os mercados continuam visíveis acima, mas só viram oportunidade com amostra consolidada.")
+    elif analysis_context:
+        st.caption("Oportunidades usam somente mercados habilitados pela auditoria estatística e com amostra consolidada.")
     if opportunities:
         for item in opportunities:
             c1, c2, c3 = st.columns([4.8, 1.3, 1.5])
