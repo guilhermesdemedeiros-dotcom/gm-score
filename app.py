@@ -1790,7 +1790,6 @@ def gm_render_public_portal():
                                 ),
                             )
 
-                            st.markdown("#### ⭐ Seu VIP")
                             st.caption(
                                 "Vencimento: "
                                 f"{vip_until_dt.astimezone(ZoneInfo('America/Sao_Paulo')).strftime('%d/%m/%Y às %H:%M')}"
@@ -6569,7 +6568,7 @@ def render_analysis():
 render_analysis()
 
 st.markdown("---")
-st.link_button("✈️ Suporte pelo Telegram", _SUPPORT_URL, use_container_width=True)
+st.link_button("✈️ Suporte pelo Telegram", "https://t.me/suport_gm", use_container_width=True)
 
 st.caption("As chances são estimativas estatísticas da temporada vigente e não garantem resultado. Use como apoio à análise e aposte com responsabilidade.")
 
