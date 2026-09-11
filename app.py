@@ -26,7 +26,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-11-navigation-polish-v1"
+GM_BUILD = "2026-09-11-senior-male-fixtures-v1"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -2184,8 +2184,18 @@ CURRENT_TEAM_ROSTERS = {
 # Evita U19/Sub-19, Youth League, reservas, feminino e clubes de fases paralelas.
 STRICT_OFFICIAL_ROSTERS = {"UEFA Champions League"}
 SECONDARY_TEAM_RE = re.compile(
-    r"(?:\bu\s*[- ]?1[789]\b|\bsub\s*[- ]?1[789]\b|\byouth\b|\bjunior(?:es|s)?\b|"
-    r"\breserv(?:e|es|as?)\b|\bb\s*team\b|\bfemin(?:ino|ina|ine|ine)?\b|\bwomen(?:'s)?\b)",
+    r"(?:\bu\s*[- ]?\d{2}\b|\bsub\s*[- ]?\d{2}\b|\bunder\s*[- ]?\d{2}\b|"
+    r"\byouth\b|\bacadem(?:y|ia)\b|\bjunior(?:es|s)?\b|\breserv(?:e|es|as?)\b|"
+    r"\bb\s*team\b|\bteam\s*b\b|\bfemin(?:ino|ina|ine)?\b|\bwomen(?:'s)?\b|"
+    r"\bfemenin(?:o|a)\b|\bfrauen\b|\bfemminile\b|\b(?:ii|iii)\s*$)",
+    re.IGNORECASE,
+)
+
+SECONDARY_COMPETITION_RE = re.compile(
+    r"(?:\bu\s*[- ]?\d{2}\b|\bsub\s*[- ]?\d{2}\b|\bunder\s*[- ]?\d{2}\b|"
+    r"\byouth\b|\bacadem(?:y|ia)\b|\bjunior(?:es|s)?\b|\breserv(?:e|es|as?)\b|"
+    r"\bpremier\s+league\s+2\b|\bprofessional\s+development\s+league\b|"
+    r"\bwomen(?:'s)?\b|\bfemin(?:ino|ina|ine)?\b|\bfemenin(?:o|a)\b|\bfrauen\b|\bfemminile\b)",
     re.IGNORECASE,
 )
 
@@ -5408,6 +5418,12 @@ def _competition_from_sofascore_event(event):
     ]
     joined = " ".join(_norm_fixture_label(x) for x in names if x)
     country = _norm_fixture_label(category.get("name") or category.get("slug") or "")
+
+    # A agenda do GM SCORE é exclusiva do futebol profissional masculino.
+    # Bloqueia torneios de base, reservas e femininos antes de mapear nomes
+    # parecidos com as competições principais (ex.: U21 Premier League).
+    if SECONDARY_COMPETITION_RE.search(joined):
+        return None
 
     # Competições continentais primeiro: independem do país da categoria.
     continental = (
