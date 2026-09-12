@@ -28,7 +28,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-12-v26-public-mobile-final"
+GM_BUILD = "2026-09-12-v27-auto-calibration-monitor"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -8951,6 +8951,19 @@ def render_analysis():
 
     expectations = render_match_probability_dashboard(a, b, team_a, team_b, df, probs=probs, sample_games=comp_sample)
 
+    # v27: registra, de forma silenciosa e idempotente, somente previsões de
+    # partidas oficiais futuras localizadas na APIfootball. O registro persiste
+    # no Supabase para que, após o jogo, o GM SCORE consiga comparar previsão x
+    # realizado sem depender de memória local do Streamlit. Falhas nesta camada
+    # nunca bloqueiam a análise do cliente.
+    try:
+        gm_calibration_capture_prediction(
+            league_name, team_a, team_b, probs, expectations, a, b,
+            model_build=GM_BUILD,
+        )
+    except Exception:
+        pass
+
     # Diagnóstico visível somente para administrador. Se alguma fonte pública
     # falhar em produção, estes Ns mostram imediatamente se a falha ocorreu na
     # localização da equipe, no histórico ou na leitura das estatísticas.
@@ -9508,9 +9521,401 @@ def gm_render_apifootball_stat_audit():
         st.markdown(f"**Resumo:** {strong} fortes • {partial} parciais • {low} com baixa/sem amostra")
         st.caption("O objetivo é usar APIfootball como fonte principal onde a cobertura é forte e manter os fallbacks já existentes onde uma métrica específica for curta.")
 
+
+# ============================================================
+# APRENDIZADO / CALIBRAÇÃO AUTOMÁTICA — PREVISÃO X REALIZADO
+# ============================================================
+# Esta camada NÃO altera pesos do modelo por conta própria. O motor já se adapta
+# aos jogos recentes porque as médias e o perfil da competição são recalculados
+# com resultados novos. A função abaixo acrescenta a peça que faltava: guardar a
+# previsão pré-jogo, buscar o realizado depois do apito final e medir erro/viés.
+# Assim, qualquer ajuste futuro pode ser feito somente quando houver evidência.
+
+GM_CALIBRATION_MARKETS = {
+    "goals_total": "Gols",
+    "corners_total": "Escanteios",
+    "cards_total": "Cartões",
+    "shots_total": "Finalizações",
+    "sot_total": "No alvo",
+}
+
+
+def gm_calibration_rpc(function_name, params=None):
+    """RPC isolada da calibração; usa a mesma sessão autenticada protegida por RLS/RPC."""
+    client = gm_auth_client_from_session()
+    if client is None:
+        raise RuntimeError("Sessão autenticada indisponível.")
+    result = client.rpc(function_name, params or {}).execute()
+    return getattr(result, "data", None)
+
+
+def _gm_calibration_dt(event):
+    """Converte data/hora da APIfootball para ISO UTC, sem adivinhar fuso."""
+    d = str((event or {}).get("match_date") or "").strip()
+    t = str((event or {}).get("match_time") or "00:00").strip() or "00:00"
+    if not d:
+        return None
+    try:
+        ts = pd.Timestamp(f"{d} {t}")
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("America/Sao_Paulo")
+        return ts.tz_convert("UTC")
+    except Exception:
+        return None
+
+
+def _gm_calibration_event_match(event, home_team, away_team):
+    hn = str((event or {}).get("match_hometeam_name") or "")
+    an = str((event or {}).get("match_awayteam_name") or "")
+    return _gm_team_name_match(home_team, hn) and _gm_team_name_match(away_team, an)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def gm_calibration_find_future_event(competition_name, home_team, away_team):
+    """Localiza somente o jogo oficial futuro exato; seleção manual sem agenda não é gravada."""
+    league_id = str(GM_APIFOOTBALL_FIXED_LEAGUE_IDS.get(competition_name) or "").strip()
+    if not league_id:
+        return None
+    today = date.today()
+    payload, err = gm_apifootball_request(
+        "get_events",
+        league_id=league_id,
+        **{
+            "from": (today - timedelta(days=1)).isoformat(),
+            "to": (today + timedelta(days=14)).isoformat(),
+            "timezone": "America/Sao_Paulo",
+        },
+    )
+    if err or not isinstance(payload, list):
+        return None
+    now_utc = pd.Timestamp.now(tz="UTC")
+    hits = []
+    for ev in payload:
+        if not isinstance(ev, dict) or not _gm_calibration_event_match(ev, home_team, away_team):
+            continue
+        status = _gm_api_norm(ev.get("match_status"))
+        if status in {"finished", "ft", "after et", "after pen", "cancelled", "canceled", "postponed", "abandoned"}:
+            continue
+        kickoff = _gm_calibration_dt(ev)
+        if kickoff is None or kickoff <= now_utc + pd.Timedelta(minutes=3):
+            continue
+        mid = str(ev.get("match_id") or "").strip()
+        if not mid:
+            continue
+        hits.append((kickoff, ev))
+    if not hits:
+        return None
+    hits.sort(key=lambda x: x[0])
+    kickoff, ev = hits[0]
+    return {
+        "match_id": str(ev.get("match_id") or ""),
+        "kickoff_at": kickoff.isoformat(),
+        "home_team_id": str(ev.get("match_hometeam_id") or ""),
+        "away_team_id": str(ev.get("match_awayteam_id") or ""),
+        "api_home": str(ev.get("match_hometeam_name") or home_team),
+        "api_away": str(ev.get("match_awayteam_name") or away_team),
+        "league_id": league_id,
+    }
+
+
+def _gm_calibration_number(value):
+    try:
+        v = float(value)
+        return v if math.isfinite(v) else None
+    except Exception:
+        return None
+
+
+def _gm_calibration_sample_payload(a, b):
+    return {
+        "goals": int(_gm_pair_metric_sample(a, b, ["Gols pró", "Gols contra"], 0) or 0),
+        "corners": int(_gm_pair_metric_sample(a, b, ["Escanteios"], 0) or 0),
+        "cards": int(_gm_pair_metric_sample(a, b, ["Amarelos"], 0) or 0),
+        "shots": int(_gm_pair_metric_sample(a, b, ["Finalizações"], 0) or 0),
+        "sot": int(_gm_pair_metric_sample(a, b, ["Chutes no alvo"], 0) or 0),
+    }
+
+
+def gm_calibration_capture_prediction(competition_name, home_team, away_team, probs, expectations, a, b, model_build=None):
+    """Persiste uma fotografia pré-jogo somente quando há evento oficial futuro correspondente."""
+    if not st.session_state.get("gm_auth_access_token"):
+        return False
+    event = gm_calibration_find_future_event(competition_name, home_team, away_team)
+    if not event:
+        return False
+    ex = expectations or {}
+    pred = {}
+    if isinstance(probs, dict):
+        ph = _gm_calibration_number(probs.get("home")); pdw = _gm_calibration_number(probs.get("draw")); pa = _gm_calibration_number(probs.get("away"))
+        if None not in (ph, pdw, pa):
+            # O restante do app trabalha em percentuais 0..100; o histórico usa 0..1.
+            pred["p_home"] = max(0.0, min(ph / 100.0, 1.0))
+            pred["p_draw"] = max(0.0, min(pdw / 100.0, 1.0))
+            pred["p_away"] = max(0.0, min(pa / 100.0, 1.0))
+    for src_key, prefix in (("Gols", "goals"), ("Escanteios", "corners"), ("Cartões", "cards"), ("Finalizações", "shots"), ("Chutes no alvo", "sot")):
+        item = ex.get(src_key) if isinstance(ex, dict) else None
+        if not isinstance(item, dict):
+            continue
+        for part in ("total", "home", "away"):
+            v = _gm_calibration_number(item.get(part))
+            if v is not None:
+                pred[f"{prefix}_{part}"] = max(v, 0.0)
+    if not pred:
+        return False
+
+    # Evita RPC repetida em cada rerun da mesma tela; o banco também é idempotente.
+    signature = f"{event['match_id']}|{model_build or GM_BUILD}|{round(float(pred.get('goals_total', -1)), 3)}|{round(float(pred.get('p_home', -1)), 4)}"
+    if st.session_state.get("_gm_calibration_last_capture") == signature:
+        return True
+    gm_calibration_rpc("gm_calibration_upsert_prediction", {
+        "p_match_id": event["match_id"],
+        "p_competition": competition_name,
+        "p_league_id": event.get("league_id") or "",
+        "p_kickoff_at": event["kickoff_at"],
+        "p_home_team": home_team,
+        "p_away_team": away_team,
+        "p_home_team_id": event.get("home_team_id") or "",
+        "p_away_team_id": event.get("away_team_id") or "",
+        "p_predictions": pred,
+        "p_samples": _gm_calibration_sample_payload(a, b),
+        "p_model_build": str(model_build or GM_BUILD),
+    })
+    st.session_state["_gm_calibration_last_capture"] = signature
+    return True
+
+
+def _gm_calibration_stat_total(stats, aliases):
+    for alias in aliases:
+        pair = stats.get(alias)
+        if not pair:
+            continue
+        h = _gm_calibration_number(pair.get("home")); a = _gm_calibration_number(pair.get("away"))
+        if h is not None and a is not None:
+            return h, a, h + a
+    return None, None, None
+
+
+def gm_calibration_actuals_from_event(event):
+    """Extrai realizado da mesma API oficial usada pelo motor, sem transformar ausência em zero."""
+    if not isinstance(event, dict):
+        return None
+    status = _gm_api_norm(event.get("match_status"))
+    if status not in {"finished", "ft", "after et", "after pen"}:
+        return None
+    hg = _gm_calibration_number(event.get("match_hometeam_ft_score") or event.get("match_hometeam_score"))
+    ag = _gm_calibration_number(event.get("match_awayteam_ft_score") or event.get("match_awayteam_score"))
+    if hg is None or ag is None:
+        return None
+    stats = _gm_api_stat_map(event.get("statistics"))
+    out = {
+        "final": True,
+        "home_goals": hg,
+        "away_goals": ag,
+        "goals_total": hg + ag,
+        "result": "home" if hg > ag else ("away" if ag > hg else "draw"),
+    }
+    for key, aliases in (
+        ("corners", ("Corners", "Corner Kicks")),
+        ("shots", ("Shots Total", "Goal Attempts", "Total Shots")),
+        ("sot", ("Shots On Goal", "Shots on Goal", "On Target")),
+    ):
+        h, a, total = _gm_calibration_stat_total(stats, aliases)
+        if total is not None:
+            out[f"{key}_home"] = h; out[f"{key}_away"] = a; out[f"{key}_total"] = total
+
+    yh, ya, _ = _gm_calibration_stat_total(stats, ("Yellow Cards",))
+    rh, ra, _ = _gm_calibration_stat_total(stats, ("Red Cards",))
+    if yh is not None and ya is not None:
+        ch = yh + (rh or 0.0); ca = ya + (ra or 0.0)
+        out["cards_home"] = ch; out["cards_away"] = ca; out["cards_total"] = ch + ca
+    elif isinstance(event.get("cards"), list):
+        ch = ca = 0.0
+        for card in event.get("cards") or []:
+            if not isinstance(card, dict):
+                continue
+            ct = _gm_api_norm(card.get("card"))
+            if "yellow" not in ct and "red" not in ct:
+                continue
+            if card.get("home_fault"):
+                ch += 1.0
+            elif card.get("away_fault"):
+                ca += 1.0
+        out["cards_home"] = ch; out["cards_away"] = ca; out["cards_total"] = ch + ca
+    return out
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def gm_calibration_fetch_finished_event(match_id):
+    payload, err = gm_apifootball_request("get_events", match_id=str(match_id), timezone="America/Sao_Paulo")
+    if err:
+        return None
+    return _gm_api_extract_event(payload)
+
+
+def gm_calibration_auto_settle(limit=2, force=False):
+    """Liquida previsões pendentes quando qualquer usuário autenticado usa o app.
+
+    Não exige tarefa em background: se ninguém abrir o aplicativo, os jogos ficam
+    pendentes e são recuperados automaticamente na próxima utilização.
+    """
+    if not st.session_state.get("gm_auth_access_token"):
+        return {"checked": 0, "settled": 0}
+    now_mono = time.monotonic()
+    last = st.session_state.get("_gm_calibration_last_settle_tick")
+    if not force and isinstance(last, (int, float)) and now_mono - float(last) < 1800:
+        return {"checked": 0, "settled": 0}
+    st.session_state["_gm_calibration_last_settle_tick"] = now_mono
+    pending = gm_calibration_rpc("gm_calibration_pending", {"p_limit": max(1, min(int(limit), 30))}) or []
+    if isinstance(pending, dict):
+        pending = [pending]
+    checked = settled = 0
+    for row in pending:
+        if not isinstance(row, dict):
+            continue
+        mid = str(row.get("match_id") or "").strip()
+        if not mid:
+            continue
+        checked += 1
+        ev = gm_calibration_fetch_finished_event(mid)
+        actuals = gm_calibration_actuals_from_event(ev)
+        if not actuals:
+            continue
+        try:
+            gm_calibration_rpc("gm_calibration_settle", {"p_match_id": mid, "p_actuals": actuals})
+            settled += 1
+        except Exception:
+            continue
+    return {"checked": checked, "settled": settled}
+
+
+def _gm_calibration_admin_rows(limit=2500):
+    rows = gm_admin_rpc("gm_admin_calibration_rows", {"p_limit": int(limit)}) or []
+    return [r for r in rows if isinstance(r, dict)]
+
+
+def _gm_calibration_bias_status(n, bias_pct):
+    if n < 30:
+        return "🟠 Amostra em formação"
+    if bias_pct is None:
+        return "⚪ Sem base"
+    ab = abs(float(bias_pct))
+    if ab <= 8:
+        return "🟢 Sem viés relevante"
+    if ab <= 15:
+        return "🟡 Monitorar"
+    return "🔴 Viés consistente"
+
+
+def gm_render_calibration_dashboard():
+    try:
+        profile = gm_auth_get_profile()
+    except Exception:
+        profile = None
+    if (profile or {}).get("role") != "admin":
+        return
+    with st.expander("🧠 Calibração automática — previsão × realizado (admin)", expanded=False):
+        st.caption(
+            "O GM SCORE já atualiza as médias conforme chegam jogos novos. Esta camada guarda a previsão pré-jogo e compara com o realizado. "
+            "Ela mede erro e viés; não muda pesos automaticamente por causa de poucos jogos."
+        )
+        c1, c2 = st.columns(2)
+        if c1.button("🔄 Sincronizar resultados pendentes", use_container_width=True, key="gm_calibration_sync_now"):
+            try:
+                sync = gm_calibration_auto_settle(limit=30, force=True)
+                st.success(f"Sincronização concluída: {sync['settled']} resultado(s) atualizado(s) entre {sync['checked']} verificado(s).")
+            except Exception as exc:
+                st.warning("A estrutura de calibração ainda não está ativa no Supabase ou houve falha transitória.")
+                st.caption(f"Detalhe: {type(exc).__name__}")
+        if c2.button("♻️ Atualizar painel", use_container_width=True, key="gm_calibration_refresh_panel"):
+            st.rerun()
+        try:
+            rows = _gm_calibration_admin_rows()
+        except Exception as exc:
+            st.info("Execute uma única vez o arquivo SQL de calibração no Supabase para ativar este painel.")
+            st.caption(f"Enquanto isso, o motor estatístico atual continua funcionando normalmente. ({type(exc).__name__})")
+            return
+        if not rows:
+            st.info("Nenhuma previsão oficial pré-jogo registrada ainda. O histórico começa a ser construído automaticamente conforme partidas futuras forem analisadas.")
+            return
+        settled_rows = [r for r in rows if isinstance(r.get("actuals"), dict) and r.get("actuals", {}).get("final")]
+        pending_n = len(rows) - len(settled_rows)
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Previsões registradas", len(rows))
+        m2.metric("Jogos conferidos", len(settled_rows))
+        m3.metric("Pendentes", pending_n)
+        if not settled_rows:
+            st.caption("Os indicadores de erro aparecerão quando os primeiros jogos registrados terminarem.")
+            return
+
+        metric_rows = []
+        for key, label in GM_CALIBRATION_MARKETS.items():
+            vals = []
+            for r in settled_rows:
+                pred = r.get("predictions") or {}; act = r.get("actuals") or {}
+                pv = _gm_calibration_number(pred.get(key)); av = _gm_calibration_number(act.get(key))
+                if pv is None or av is None:
+                    continue
+                vals.append((pv, av))
+            if not vals:
+                continue
+            n = len(vals)
+            mae = sum(abs(p-a) for p,a in vals) / n
+            bias = sum(p-a for p,a in vals) / n
+            actual_mean = sum(a for _,a in vals) / n
+            bias_pct = (100.0 * bias / actual_mean) if actual_mean > 1e-9 else None
+            metric_rows.append({
+                "Mercado": label, "N": n, "MAE": round(mae, 2), "Viés médio": round(bias, 2),
+                "Viés %": "—" if bias_pct is None else f"{bias_pct:+.1f}%",
+                "Leitura": _gm_calibration_bias_status(n, bias_pct),
+            })
+        if metric_rows:
+            st.markdown("**Erro por mercado**")
+            st.dataframe(pd.DataFrame(metric_rows), hide_index=True, use_container_width=True)
+
+        briers = []
+        for r in settled_rows:
+            pred = r.get("predictions") or {}; act = r.get("actuals") or {}
+            vals = [_gm_calibration_number(pred.get(k)) for k in ("p_home", "p_draw", "p_away")]
+            result = str(act.get("result") or "")
+            if any(v is None for v in vals) or result not in {"home", "draw", "away"}:
+                continue
+            y = [1.0 if result == x else 0.0 for x in ("home", "draw", "away")]
+            briers.append(sum((float(p)-yy)**2 for p,yy in zip(vals,y)) / 3.0)
+        if briers:
+            st.caption(f"1X2 · Brier multiclasses médio: **{sum(briers)/len(briers):.3f}** em **N={len(briers)}** jogos. Quanto menor, melhor; use a tendência ao longo do tempo, não uma partida isolada.")
+
+        comp_data = {}
+        for r in settled_rows:
+            comp = str(r.get("competition") or "—")
+            d = comp_data.setdefault(comp, {"N": 0, "g": [], "c": [], "k": []})
+            d["N"] += 1
+            pred = r.get("predictions") or {}; act = r.get("actuals") or {}
+            for slot, key in (("g", "goals_total"), ("c", "corners_total"), ("k", "cards_total")):
+                pv = _gm_calibration_number(pred.get(key)); av = _gm_calibration_number(act.get(key))
+                if pv is not None and av is not None:
+                    d[slot].append(pv-av)
+        comp_rows = []
+        for comp, d in sorted(comp_data.items(), key=lambda kv: (-kv[1]["N"], kv[0])):
+            def mb(slot):
+                arr = d[slot]
+                return "—" if not arr else f"{sum(arr)/len(arr):+.2f}"
+            comp_rows.append({"Competição": comp, "N": d["N"], "Viés gols": mb("g"), "Viés esc.": mb("c"), "Viés cartões": mb("k")})
+        st.markdown("**Monitoramento por competição**")
+        st.dataframe(pd.DataFrame(comp_rows), hide_index=True, use_container_width=True)
+        st.caption("Regra operacional: N < 30 continua em formação. Alertas de viés servem para investigação; nenhum peso do modelo é alterado automaticamente sem amostra suficiente.")
+
+
+# Sincronização leve e silenciosa. Em uso normal verifica no máximo 2 pendências
+# a cada 30 minutos por sessão; o administrador pode forçar uma sincronização maior.
+try:
+    gm_calibration_auto_settle(limit=2, force=False)
+except Exception:
+    pass
+
 # As auditorias ficam disponíveis somente ao administrador autenticado.
 gm_render_apifootball_league_audit()
 gm_render_apifootball_stat_audit()
+gm_render_calibration_dashboard()
 
 # A agenda da barra lateral é renderizada no início da interface.
 # Mantemos apenas o botão de suporte também no final da tela principal.
