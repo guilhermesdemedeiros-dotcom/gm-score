@@ -28,13 +28,129 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-11-v11-historical-stat-recovery"
+GM_BUILD = "2026-09-11-v12-maintenance-lock"
 st.set_page_config(
-    page_title="GM SCORE",
+    page_title="GM SCORE • Manutenção",
     page_icon="⚽",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
+
+# ============================================================
+# MODO MANUTENÇÃO GLOBAL
+# Bloqueia a interface inteira para todos os usuários antes de
+# autenticação, pesquisa, agenda, análises ou qualquer outra tela.
+# ============================================================
+GM_MAINTENANCE_MODE = True
+
+if GM_MAINTENANCE_MODE:
+    st.markdown(
+        """
+        <style>
+        [data-testid="stSidebar"],
+        [data-testid="collapsedControl"],
+        [data-testid="stHeader"],
+        [data-testid="stToolbar"],
+        [data-testid="stDecoration"],
+        #MainMenu, footer {
+            display:none !important;
+            visibility:hidden !important;
+        }
+        .stApp {
+            background:
+                radial-gradient(circle at 50% 18%, rgba(24, 170, 86, .14), transparent 34%),
+                linear-gradient(180deg, #07110c 0%, #030806 100%);
+        }
+        .block-container {
+            max-width:760px !important;
+            min-height:100vh;
+            padding:0 1.15rem !important;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+        }
+        .gm-maintenance {
+            width:100%;
+            padding:2.2rem 1.35rem 2rem;
+            border:1px solid rgba(34,211,107,.34);
+            border-radius:22px;
+            background:rgba(5,15,10,.88);
+            box-shadow:0 24px 70px rgba(0,0,0,.42);
+            text-align:center;
+        }
+        .gm-maintenance-logo {
+            font-size:2.5rem;
+            font-weight:950;
+            letter-spacing:-.06em;
+            line-height:1;
+            margin-bottom:.65rem;
+        }
+        .gm-maintenance-gm, .gm-maintenance-score {
+            -webkit-text-stroke:3px #05070a;
+            paint-order:stroke fill;
+            text-shadow:0 3px 10px rgba(0,0,0,.5);
+        }
+        .gm-maintenance-gm { color:#fff; }
+        .gm-maintenance-score { color:#22d36b; }
+        .gm-maintenance-kicker {
+            color:#22d36b;
+            font-size:.78rem;
+            font-weight:850;
+            letter-spacing:.16em;
+            text-transform:uppercase;
+            margin-bottom:1.15rem;
+        }
+        .gm-maintenance h1 {
+            color:#fff;
+            font-size:clamp(1.55rem, 6vw, 2.25rem);
+            line-height:1.12;
+            margin:0 0 .9rem;
+        }
+        .gm-maintenance p {
+            max-width:570px;
+            margin:0 auto;
+            color:rgba(255,255,255,.72);
+            font-size:1rem;
+            line-height:1.6;
+        }
+        .gm-maintenance-status {
+            display:inline-flex;
+            align-items:center;
+            gap:.5rem;
+            margin-top:1.4rem;
+            padding:.58rem .9rem;
+            border-radius:999px;
+            border:1px solid rgba(34,211,107,.25);
+            background:rgba(34,211,107,.08);
+            color:#bff8d2;
+            font-size:.82rem;
+            font-weight:750;
+        }
+        .gm-maintenance-dot {
+            width:8px;
+            height:8px;
+            border-radius:50%;
+            background:#22d36b;
+            box-shadow:0 0 12px rgba(34,211,107,.85);
+        }
+        @media (max-width:640px) {
+            .gm-maintenance { padding:1.8rem 1rem 1.7rem; border-radius:18px; }
+            .gm-maintenance-logo { font-size:2.15rem; }
+        }
+        </style>
+        <div class="gm-maintenance">
+            <div class="gm-maintenance-logo">
+                <span class="gm-maintenance-gm">GM</span><span class="gm-maintenance-score"> SCORE</span>
+            </div>
+            <div class="gm-maintenance-kicker">Manutenção programada</div>
+            <h1>Estamos aprimorando o GM SCORE</h1>
+            <p>O acesso está temporariamente indisponível enquanto realizamos melhorias na plataforma e no nosso sistema de dados. Voltaremos em breve com uma experiência ainda mais completa.</p>
+            <div class="gm-maintenance-status"><span class="gm-maintenance-dot"></span> Sistema temporariamente bloqueado</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.stop()
 
 st.markdown("""
 <div class="gm-brand" style="margin:0 0 1.15rem 0">
