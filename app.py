@@ -28,7 +28,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-12-v25-public-launch-refresh"
+GM_BUILD = "2026-09-12-v26-public-mobile-final"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -1767,43 +1767,42 @@ def _gm_safe_html(value):
 
 
 def gm_render_vip_showcase(compact=False):
-    """Vitrine pública fiel ao que é entregue dentro do VIP, sem números decorativos."""
+    """Vitrine pública compacta e fiel ao que é entregue dentro do VIP."""
     st.markdown("### 🚀 O que você recebe dentro do GM SCORE VIP")
-    st.caption("A vitrine abaixo mostra recursos reais do aplicativo. As estimativas são geradas somente depois que você seleciona uma partida e dependem da cobertura disponível para cada métrica.")
+    st.caption("Recursos reais do aplicativo. As análises são geradas a partir dos dados disponíveis para a partida selecionada.")
 
     st.markdown(
         """
         <style>
-        .gm-vip-hero{position:relative;overflow:hidden;border:1px solid rgba(34,197,94,.38);border-radius:22px;padding:20px;
-          background:radial-gradient(circle at 84% 14%,rgba(74,222,128,.18),transparent 28%),linear-gradient(145deg,rgba(22,128,58,.22),rgba(15,23,42,.94));
-          box-shadow:0 18px 48px rgba(0,0,0,.22);margin:.35rem 0 1rem;color:#f8fafc}
-        .gm-vip-kicker{font-size:.70rem;font-weight:850;letter-spacing:.14em;color:#86efac;text-transform:uppercase}
-        .gm-vip-title{font-size:1.65rem;font-weight:900;margin:.38rem 0 .25rem;letter-spacing:-.025em}
-        .gm-vip-sub{font-size:.87rem;color:#cbd5e1;margin-bottom:1rem;max-width:720px;line-height:1.5}
-        .gm-delivery-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin-top:13px}
-        .gm-delivery{background:rgba(15,23,42,.72);border:1px solid rgba(148,163,184,.20);border-radius:14px;padding:12px}
-        .gm-delivery b{display:block;font-size:.86rem;color:#f8fafc;margin-bottom:4px}.gm-delivery span{font-size:.74rem;color:#94a3b8;line-height:1.35}
-        .gm-trust-row{display:flex;gap:7px;flex-wrap:wrap;margin-top:13px}.gm-chip{display:inline-block;border:1px solid rgba(74,222,128,.30);background:rgba(22,163,74,.12);color:#bbf7d0;border-radius:999px;padding:5px 9px;font-size:.75rem;font-weight:750}
-        .gm-section-card{border:1px solid rgba(148,163,184,.22);border-radius:17px;padding:14px 15px;background:rgba(30,41,59,.18);min-height:100%}
-        .gm-section-card h4{margin:0 0 7px;font-size:.98rem}.gm-section-card p{margin:0;color:inherit;opacity:.78;font-size:.84rem;line-height:1.43}
-        .gm-comp-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:9px}.gm-comp{border:1px solid rgba(148,163,184,.20);border-radius:12px;padding:9px 10px;background:rgba(30,41,59,.14);font-size:.83rem;font-weight:650}
-        .gm-confidence{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:.6rem 0 1rem}.gm-confidence>div{border:1px solid rgba(148,163,184,.20);border-radius:13px;padding:10px 11px;background:rgba(30,41,59,.14);font-size:.78rem;line-height:1.35}.gm-confidence b{display:block;margin-bottom:3px}
-        @media(max-width:700px){.gm-delivery-grid{grid-template-columns:1fr 1fr}.gm-comp-grid{grid-template-columns:1fr}.gm-vip-title{font-size:1.38rem}}
-        @media(max-width:480px){.gm-delivery-grid{grid-template-columns:1fr}.gm-confidence{grid-template-columns:1fr}}
+        .gm-vip-hero{position:relative;overflow:hidden;border:1px solid rgba(34,197,94,.38);border-radius:22px;padding:18px;
+          background:radial-gradient(circle at 84% 14%,rgba(74,222,128,.16),transparent 28%),linear-gradient(145deg,rgba(22,128,58,.20),rgba(15,23,42,.94));
+          box-shadow:0 16px 42px rgba(0,0,0,.20);margin:.35rem 0 .85rem;color:#f8fafc}
+        .gm-vip-kicker{font-size:.68rem;font-weight:850;letter-spacing:.13em;color:#86efac;text-transform:uppercase}
+        .gm-vip-title{font-size:1.48rem;font-weight:900;margin:.34rem 0 .2rem;letter-spacing:-.025em}
+        .gm-vip-sub{font-size:.84rem;color:#cbd5e1;margin-bottom:.75rem;max-width:720px;line-height:1.45}
+        .gm-delivery-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:10px}
+        .gm-delivery{background:rgba(15,23,42,.72);border:1px solid rgba(148,163,184,.20);border-radius:13px;padding:10px}
+        .gm-delivery b{display:block;font-size:.82rem;color:#f8fafc;margin-bottom:3px}.gm-delivery span{font-size:.71rem;color:#94a3b8;line-height:1.3}
+        .gm-trust-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}.gm-chip{display:inline-block;border:1px solid rgba(74,222,128,.30);background:rgba(22,163,74,.12);color:#bbf7d0;border-radius:999px;padding:4px 8px;font-size:.71rem;font-weight:750}
+        .gm-confidence{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin:.55rem 0 .65rem}.gm-confidence>div{border:1px solid rgba(148,163,184,.20);border-radius:12px;padding:9px 10px;background:rgba(30,41,59,.14);font-size:.75rem;line-height:1.3}.gm-confidence b{display:block;margin-bottom:2px}
+        .gm-extra-row{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;margin:.55rem 0 .9rem}.gm-extra{border:1px solid rgba(148,163,184,.20);border-radius:12px;padding:9px 10px;background:rgba(30,41,59,.12);font-size:.76rem;line-height:1.3}.gm-extra b{display:block;margin-bottom:2px}.gm-extra span{opacity:.72;font-size:.70rem}
+        .gm-comp-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin-top:8px}.gm-comp{border:1px solid rgba(148,163,184,.20);border-radius:11px;padding:8px 9px;background:rgba(30,41,59,.14);font-size:.77rem;font-weight:650;line-height:1.25}
+        @media(max-width:700px){.gm-delivery-grid{grid-template-columns:1fr 1fr}.gm-extra-row{grid-template-columns:1fr 1fr}.gm-comp-grid{grid-template-columns:1fr 1fr}.gm-vip-title{font-size:1.30rem}}
+        @media(max-width:420px){.gm-delivery span{display:none}.gm-delivery{padding:9px}.gm-confidence{grid-template-columns:1fr}.gm-confidence>div{padding:8px 10px}.gm-extra span{display:none}.gm-comp{font-size:.73rem;padding:7px 8px}}
         </style>
         <div class="gm-vip-hero">
           <div class="gm-vip-kicker">Painel VIP • análise da partida selecionada</div>
           <div class="gm-vip-title">⚽ Escolha o confronto. O GM SCORE organiza a leitura.</div>
-          <div class="gm-vip-sub">O aplicativo reúne histórico e métricas disponíveis, gera projeções e apresenta cada mercado com o nível de amostra correspondente. Quando os dados não sustentam uma conclusão, isso é informado na própria tela.</div>
+          <div class="gm-vip-sub">Histórico e métricas disponíveis são organizados em projeções e mercados, sempre com o nível de amostra correspondente.</div>
           <div class="gm-delivery-grid">
             <div class="gm-delivery"><b>⚽ Resultado e gols</b><span>1X2, dupla chance, gols por tempo/equipe e linhas suportadas.</span></div>
-            <div class="gm-delivery"><b>🚩 Escanteios</b><span>Partida, 1º/2º tempo e projeções por equipe quando disponíveis.</span></div>
-            <div class="gm-delivery"><b>🟨 Cartões</b><span>Total, por equipe e mercados de ambas receberem cartões.</span></div>
-            <div class="gm-delivery"><b>🥅 Finalizações</b><span>Total, no alvo e por equipe conforme cobertura da fonte.</span></div>
-            <div class="gm-delivery"><b>⭐ Oportunidades</b><span>Destaques somente em mercados habilitados e com amostra consolidada.</span></div>
-            <div class="gm-delivery"><b>📤 Compartilhar em HD</b><span>Arte da análise pronta para compartilhar diretamente pelo celular.</span></div>
+            <div class="gm-delivery"><b>🚩 Escanteios</b><span>Partida, tempos e equipe quando houver cobertura.</span></div>
+            <div class="gm-delivery"><b>🟨 Cartões</b><span>Total, por equipe e mercados de ambas receberem.</span></div>
+            <div class="gm-delivery"><b>🥅 Finalizações</b><span>Total, no alvo e por equipe conforme a fonte.</span></div>
+            <div class="gm-delivery"><b>⭐ Oportunidades</b><span>Destaques somente em mercados habilitados e consolidados.</span></div>
+            <div class="gm-delivery"><b>📤 Compartilhar em HD</b><span>Arte da análise pronta para compartilhar pelo celular.</span></div>
           </div>
-          <div class="gm-trust-row"><span class="gm-chip">Sem garantia de resultado</span><span class="gm-chip">Amostra por métrica</span><span class="gm-chip">Odds justas quando aplicável</span></div>
+          <div class="gm-trust-row"><span class="gm-chip">Estimativas estatísticas</span><span class="gm-chip">Amostra por métrica</span><span class="gm-chip">Odds justas quando aplicável</span></div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1813,36 +1812,28 @@ def gm_render_vip_showcase(compact=False):
     st.markdown(
         """
         <div class="gm-confidence">
-          <div><b>🟢 Conclusivo</b>Amostra consolidada para a métrica analisada.</div>
-          <div><b>🟡 Cautela</b>Amostra ainda curta; a leitura permanece visível com aviso.</div>
-          <div><b>⚪ Inconclusivo</b>Sem base suficiente; o GM SCORE não força uma estimativa.</div>
+          <div><b>🟢 Conclusivo</b>Amostra consolidada.</div>
+          <div><b>🟡 Cautela</b>Amostra curta, exibida com aviso.</div>
+          <div><b>⚪ Inconclusivo</b>Sem base suficiente; nenhuma estimativa é forçada.</div>
+        </div>
+        <div class="gm-extra-row">
+          <div class="gm-extra"><b>📅 Agenda</b><span>Competição, data e confronto.</span></div>
+          <div class="gm-extra"><b>📈 Contexto</b><span>Forma, histórico e métricas.</span></div>
+          <div class="gm-extra"><b>💰 Odds justas</b><span>Quando aplicável ao mercado.</span></div>
+          <div class="gm-extra"><b>📰 Notícias</b><span>Atualizações dentro da conta.</span></div>
         </div>
         """,
         unsafe_allow_html=True,
     )
-    st.caption("As probabilidades são estimativas estatísticas, não promessa de acerto. A disponibilidade de cada mercado varia conforme os dados reais da competição e da partida.")
-
-    st.markdown("#### 📌 Recursos incluídos")
-    st.markdown(
-        """
-        <div class="gm-comp-grid" style="margin-bottom:1rem">
-          <div class="gm-section-card"><h4>📅 Agenda e seleção</h4><p>Escolha a competição, a data e o confronto disponível ou selecione as equipes.</p></div>
-          <div class="gm-section-card"><h4>📈 Contexto da partida</h4><p>Forma, histórico e métricas usadas pelo modelo conforme a cobertura encontrada.</p></div>
-          <div class="gm-section-card"><h4>💰 Odds justas</h4><p>Conversão das probabilidades finais do modelo; comparação de mercado somente quando houver cotação validada.</p></div>
-          <div class="gm-section-card"><h4>📰 Central de notícias</h4><p>Atualizações e comunicados do GM SCORE disponíveis dentro da conta.</p></div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    st.caption("Probabilidades são estimativas estatísticas, não promessa de acerto. Mercados e métricas variam conforme a cobertura real da partida.")
 
     st.markdown("### 🌍 21 competições disponíveis")
-    st.caption("Cobertura atual do GM SCORE. A quantidade de métricas disponíveis pode variar entre competições e partidas.")
+    st.caption("Cobertura atual do GM SCORE; a disponibilidade de métricas pode variar por competição e partida.")
     competition_html = ''.join(f'<div class="gm-comp">{_gm_safe_html(item)}</div>' for item in GM_PUBLIC_COMPETITIONS)
     st.markdown(f'<div class="gm-comp-grid">{competition_html}</div>', unsafe_allow_html=True)
 
     if not compact:
-        st.success("⭐ No VIP, a análise é gerada para a partida realmente selecionada — sem números decorativos na entrega ao cliente.")
-
+        st.caption("⭐ No VIP, cada análise é gerada para a partida selecionada com os dados disponíveis naquele confronto.")
 
 def gm_render_public_intro():
     st.markdown(
@@ -1904,9 +1895,16 @@ def gm_render_public_intro():
     gm_render_payment_plans()
 
     st.markdown("### 🔐 Como liberar seu acesso")
-    st.info(
-        "1. Crie sua conta GM SCORE e confirme o e-mail.  2. Entre na conta e escolha seu plano.  "
-        "3. O pagamento é feito no Mercado Pago.  4. Após a confirmação válida, o VIP é ativado automaticamente."
+    st.markdown(
+        """
+        <div style="border:1px solid rgba(148,163,184,.22);border-radius:16px;padding:14px 16px;background:rgba(30,41,59,.14);line-height:1.55">
+          <div><b>1.</b> Crie sua conta GM SCORE e confirme o e-mail.</div>
+          <div><b>2.</b> Entre na conta e escolha seu plano VIP.</div>
+          <div><b>3.</b> Faça o pagamento pelo Mercado Pago.</div>
+          <div><b>4.</b> Após a confirmação válida, o VIP é ativado automaticamente.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
 
