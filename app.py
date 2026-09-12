@@ -27,7 +27,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-11-stat-audit-v3-data-recovery"
+GM_BUILD = "2026-09-11-data-recovery-v4-global-coverage"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -3858,14 +3858,21 @@ def _gm_sofascore_stat_map(name):
     key = clean_col(name or "")
     mapping = {
         "total_shots": "Finalizações",
+        "shots": "Finalizações",
+        "shot_attempts": "Finalizações",
         "shots_on_target": "Chutes no alvo",
+        "shots_on_goal": "Chutes no alvo",
         "corner_kicks": "Escanteios",
         "corners": "Escanteios",
         "yellow_cards": "Amarelos",
+        "yellow_card": "Amarelos",
         "red_cards": "Vermelhos",
+        "red_card": "Vermelhos",
         "fouls": "Faltas",
+        "fouls_committed": "Faltas",
         "offsides": "Impedimentos",
         "ball_possession": "Posse (%)",
+        "possession": "Posse (%)",
     }
     return mapping.get(key)
 
@@ -3900,38 +3907,105 @@ def _gm_extract_sofascore_event_stats(payload):
     return out
 
 
+def _gm_recovery_team_key(name):
+    """Normalização tolerante usada SOMENTE para resolver IDs estatísticos.
+
+    Não altera o nome exibido e não é usada para odds. Remove siglas estaduais
+    brasileiras (ex.: Athletico-PR) e pequenas variações ortográficas que
+    impediam a recuperação de equipes como Athletico Paranaense.
+    """
+    key = _odds_team_key(name)
+    toks = key.split()
+    if len(toks) >= 2 and re.fullmatch(r"[a-z]{2}", toks[-1] or ""):
+        toks = toks[:-1]
+    key = " ".join(toks)
+    key = re.sub(r"\bathletico\b", "atletico", key)
+    key = re.sub(r"\bparanaense\b", "paranaense", key)
+    return re.sub(r"\s+", " ", key).strip()
+
+
+def _gm_recovery_team_similarity(a, b):
+    aa, bb = _gm_recovery_team_key(a), _gm_recovery_team_key(b)
+    if not aa or not bb:
+        return 0.0
+    if aa == bb:
+        return 1.0
+    if aa in bb or bb in aa:
+        return 0.94
+    sa, sb = set(aa.split()), set(bb.split())
+    if not sa or not sb:
+        return 0.0
+    inter = len(sa & sb)
+    # Dá mais peso quando todos os tokens do nome curto estão contidos no longo.
+    contain = inter / max(min(len(sa), len(sb)), 1)
+    jacc = inter / max(len(sa | sb), 1)
+    return max(jacc, contain * 0.92)
+
+
+def _gm_team_search_queries(team):
+    raw = str(team or "").strip()
+    if not raw:
+        return []
+    candidates = [raw]
+    # Remove somente sufixos estaduais explícitos: Clube-PR, Clube SP etc.
+    stripped = re.sub(r"\s*[-/]?\s*[A-Z]{2}$", "", raw).strip()
+    if stripped and stripped.lower() != raw.lower():
+        candidates.append(stripped)
+    key = _gm_recovery_team_key(raw)
+    if key:
+        candidates.append(key)
+    out = []
+    seen = set()
+    for q in candidates:
+        k = clean_col(q)
+        if q and k not in seen:
+            seen.add(k); out.append(q)
+    return out
+
+
 @st.cache_data(ttl=21600, show_spinner=False)
 def _gm_sofascore_team_search_id(team):
-    """Resolve ID de equipe apenas como fallback quando o evento-alvo não trouxe IDs."""
-    q = quote(str(team or "").strip())
-    if not q:
-        return None
-    urls = [
-        f"https://api.sofascore.com/api/v1/search/all?q={q}",
-        f"https://www.sofascore.com/api/v1/search/all?q={q}",
-    ]
-    for url in urls:
-        try:
-            r = requests.get(url, headers=HEADERS, timeout=10)
-            if r.status_code != 200:
+    """Resolve o ID SofaScore com tolerância a nomes locais/abreviados.
+
+    A v3 usava a mesma similaridade rígida de odds. Isso falhava, por exemplo,
+    em ``Athletico-PR`` x ``Athletico Paranaense`` e fazia TODA a cobertura do
+    par cair para zero. A busca v4 tenta variantes seguras e valida futebol.
+    """
+    best_global = None
+    for query in _gm_team_search_queries(team):
+        q = quote(query)
+        urls = [
+            f"https://api.sofascore.com/api/v1/search/all?q={q}",
+            f"https://www.sofascore.com/api/v1/search/all?q={q}",
+        ]
+        for url in urls:
+            try:
+                r = requests.get(url, headers=HEADERS, timeout=10)
+                if r.status_code != 200:
+                    continue
+                data = r.json()
+                for item in data.get("results", []) or []:
+                    entity = item.get("entity") if isinstance(item, dict) else None
+                    if not isinstance(entity, dict):
+                        continue
+                    sport = entity.get("sport") or {}
+                    sport_slug = str(sport.get("slug") or "").lower() if isinstance(sport, dict) else ""
+                    etype = str(entity.get("type") or item.get("type") or "").lower()
+                    if sport_slug and sport_slug != "football":
+                        continue
+                    if etype and etype not in ("team", "club"):
+                        continue
+                    name = str(entity.get("name") or "")
+                    tid = entity.get("id")
+                    sim = _gm_recovery_team_similarity(team, name)
+                    if tid and sim >= 0.72 and (best_global is None or sim > best_global[0]):
+                        best_global = (sim, tid, name)
+                if best_global and best_global[0] >= 0.94:
+                    return {"id": best_global[1], "name": best_global[2], "similarity": best_global[0]}
+            except Exception:
                 continue
-            data = r.json()
-            best = None
-            for item in data.get("results", []) or []:
-                entity = item.get("entity") if isinstance(item, dict) else None
-                if not isinstance(entity, dict):
-                    continue
-                if str(entity.get("type") or "").lower() not in ("team", ""):
-                    continue
-                name = str(entity.get("name") or "")
-                tid = entity.get("id")
-                sim = _team_similarity(team, name)
-                if tid and sim >= 0.78 and (best is None or sim > best[0]):
-                    best = (sim, tid, name)
-            if best:
-                return {"id": best[1], "name": best[2]}
-        except Exception:
-            continue
+    if best_global:
+        return {"id": best_global[1], "name": best_global[2], "similarity": best_global[0]}
     return None
 
 
@@ -4161,9 +4235,9 @@ def contextual_analysis_rows(team_a, team_b, competition_name, competition_df, r
         if not bid:
             found = _gm_sofascore_team_search_id(team_b); bid = (found or {}).get("id")
         if aid:
-            recovery_a = load_sofascore_recent_profile(aid, team_a, min(max(int(recent_games), 6), 10))
+            recovery_a = load_sofascore_recent_profile(aid, team_a, min(max(int(recent_games), 8), 12))
         if bid:
-            recovery_b = load_sofascore_recent_profile(bid, team_b, min(max(int(recent_games), 6), 10))
+            recovery_b = load_sofascore_recent_profile(bid, team_b, min(max(int(recent_games), 8), 12))
 
     def build(base, prof, recovery):
         out = dict(base)
@@ -4244,6 +4318,7 @@ def contextual_analysis_rows(team_a, team_b, competition_name, competition_df, r
         "priors": priors,
         "data_recovery_home": recovery_a,
         "data_recovery_away": recovery_b,
+        "data_recovery_version": "v4-global-coverage",
     }
     return a, b, ctx
 
@@ -5293,7 +5368,7 @@ def render_core_markets_dashboard(a, b, team_a, team_b, df, probs=None, sample_g
     st.caption("Os campos principais aparecem sempre. Quando a base não sustenta um cálculo, o mercado é marcado como inconclusivo.")
     recovery_active = bool(a.get("_gm_recovery_used", False) or b.get("_gm_recovery_used", False))
     if recovery_active:
-        st.caption("🔎 Recuperação de dados ativa: o GM SCORE complementou mercados com histórico recente público quando a base principal estava incompleta. Cada mercado mantém sua própria amostra; nenhum número é criado para preencher lacunas.")
+        st.caption("🔎 Recuperação de dados ativa: o GM SCORE cruzou histórico recente e cobertura específica por mercado. A confiança é calculada separadamente para gols, escanteios, cartões e finalizações; nenhum número é criado para preencher lacunas.")
 
     goal_sample = _gm_pair_metric_sample(a, b, ["Gols pró", "Gols contra"], sample_games)
     corner_sample = _gm_pair_metric_sample(a, b, ["Escanteios"], sample_games)
