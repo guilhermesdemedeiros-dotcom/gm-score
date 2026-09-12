@@ -28,7 +28,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-12-v16-league-team-audit"
+GM_BUILD = "2026-09-12-v17-league-team-audit-fix"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -8839,13 +8839,13 @@ GM_APIFOOTBALL_LEAGUE_TARGETS = {
     "Turquia - Süper Lig": {"country": ["turkey", "turkiye"], "league": ["super lig", "süper lig"]},
     "Brasil - Série A": {"country": ["brazil"], "league": ["serie a"]},
     "Brasil - Série B": {"country": ["brazil"], "league": ["serie b"]},
-    "Arábia Saudita - Saudi Pro League": {"country": ["saudi arabia"], "league": ["pro league", "professional league"]},
+    "Arábia Saudita - Saudi Pro League": {"country": ["saudi arabia", "saudi arabia kingdom"], "league": ["saudi pro league", "pro league", "professional league"]},
     "Estados Unidos - MLS": {"country": ["usa", "united states"], "league": ["mls", "major league soccer"]},
-    "Argentina - Liga Profesional": {"country": ["argentina"], "league": ["liga profesional", "primera division"]},
+    "Argentina - Liga Profesional": {"country": ["argentina"], "league": ["liga profesional", "liga profesional argentina", "primera division", "primera división"]},
     "México - Liga MX": {"country": ["mexico"], "league": ["liga mx"]},
     "Colômbia - Primera A": {"country": ["colombia"], "league": ["primera a", "primera division"]},
-    "CONMEBOL Libertadores": {"country": ["south america", "conmebol"], "league": ["libertadores"]},
-    "CONMEBOL Sul-Americana": {"country": ["south america", "conmebol"], "league": ["sudamericana", "sul-americana"]},
+    "CONMEBOL Libertadores": {"country": ["south america", "conmebol", "world"], "league": ["copa libertadores", "libertadores"]},
+    "CONMEBOL Sul-Americana": {"country": ["south america", "conmebol", "world"], "league": ["copa sudamericana", "sudamericana", "sul-americana"]},
     "UEFA Champions League": {"country": ["europe", "eurocups"], "league": ["champions league"]},
     "UEFA Europa League": {"country": ["europe", "eurocups"], "league": ["europa league"]},
     "UEFA Conference League": {"country": ["europe", "eurocups"], "league": ["conference league"]},
@@ -8888,25 +8888,68 @@ def gm_apifootball_league_teams(league_id):
     payload, err = gm_apifootball_request("get_teams", league_id=str(league_id))
     return (payload if isinstance(payload, list) else []), err
 
+def _gm_league_name_score(league_name, aliases):
+    league = _gm_api_norm(league_name)
+    best = 0.0
+    for raw in aliases or []:
+        alias = _gm_api_norm(raw)
+        if not alias:
+            continue
+        if league == alias:
+            best = max(best, 100.0)
+        elif alias in league:
+            # Evita falsos positivos graves como "primera division" -> "primera d".
+            best = max(best, 72.0 - max(0, len(league.split()) - len(alias.split())) * 2.0)
+        elif league in alias and len(league) >= 8:
+            best = max(best, 58.0)
+    return best
+
+
+def _gm_country_score(country_name, aliases):
+    country = _gm_api_norm(country_name)
+    vals = [_gm_api_norm(x) for x in (aliases or []) if _gm_api_norm(x)]
+    if not vals:
+        return 0.0
+    if any(country == x for x in vals):
+        return 20.0
+    if any(x in country or country in x for x in vals if len(x) >= 4 and len(country) >= 4):
+        return 10.0
+    return 0.0
+
+
 def _gm_match_api_league(leagues, countries, names):
-    country_tokens = [_gm_api_norm(x) for x in countries]
-    name_tokens = [_gm_api_norm(x) for x in names]
+    """Resolve uma liga sem aceitar correspondência fraca por abreviação.
+
+    Competições continentais podem vir categorizadas como World/Europe/South
+    America; por isso o nome oficial pesa mais que a categoria do país.
+    """
     candidates = []
     for item in leagues or []:
-        country = _gm_api_norm(item.get("country_name"))
-        league = _gm_api_norm(item.get("league_name"))
-        country_ok = (not country_tokens) or any(t == country or t in country or country in t for t in country_tokens if t)
-        name_ok = any(t == league or t in league or league in t for t in name_tokens if t)
-        if country_ok and name_ok:
-            score = 0
-            if any(t == country for t in country_tokens): score += 3
-            if any(t == league for t in name_tokens): score += 5
-            score -= abs(len(league) - min([len(t) for t in name_tokens] or [len(league)])) / 100.0
-            candidates.append((score, item))
+        nscore = _gm_league_name_score(item.get("league_name"), names)
+        if nscore < 58:
+            continue
+        cscore = _gm_country_score(item.get("country_name"), countries)
+        candidates.append((nscore + cscore, item))
     if not candidates:
         return None
     candidates.sort(key=lambda x: x[0], reverse=True)
+    # Um nome apenas parcialmente parecido e sem país compatível não é seguro.
+    if candidates[0][0] < 72:
+        return None
     return candidates[0][1]
+
+
+def _gm_api_league_candidates(leagues, countries, names, limit=12):
+    """Lista candidatos plausíveis; a auditoria usa os elencos para desempatar."""
+    ranked = []
+    for item in leagues or []:
+        nscore = _gm_league_name_score(item.get("league_name"), names)
+        if nscore < 58:
+            continue
+        cscore = _gm_country_score(item.get("country_name"), countries)
+        ranked.append((nscore + cscore, item))
+    ranked.sort(key=lambda x: x[0], reverse=True)
+    return [item for _, item in ranked[:max(1, int(limit))]]
 
 def _gm_team_name_match(a, b):
     aa, bb = _gm_api_norm(a), _gm_api_norm(b)
@@ -8943,15 +8986,30 @@ def gm_render_apifootball_league_audit():
             found_ids = set()
             for comp in COMPETITIONS.keys():
                 target = GM_APIFOOTBALL_LEAGUE_TARGETS.get(comp, {})
-                hit = _gm_match_api_league(leagues, target.get("country", []), target.get("league", []))
-                if not hit:
+                expected = CURRENT_TEAM_ROSTERS.get(comp) or []
+                candidate_hits = _gm_api_league_candidates(leagues, target.get("country", []), target.get("league", []))
+                evaluated = []
+                for cand in candidate_hits:
+                    cand_lid = str(cand.get("league_id") or "")
+                    cand_teams, cand_err = gm_apifootball_league_teams(cand_lid) if cand_lid else ([], "missing_id")
+                    cand_names = [str(x.get("team_name") or "").strip() for x in cand_teams if str(x.get("team_name") or "").strip()]
+                    matched = sum(1 for name in expected if any(_gm_team_name_match(name, api) for api in cand_names)) if expected else 0
+                    roster_ratio = matched / max(len(expected), 1) if expected else 0.0
+                    base_score = _gm_league_name_score(cand.get("league_name"), target.get("league", [])) + _gm_country_score(cand.get("country_name"), target.get("country", []))
+                    evaluated.append((roster_ratio, matched, base_score, cand, cand_teams, cand_err, cand_names))
+                if not evaluated:
                     rows.append({"GM SCORE": comp, "Status": "❌ Não localizada", "Liga API": "—", "ID": "—", "Equipes API": 0, "Esperado": MIN_TEAMS.get(comp, "—"), "Equipes conferidas": "—"})
+                    continue
+                # Elenco é o desempate principal quando existe cadastro oficial no GM SCORE.
+                evaluated.sort(key=lambda x: ((x[0] if expected else 0), x[2], x[1]), reverse=True)
+                roster_ratio, matched_count, _, hit, teams, terr, api_names = evaluated[0]
+                # Com elenco cadastrado, rejeita liga homônima claramente errada.
+                if expected and roster_ratio < 0.30:
+                    rows.append({"GM SCORE": comp, "Status": "❌ Não localizada com segurança", "Liga API": hit.get("league_name") or "—", "ID": str(hit.get("league_id") or "—"), "Equipes API": len(api_names), "Esperado": MIN_TEAMS.get(comp, "—"), "Equipes conferidas": f"apenas {matched_count}/{len(expected)} compatíveis"})
+                    team_details.append((comp, str(hit.get("league_id") or ""), api_names, expected, list(expected)))
                     continue
                 lid = str(hit.get("league_id") or "")
                 found_ids.add(lid)
-                teams, terr = gm_apifootball_league_teams(lid)
-                api_names = [str(x.get("team_name") or "").strip() for x in teams if str(x.get("team_name") or "").strip()]
-                expected = CURRENT_TEAM_ROSTERS.get(comp) or []
                 missing = []
                 if expected:
                     for name in expected:
