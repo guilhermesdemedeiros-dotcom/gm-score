@@ -28,7 +28,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-11-v10-fallback-series-fix"
+GM_BUILD = "2026-09-11-v11-historical-stat-recovery"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -4812,6 +4812,105 @@ def _gm_apply_competition_fallback(row, competition_df):
     return pd.Series(out)
 
 
+
+# v11 — recuperação histórica estatística para ligas Football-Data.
+# A temporada recém-iniciada pode ter só 1–3 jogos; nesses casos, depender apenas
+# do CSV vigente fazia clubes com histórico abundante aparecerem como Inconclusivo.
+# Esta camada procura as últimas partidas reais do clube também nas temporadas
+# anteriores e, quando aplicável, na segunda divisão do mesmo país (promovidos).
+_GM_FD_RECOVERY_CODES = {
+    "Inglaterra - Premier League": ["E0", "E1"],
+    "Espanha - La Liga": ["SP1", "SP2"],
+    "Itália - Serie A": ["I1", "I2"],
+    "Alemanha - Bundesliga": ["D1", "D2"],
+    "França - Ligue 1": ["F1", "F2"],
+    "Portugal - Liga Portugal": ["P1"],
+    "Holanda - Eredivisie": ["N1"],
+    "Escócia - Premiership": ["SC0", "SC1"],
+    "Turquia - Süper Lig": ["T1"],
+}
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def load_fd_historical_team_profile(competition_name, team_name, recent_games=12):
+    codes = _GM_FD_RECOVERY_CODES.get(competition_name) or []
+    if not codes:
+        return None
+    current_year = current_season_year("europe")
+    target = max(8, min(int(recent_games or 12), 18))
+    candidates = []
+    # Atual + 3 temporadas anteriores: suficiente para promovidos/rebaixados sem
+    # misturar histórico muito antigo quando já há amostra recente disponível.
+    for year in range(current_year, current_year - 4, -1):
+        for code in codes:
+            try:
+                df = load_football_data(code, year).copy()
+            except Exception:
+                continue
+            if df is None or df.empty:
+                continue
+            for idx, g in df.iterrows():
+                home, away = str(g.get("HomeTeam") or ""), str(g.get("AwayTeam") or "")
+                sh = _gm_recovery_team_similarity(team_name, home)
+                sa = _gm_recovery_team_similarity(team_name, away)
+                if max(sh, sa) < 0.78:
+                    continue
+                side = "home" if sh >= sa else "away"
+                dt = pd.to_datetime(g.get("Date"), dayfirst=True, errors="coerce") if "Date" in df.columns else pd.NaT
+                candidates.append((dt, year, code, side, g.to_dict()))
+    if not candidates:
+        return None
+
+    # Remove duplicatas entre arquivos/rotas e usa as partidas mais recentes.
+    candidates.sort(key=lambda x: (pd.Timestamp.min if pd.isna(x[0]) else x[0]), reverse=True)
+    seen, chosen = set(), []
+    for dt, year, code, side, g in candidates:
+        home, away = str(g.get("HomeTeam") or ""), str(g.get("AwayTeam") or "")
+        dkey = "" if pd.isna(dt) else str(pd.Timestamp(dt).date())
+        key = (dkey, clean_col(home), clean_col(away), g.get("FTHG"), g.get("FTAG"))
+        if key in seen:
+            continue
+        seen.add(key); chosen.append((dt, year, code, side, g))
+        if len(chosen) >= target:
+            break
+
+    acc = empty_team(str(team_name))
+    for dt, year, code, side, g in chosen:
+        if side == "home":
+            gf, ga = to_num(g.get("FTHG")), to_num(g.get("FTAG"))
+            own_idx = 0
+        else:
+            gf, ga = to_num(g.get("FTAG")), to_num(g.get("FTHG"))
+            own_idx = 1
+        if gf is None or ga is None:
+            continue
+        acc["Jogos"] += 1; acc["Gols pró"] += gf; acc["Gols contra"] += ga
+        for metric, (hc, ac) in FD_STATS.items():
+            col = hc if own_idx == 0 else ac
+            if col in g:
+                add_metric(acc, metric, g.get(col))
+        # Volume cedido ao adversário para projeção ataque × defesa.
+        if own_idx == 0:
+            add_metric(acc, "Finalizações contra", g.get("AS"))
+            add_metric(acc, "Chutes no alvo contra", g.get("AST"))
+        else:
+            add_metric(acc, "Finalizações contra", g.get("HS"))
+            add_metric(acc, "Chutes no alvo contra", g.get("HST"))
+
+    if acc.get("Jogos", 0) <= 0:
+        return None
+    outdf = finish_averages({str(team_name): acc})
+    if outdf.empty:
+        return None
+    row = outdf.iloc[0].to_dict()
+    row["_n_Gols pró"] = int(acc["Jogos"]); row["_n_Gols contra"] = int(acc["Jogos"])
+    coverage = {m: int(row.get(f"_n_{m}", 0) or 0) for m in (
+        "Escanteios", "Amarelos", "Vermelhos", "Faltas", "Finalizações", "Chutes no alvo",
+        "Finalizações contra", "Chutes no alvo contra")}
+    return {
+        "row": row, "games": int(acc["Jogos"]), "detailed_games": int(acc["Jogos"]),
+        "coverage": coverage, "source": "Football-Data · histórico multitemporada",
+    }
+
 def contextual_analysis_rows(team_a, team_b, competition_name, competition_df, recent_games=10):
     """Recupera contexto adicional apenas onde a base principal é curta/incompleta.
 
@@ -4849,7 +4948,7 @@ def contextual_analysis_rows(team_a, team_b, competition_name, competition_df, r
     # Recuperação detalhada é acionada somente quando realmente falta cobertura.
     # Primeiro tentamos obter os IDs pelo evento exato; a busca por nome é fallback.
     recovery_a = recovery_b = None
-    sofa_a = sofa_b = espn_a = espn_b = None
+    sofa_a = sofa_b = espn_a = espn_b = fd_a = fd_b = None
     if detailed_gap or low_results:
         event = find_sofascore_event(team_a, team_b, search_days=7)
         aid = (event or {}).get("home_id")
@@ -4870,8 +4969,14 @@ def contextual_analysis_rows(team_a, team_b, competition_name, competition_df, r
             espn_a = load_espn_recent_profile(league_slug, team_a, min(max(int(recent_games), 12), 18))
             espn_b = load_espn_recent_profile(league_slug, team_b, min(max(int(recent_games), 12), 18))
 
-        recovery_a = _gm_merge_recovery_profiles(sofa_a, espn_a)
-        recovery_b = _gm_merge_recovery_profiles(sofa_b, espn_b)
+        # v11: terceira camada confiável para Europa. Ela é especialmente importante
+        # no começo da temporada e para clubes recém-promovidos, pois recupera
+        # estatísticas reais das temporadas/divisões anteriores.
+        fd_a = load_fd_historical_team_profile(competition_name, team_a, min(max(int(recent_games), 12), 18))
+        fd_b = load_fd_historical_team_profile(competition_name, team_b, min(max(int(recent_games), 12), 18))
+
+        recovery_a = _gm_merge_recovery_profiles(sofa_a, espn_a, fd_a)
+        recovery_b = _gm_merge_recovery_profiles(sofa_b, espn_b, fd_b)
 
     def build(base, prof, recovery):
         out = dict(base)
@@ -4960,10 +5065,10 @@ def contextual_analysis_rows(team_a, team_b, competition_name, competition_df, r
         "priors": priors,
         "data_recovery_home": recovery_a,
         "data_recovery_away": recovery_b,
-        "data_recovery_version": "v9-coverage-fallback",
+        "data_recovery_version": "v11-historical-stat-recovery",
         "data_recovery_debug": {
-            "home": {"merged": _gm_recovery_diagnostic(recovery_a), "sofascore": _gm_recovery_diagnostic(sofa_a), "espn": _gm_recovery_diagnostic(espn_a)},
-            "away": {"merged": _gm_recovery_diagnostic(recovery_b), "sofascore": _gm_recovery_diagnostic(sofa_b), "espn": _gm_recovery_diagnostic(espn_b)},
+            "home": {"merged": _gm_recovery_diagnostic(recovery_a), "sofascore": _gm_recovery_diagnostic(sofa_a), "espn": _gm_recovery_diagnostic(espn_a), "football_data": _gm_recovery_diagnostic(fd_a)},
+            "away": {"merged": _gm_recovery_diagnostic(recovery_b), "sofascore": _gm_recovery_diagnostic(sofa_b), "espn": _gm_recovery_diagnostic(espn_b), "football_data": _gm_recovery_diagnostic(fd_b)},
         },
     }
     return a, b, ctx
@@ -8138,7 +8243,7 @@ def render_analysis():
                 st.markdown(f"**{_team_label}**")
                 _side = _dbg.get(_side_key) or {}
                 _rows = []
-                for _src_key, _src_label in (("sofascore", "SofaScore"), ("espn", "ESPN"), ("merged", "Base recuperada")):
+                for _src_key, _src_label in (("sofascore", "SofaScore"), ("espn", "ESPN"), ("football_data", "Football-Data histórico"), ("merged", "Base recuperada")):
                     _d = _side.get(_src_key) or {}
                     _cov = _d.get("coverage") or {}
                     _rows.append({
