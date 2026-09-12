@@ -28,7 +28,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-12-v15-apifootball-production"
+GM_BUILD = "2026-09-12-v16-league-team-audit"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -8818,6 +8818,186 @@ def render_analysis():
             rows.append({"Dado":f"{metric_emojis.get(metric,'📌')} {metric}",team_a:"N/D" if pd.isna(av) else round(float(av),2),team_b:"N/D" if pd.isna(bv) else round(float(bv),2)})
         if rows: st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
 
+
+
+# ============================================================
+# AUDITORIA APIfootball — LIGAS + EQUIPES (ADMIN)
+# ============================================================
+# Não altera as competições do cliente automaticamente. Serve para confirmar,
+# com a chave/plano realmente ativos no Streamlit, quais ligas existem e quais
+# equipes a API associa a cada uma delas. IDs oficiais ficam prontos para a
+# integração estatística sem depender apenas de comparação por nome.
+GM_APIFOOTBALL_LEAGUE_TARGETS = {
+    "Inglaterra - Premier League": {"country": ["england"], "league": ["premier league"]},
+    "Espanha - La Liga": {"country": ["spain"], "league": ["la liga"]},
+    "Itália - Serie A": {"country": ["italy"], "league": ["serie a"]},
+    "Alemanha - Bundesliga": {"country": ["germany"], "league": ["bundesliga"]},
+    "França - Ligue 1": {"country": ["france"], "league": ["ligue 1"]},
+    "Portugal - Liga Portugal": {"country": ["portugal"], "league": ["primeira liga", "liga portugal"]},
+    "Holanda - Eredivisie": {"country": ["netherlands"], "league": ["eredivisie"]},
+    "Escócia - Premiership": {"country": ["scotland"], "league": ["premiership"]},
+    "Turquia - Süper Lig": {"country": ["turkey", "turkiye"], "league": ["super lig", "süper lig"]},
+    "Brasil - Série A": {"country": ["brazil"], "league": ["serie a"]},
+    "Brasil - Série B": {"country": ["brazil"], "league": ["serie b"]},
+    "Arábia Saudita - Saudi Pro League": {"country": ["saudi arabia"], "league": ["pro league", "professional league"]},
+    "Estados Unidos - MLS": {"country": ["usa", "united states"], "league": ["mls", "major league soccer"]},
+    "Argentina - Liga Profesional": {"country": ["argentina"], "league": ["liga profesional", "primera division"]},
+    "México - Liga MX": {"country": ["mexico"], "league": ["liga mx"]},
+    "Colômbia - Primera A": {"country": ["colombia"], "league": ["primera a", "primera division"]},
+    "CONMEBOL Libertadores": {"country": ["south america", "conmebol"], "league": ["libertadores"]},
+    "CONMEBOL Sul-Americana": {"country": ["south america", "conmebol"], "league": ["sudamericana", "sul-americana"]},
+    "UEFA Champions League": {"country": ["europe", "eurocups"], "league": ["champions league"]},
+    "UEFA Europa League": {"country": ["europe", "eurocups"], "league": ["europa league"]},
+    "UEFA Conference League": {"country": ["europe", "eurocups"], "league": ["conference league"]},
+}
+
+GM_APIFOOTBALL_USEFUL_CANDIDATES = [
+    ("Inglaterra - Championship", ["england"], ["championship"]),
+    ("Alemanha - 2. Bundesliga", ["germany"], ["2. bundesliga", "2 bundesliga"]),
+    ("Espanha - Segunda División", ["spain"], ["segunda division", "segunda división"]),
+    ("Itália - Serie B", ["italy"], ["serie b"]),
+    ("França - Ligue 2", ["france"], ["ligue 2"]),
+    ("Bélgica - Pro League", ["belgium"], ["pro league", "first division a"]),
+    ("Áustria - Bundesliga", ["austria"], ["bundesliga"]),
+    ("Dinamarca - Superliga", ["denmark"], ["superliga"]),
+    ("Suíça - Super League", ["switzerland"], ["super league"]),
+    ("Grécia - Super League", ["greece"], ["super league"]),
+    ("Brasil - Copa do Brasil", ["brazil"], ["copa do brasil"]),
+    ("Chile - Primera División", ["chile"], ["primera division", "primera división"]),
+    ("Uruguai - Primera División", ["uruguay"], ["primera division", "primera división"]),
+    ("Paraguai - División Profesional", ["paraguay"], ["division profesional", "división profesional"]),
+    ("Equador - LigaPro", ["ecuador"], ["liga pro", "ligapro"]),
+    ("Japão - J1 League", ["japan"], ["j1 league", "j-league"]),
+    ("Coreia do Sul - K League 1", ["korea republic", "south korea"], ["k league 1"]),
+    ("Austrália - A-League", ["australia"], ["a-league", "a league"]),
+]
+
+def _gm_api_norm(value):
+    txt = unicodedata.normalize("NFKD", str(value or ""))
+    txt = "".join(ch for ch in txt if not unicodedata.combining(ch)).lower()
+    txt = re.sub(r"[^a-z0-9]+", " ", txt).strip()
+    return re.sub(r"\s+", " ", txt)
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def gm_apifootball_all_leagues():
+    payload, err = gm_apifootball_request("get_leagues")
+    return (payload if isinstance(payload, list) else []), err
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def gm_apifootball_league_teams(league_id):
+    payload, err = gm_apifootball_request("get_teams", league_id=str(league_id))
+    return (payload if isinstance(payload, list) else []), err
+
+def _gm_match_api_league(leagues, countries, names):
+    country_tokens = [_gm_api_norm(x) for x in countries]
+    name_tokens = [_gm_api_norm(x) for x in names]
+    candidates = []
+    for item in leagues or []:
+        country = _gm_api_norm(item.get("country_name"))
+        league = _gm_api_norm(item.get("league_name"))
+        country_ok = (not country_tokens) or any(t == country or t in country or country in t for t in country_tokens if t)
+        name_ok = any(t == league or t in league or league in t for t in name_tokens if t)
+        if country_ok and name_ok:
+            score = 0
+            if any(t == country for t in country_tokens): score += 3
+            if any(t == league for t in name_tokens): score += 5
+            score -= abs(len(league) - min([len(t) for t in name_tokens] or [len(league)])) / 100.0
+            candidates.append((score, item))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    return candidates[0][1]
+
+def _gm_team_name_match(a, b):
+    aa, bb = _gm_api_norm(a), _gm_api_norm(b)
+    stop = {"fc", "cf", "sc", "ac", "ec", "club", "clube", "de", "do", "da", "the"}
+    ta = [x for x in aa.split() if x not in stop]
+    tb = [x for x in bb.split() if x not in stop]
+    aa2, bb2 = " ".join(ta), " ".join(tb)
+    if aa2 == bb2: return True
+    if aa2 and bb2 and min(len(aa2), len(bb2)) >= 5 and (aa2 in bb2 or bb2 in aa2): return True
+    sa, sb = set(ta), set(tb)
+    return bool(sa and sb and len(sa & sb) / max(len(sa | sb), 1) >= 0.72)
+
+def gm_render_apifootball_league_audit():
+    try:
+        profile = gm_auth_get_profile()
+    except Exception:
+        profile = None
+    if (profile or {}).get("role") != "admin":
+        return
+
+    with st.expander("🌍 Auditoria APIfootball — ligas e equipes (admin)", expanded=False):
+        st.caption("Consulta a cobertura disponível para a chave/plano ativos. Não altera ligas nem equipes automaticamente e nunca exibe a API key.")
+        if not st.button("🔎 Verificar todas as ligas e equipes", key="gm_run_full_api_league_audit", use_container_width=True):
+            return
+        with st.spinner("Conferindo as 21 competições e as equipes na APIfootball..."):
+            leagues, err = gm_apifootball_all_leagues()
+            if err or not leagues:
+                st.error("A APIfootball não retornou a lista de competições disponível para esta chave.")
+                st.caption(f"Diagnóstico: {err or 'lista vazia'}")
+                return
+
+            rows = []
+            team_details = []
+            found_ids = set()
+            for comp in COMPETITIONS.keys():
+                target = GM_APIFOOTBALL_LEAGUE_TARGETS.get(comp, {})
+                hit = _gm_match_api_league(leagues, target.get("country", []), target.get("league", []))
+                if not hit:
+                    rows.append({"GM SCORE": comp, "Status": "❌ Não localizada", "Liga API": "—", "ID": "—", "Equipes API": 0, "Esperado": MIN_TEAMS.get(comp, "—"), "Equipes conferidas": "—"})
+                    continue
+                lid = str(hit.get("league_id") or "")
+                found_ids.add(lid)
+                teams, terr = gm_apifootball_league_teams(lid)
+                api_names = [str(x.get("team_name") or "").strip() for x in teams if str(x.get("team_name") or "").strip()]
+                expected = CURRENT_TEAM_ROSTERS.get(comp) or []
+                missing = []
+                if expected:
+                    for name in expected:
+                        if not any(_gm_team_name_match(name, api) for api in api_names):
+                            missing.append(name)
+                min_expected = int(MIN_TEAMS.get(comp, 0) or 0)
+                if terr:
+                    status = "⚠️ Liga localizada / equipes indisponíveis"
+                elif expected and missing:
+                    status = "⚠️ Divergências de equipes"
+                elif min_expected and len(api_names) < max(2, int(min_expected * 0.70)):
+                    status = "⚠️ Lista de equipes parcial"
+                else:
+                    status = "✅ Coberta"
+                checked = "OK" if expected and not missing else (f"{len(missing)} divergência(s)" if expected else "lista API")
+                rows.append({"GM SCORE": comp, "Status": status, "Liga API": hit.get("league_name") or "—", "ID": lid or "—", "Equipes API": len(api_names), "Esperado": MIN_TEAMS.get(comp, "—"), "Equipes conferidas": checked})
+                team_details.append((comp, lid, api_names, expected, missing))
+
+            df_audit = pd.DataFrame(rows)
+            st.dataframe(df_audit, hide_index=True, use_container_width=True)
+            covered = sum(1 for r in rows if str(r["Status"]).startswith("✅"))
+            warnings = sum(1 for r in rows if str(r["Status"]).startswith("⚠️"))
+            missing_count = sum(1 for r in rows if str(r["Status"]).startswith("❌"))
+            st.markdown(f"**Resumo:** {covered}/{len(rows)} cobertas • {warnings} com revisão • {missing_count} não localizadas")
+
+            with st.expander("👥 Equipes retornadas por cada liga", expanded=False):
+                for comp, lid, api_names, expected, missing in team_details:
+                    st.markdown(f"**{comp}** · API league_id `{lid}` · {len(api_names)} equipes")
+                    if missing:
+                        st.warning("Nomes do elenco GM SCORE sem correspondência segura na API: " + ", ".join(missing))
+                    st.caption(" • ".join(api_names) if api_names else "Nenhuma equipe retornada.")
+
+            suggestions = []
+            for label, countries, names in GM_APIFOOTBALL_USEFUL_CANDIDATES:
+                hit = _gm_match_api_league(leagues, countries, names)
+                if hit and str(hit.get("league_id") or "") not in found_ids:
+                    suggestions.append({"Sugestão": label, "Liga API": hit.get("league_name") or "—", "País": hit.get("country_name") or "—", "ID": str(hit.get("league_id") or "—")})
+            st.markdown("#### ➕ Ligas úteis disponíveis na chave")
+            if suggestions:
+                st.dataframe(pd.DataFrame(suggestions), hide_index=True, use_container_width=True)
+                st.caption("São apenas candidatas. Nenhuma será adicionada ao GM SCORE sem validação de estatísticas e confirmação.")
+            else:
+                st.info("Nenhuma das ligas adicionais prioritárias apareceu na cobertura desta chave/plano.")
+
+# A auditoria fica disponível somente ao administrador autenticado.
+gm_render_apifootball_league_audit()
 
 # A agenda da barra lateral é renderizada no início da interface.
 # Mantemos apenas o botão de suporte também no final da tela principal.
