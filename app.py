@@ -37,7 +37,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-12-v29-session-persistence-takeover"
+GM_BUILD = "2026-09-12-v30-structural-team-strength"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -6153,6 +6153,7 @@ def contextual_analysis_rows(team_a, team_b, competition_name, competition_df, r
         return 0.48 * league_component + 0.34 * prof.get("season_strength", .5) + 0.18 * prof.get("form", .5)
 
     ctx = {
+        "competition_name": competition_name,
         "home_profile": prof_a, "away_profile": prof_b,
         "history": hist, "h2h_games": h2n, "h2h_home": hh, "h2h_away": ah,
         "h2h_home_wins": h2d.get("home_wins", 0), "h2h_away_wins": h2d.get("away_wins", 0),
@@ -6209,6 +6210,106 @@ def _attack_power_from_row(row, league_strength=1.0):
     return max(0.45, min(1.75, raw * league_adj))
 
 
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def gm_historical_team_strength(team, competition_name, lookback=3):
+    """Força estrutural do clube baseada em temporadas anteriores da liga.
+
+    É um prior de longo prazo, não uma probabilidade de partida. A função usa
+    somente resultados históricos reais das mesmas fontes públicas já usadas
+    pelo GM SCORE. Serve principalmente no início da temporada, quando 1-5 jogos
+    podem supervalorizar uma boa arrancada de um clube recém-promovido ou
+    subvalorizar uma equipe historicamente dominante.
+    """
+    cfg = COMPETITIONS.get(str(competition_name or ""))
+    if not cfg or competition_name in CONTEXTUAL_COMPETITIONS:
+        return None
+    try:
+        current_year = current_season_year(cfg["season"])
+    except Exception:
+        return None
+
+    wanted = _norm_team(team)
+    if not wanted:
+        return None
+
+    seasons = []
+    for offset in range(1, int(lookback) + 1):
+        year = current_year - offset
+        matches = []
+        try:
+            if cfg.get("kind") == "football_data":
+                raw = load_football_data(cfg["code"], year)
+                for _, g in raw.iterrows():
+                    h = str(g.get("HomeTeam") or "")
+                    a = str(g.get("AwayTeam") or "")
+                    if wanted not in {_norm_team(h), _norm_team(a)}:
+                        continue
+                    hg = pd.to_numeric(g.get("FTHG"), errors="coerce")
+                    ag = pd.to_numeric(g.get("FTAG"), errors="coerce")
+                    if pd.isna(hg) or pd.isna(ag):
+                        continue
+                    matches.append({"home": h, "away": a, "hg": float(hg), "ag": float(ag)})
+            else:
+                hist = None
+                try:
+                    hist = load_open_results(cfg.get("id"), year, cfg.get("season"))
+                except Exception:
+                    hist = None
+                if isinstance(hist, pd.DataFrame):
+                    for m in list(hist.attrs.get("matches", []) or []):
+                        if wanted in {_norm_team(m.get("home")), _norm_team(m.get("away"))}:
+                            matches.append(m)
+        except Exception:
+            matches = []
+
+        if not matches:
+            continue
+
+        pts = gf = ga = games = 0.0
+        for m in matches:
+            is_home = _norm_team(m.get("home")) == wanted
+            tg = float(m.get("hg", 0) if is_home else m.get("ag", 0))
+            ta = float(m.get("ag", 0) if is_home else m.get("hg", 0))
+            games += 1.0
+            gf += tg; ga += ta
+            pts += 3.0 if tg > ta else 1.0 if tg == ta else 0.0
+        if games <= 0:
+            continue
+        pts_pct = pts / (3.0 * games)
+        gdpg = (gf - ga) / games
+        gd_score = 0.50 + 0.24 * math.tanh(gdpg / 0.90)
+        season_score = max(0.05, min(0.95, 0.72 * pts_pct + 0.28 * gd_score))
+        seasons.append({"score": season_score, "games": int(games), "offset": offset})
+
+    # Ausência recente da primeira divisão é informação estrutural útil, mas
+    # recebe valor conservador para não transformar promoção em condenação.
+    if not seasons:
+        return {
+            "score": 0.38,
+            "seasons": 0,
+            "presence": 0.0,
+            "source": "histórico recente da liga · sem presença nas temporadas consultadas",
+        }
+
+    num = den = 0.0
+    for item in seasons:
+        # temporadas mais recentes valem mais, sem apagar o histórico anterior
+        w = {1: 1.00, 2: 0.72, 3: 0.52}.get(int(item["offset"]), 0.40)
+        num += float(item["score"]) * w
+        den += w
+    score = num / den if den else 0.50
+    presence = min(1.0, len(seasons) / max(float(lookback), 1.0))
+    # Presença contínua na elite também é sinal de estabilidade estrutural.
+    score = max(0.05, min(0.95, score * 0.90 + (0.36 + 0.18 * presence) * 0.10))
+    return {
+        "score": score,
+        "seasons": len(seasons),
+        "presence": presence,
+        "source": "histórico recente da liga",
+    }
+
+
 def global_quality_prior(home, away, df=None, ctx=None):
     """Prior 1X2 independente de odds baseado em qualidade estrutural.
 
@@ -6252,6 +6353,18 @@ def global_quality_prior(home, away, df=None, ctx=None):
     hseason = float(hp.get("season_strength", 0.50) or 0.50)
     aseason = float(ap.get("season_strength", 0.50) or 0.50)
 
+    # v30: força de longo prazo. No começo da temporada, duas ou três partidas
+    # não podem colocar uma equipe recém-promovida no mesmo patamar de um clube
+    # que vem sustentando desempenho de elite por várias temporadas. O cálculo
+    # é automático e baseado em resultados históricos, nunca em lista manual.
+    selected_comp = ctx.get("competition_name")
+    hhist_comp = hp.get("competition") or selected_comp
+    ahist_comp = ap.get("competition") or selected_comp
+    hhist = gm_historical_team_strength(home, hhist_comp, 3) if hhist_comp else None
+    ahist = gm_historical_team_strength(away, ahist_comp, 3) if ahist_comp else None
+    hhist_score = float((hhist or {}).get("score", 0.50) or 0.50)
+    ahist_score = float((ahist or {}).get("score", 0.50) or 0.50)
+
     # Hierarquia estrutural interligas. O nível do campeonato doméstico é um
     # componente próprio (não apenas um pequeno ajuste do Elo), porque campanhas
     # idênticas em ligas de forças muito diferentes não são equivalentes.
@@ -6260,6 +6373,10 @@ def global_quality_prior(home, away, df=None, ctx=None):
     attack_component = (hatk - aatk) * 150.0
     season_component = (hseason - aseason) * 75.0
     form_component = (hform - aform) * 42.0
+    # Longo prazo ganha peso material, mas continua abaixo de um Elo válido.
+    # Quando um clube não esteve na elite nas temporadas consultadas, o prior
+    # fica conservador (0,38) em vez de assumir força média de 0,50.
+    history_component = (hhist_score - ahist_score) * 700.0
 
     # Confronto direto histórico entra como evidência adicional quando existe.
     # O peso cresce com a quantidade de jogos, mas é limitado para não transformar
@@ -6276,13 +6393,14 @@ def global_quality_prior(home, away, df=None, ctx=None):
         elo_component = (float(helo) - float(aelo)) * 0.82
         quality_diff = (home_adv + elo_component + league_component +
                         attack_component + season_component + form_component +
-                        h2h_component)
+                        history_component + h2h_component)
     else:
         # Sem Elo, ampliamos a tradução entre ligas mantendo os demais sinais.
         quality_diff = (home_adv + (hls - als) * 980.0 +
                         (hatk - aatk) * 175.0 +
                         (hseason - aseason) * 90.0 +
-                        (hform - aform) * 52.0 + h2h_component)
+                        (hform - aform) * 52.0 +
+                        (hhist_score - ahist_score) * 820.0 + h2h_component)
 
     quality_diff = max(-520.0, min(520.0, quality_diff))
     expected = 1.0 / (1.0 + 10.0 ** (-quality_diff / 400.0))
@@ -6301,6 +6419,10 @@ def global_quality_prior(home, away, df=None, ctx=None):
         "away_attack": aatk,
         "home_elo": helo,
         "away_elo": aelo,
+        "home_history_strength": hhist_score,
+        "away_history_strength": ahist_score,
+        "home_history_seasons": int((hhist or {}).get("seasons", 0) or 0),
+        "away_history_seasons": int((ahist or {}).get("seasons", 0) or 0),
     }
 
 
@@ -6324,14 +6446,32 @@ def calibrate_with_global_quality(model_probs, quality_prior, sample=0, contextu
         # superar a hierarquia interligas. Ela ganha espaço conforme os jogos chegam.
         w = max(0.48, 0.72 - min(float(sample), 8.0) * 0.030)
     else:
-        w = max(0.20, 0.36 - min(float(sample), 12.0) * 0.010)
+        # v30: a mesma proteção vale no início de ligas nacionais. Uma arrancada
+        # de 1-5 partidas não pode apagar a hierarquia estrutural de longo prazo.
+        # Conforme a temporada amadurece, os dados atuais voltam a dominar.
+        if float(sample) <= 2:
+            w = 0.58
+        elif float(sample) <= 5:
+            w = 0.50
+        else:
+            w = max(0.20, 0.36 - min(float(sample), 12.0) * 0.010)
 
     # Se a hierarquia estrutural aponta favorito claro e o modelo de poucos
     # jogos aponta o adversário, aumenta o guardrail.
     if qfav != mfav and qgap >= 10:
-        w = max(w, 0.76 if contextual else 0.46)
+        if contextual:
+            w = max(w, 0.76)
+        elif float(sample) <= 5:
+            w = max(w, 0.62)
+        else:
+            w = max(w, 0.46)
     if qgap >= 20:
-        w = max(w, 0.82 if contextual else 0.50)
+        if contextual:
+            w = max(w, 0.82)
+        elif float(sample) <= 5:
+            w = max(w, 0.68)
+        else:
+            w = max(w, 0.50)
 
     vals = [m[i] * (1.0-w) + q[i] * w for i in range(3)]
 
@@ -6402,6 +6542,15 @@ def apply_evidence_consensus_guardrail(probs, quality_prior, ctx=None, moneyline
         w = min(2.1, 0.9 + abs(float(he)-float(ae))/180.0)
         if float(he) > float(ae): score_h += w; reasons_h.append("força global")
         else: score_a += w; reasons_a.append("força global")
+
+    # Histórico estrutural recente na elite. Útil sobretudo nas primeiras
+    # rodadas, quando a forma atual ainda tem amostra pequena.
+    hhist = float(quality_prior.get("home_history_strength", 0.50) or 0.50)
+    ahist = float(quality_prior.get("away_history_strength", 0.50) or 0.50)
+    if abs(hhist-ahist) >= .14:
+        w = min(2.0, 1.05 + abs(hhist-ahist) * 3.0)
+        if hhist > ahist: score_h += w; reasons_h.append("histórico estrutural")
+        else: score_a += w; reasons_a.append("histórico estrutural")
 
     # Potencial ofensivo comparável entre ligas.
     ha = float(quality_prior.get("home_attack", 1.0) or 1.0)
