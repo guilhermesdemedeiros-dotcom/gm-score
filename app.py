@@ -28,7 +28,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-11-v9-coverage-fallback"
+GM_BUILD = "2026-09-11-v10-fallback-series-fix"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -4779,7 +4779,17 @@ def _gm_competition_metric_fallback(competition_df, metric):
 
 def _gm_apply_competition_fallback(row, competition_df):
     """Completa apenas métricas ausentes; jamais sobrescreve dado da equipe."""
-    out = dict(row or {})
+    if row is None:
+        out = {}
+    elif isinstance(row, pd.Series):
+        out = row.to_dict()
+    elif isinstance(row, dict):
+        out = dict(row)
+    else:
+        try:
+            out = dict(row)
+        except Exception:
+            out = {}
     used = []
     for metric in ("Escanteios", "Amarelos", "Vermelhos", "Faltas", "Finalizações", "Chutes no alvo", "Impedimentos", "Posse (%)"):
         try:
