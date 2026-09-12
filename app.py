@@ -28,7 +28,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-12-v13-apifootball-smoke"
+GM_BUILD = "2026-09-12-v14-apifootball-coverage-probe"
 st.set_page_config(
     page_title="GM SCORE • Manutenção",
     page_icon="⚽",
@@ -92,6 +92,198 @@ def gm_apifootball_healthcheck():
     if isinstance(payload, list):
         return {"ok": len(payload) > 0, "error": None, "countries": len(payload)}
     return {"ok": False, "error": "unexpected_payload", "countries": 0}
+
+
+def _gm_api_norm(value):
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
+def _gm_api_stat_map(items):
+    out = {}
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        stat_type = str(item.get("type") or "").strip()
+        if stat_type:
+            out[stat_type] = {"home": item.get("home"), "away": item.get("away")}
+    return out
+
+def _gm_api_has_value(value):
+    if value is None:
+        return False
+    text = str(value).strip().replace("%", "")
+    return text not in ("", "-", "None", "null", "N/A")
+
+def _gm_api_extract_event(payload):
+    if isinstance(payload, list) and payload:
+        return payload[0] if isinstance(payload[0], dict) else None
+    if isinstance(payload, dict):
+        if "match_id" in payload:
+            return payload
+        for value in payload.values():
+            if isinstance(value, dict) and "match_id" in value:
+                return value
+            if isinstance(value, list) and value and isinstance(value[0], dict) and "match_id" in value[0]:
+                return value[0]
+    return None
+
+@st.cache_data(ttl=900, show_spinner=False)
+def gm_apifootball_team_coverage(team_a="Union Berlin", team_b="Schalke 04", limit_per_team=10):
+    result = {
+        "ok": False,
+        "teams": {},
+        "h2h": 0,
+        "error": None,
+        "requests_planned": 1,
+        "requests_used": 0,
+    }
+    payload, err = gm_apifootball_request("get_H2H", firstTeam=team_a, secondTeam=team_b, timezone="America/Sao_Paulo")
+    result["requests_used"] += 1
+    if err or not isinstance(payload, dict):
+        result["error"] = err or "h2h_unexpected_payload"
+        return result
+
+    result["h2h"] = len(payload.get("firstTeam_VS_secondTeam") or [])
+    sources = [
+        (team_a, payload.get("firstTeam_lastResults") or []),
+        (team_b, payload.get("secondTeam_lastResults") or []),
+    ]
+    metric_types = {
+        "Escanteios": ("Corners",),
+        "Cartões amarelos": ("Yellow Cards",),
+        "Cartões vermelhos": ("Red Cards",),
+        "Faltas": ("Fouls",),
+        "Finalizações": ("Shots Total",),
+        "No alvo": ("Shots On Goal", "On Target"),
+        "Impedimentos": ("Offsides",),
+        "Posse": ("Ball Possession",),
+    }
+    half_types = {
+        "Escanteios 1T": ("Corners",),
+        "Finalizações 1T": ("Shots Total",),
+        "No alvo 1T": ("Shots On Goal", "On Target"),
+    }
+
+    for team_name, matches in sources:
+        finished = []
+        seen = set()
+        for match in matches:
+            if not isinstance(match, dict):
+                continue
+            mid = str(match.get("match_id") or "").strip()
+            if not mid or mid in seen:
+                continue
+            status = _gm_api_norm(match.get("match_status"))
+            if status and status not in {"finished", "ft", "after et", "after pen"}:
+                continue
+            seen.add(mid)
+            finished.append(match)
+            if len(finished) >= int(limit_per_team):
+                break
+
+        counts = {name: 0 for name in metric_types}
+        half_counts = {name: 0 for name in half_types}
+        detailed = 0
+        leagues = set()
+        dates = []
+        errors = 0
+
+        for match in finished:
+            mid = str(match.get("match_id") or "").strip()
+            ev_payload, ev_err = gm_apifootball_request("get_events", match_id=mid, timezone="America/Sao_Paulo")
+            result["requests_used"] += 1
+            if ev_err:
+                errors += 1
+                continue
+            event = _gm_api_extract_event(ev_payload)
+            if not event:
+                errors += 1
+                continue
+
+            home_name = str(event.get("match_hometeam_name") or "")
+            away_name = str(event.get("match_awayteam_name") or "")
+            target = _gm_api_norm(team_name)
+            home_n = _gm_api_norm(home_name)
+            away_n = _gm_api_norm(away_name)
+            if target == home_n or (target and target in home_n) or (home_n and home_n in target):
+                side = "home"
+            elif target == away_n or (target and target in away_n) or (away_n and away_n in target):
+                side = "away"
+            else:
+                continue
+
+            stats = _gm_api_stat_map(event.get("statistics"))
+            stats_1h = _gm_api_stat_map(event.get("statistics_1half"))
+            if stats:
+                detailed += 1
+            for label, aliases in metric_types.items():
+                for alias in aliases:
+                    pair = stats.get(alias)
+                    if pair and _gm_api_has_value(pair.get(side)):
+                        counts[label] += 1
+                        break
+            for label, aliases in half_types.items():
+                for alias in aliases:
+                    pair = stats_1h.get(alias)
+                    if pair and _gm_api_has_value(pair.get(side)):
+                        half_counts[label] += 1
+                        break
+            league = str(event.get("league_name") or "").strip()
+            if league:
+                leagues.add(league)
+            mdate = str(event.get("match_date") or "").strip()
+            if mdate:
+                dates.append(mdate)
+
+        result["teams"][team_name] = {
+            "matches": len(finished),
+            "detailed": detailed,
+            "metrics": counts,
+            "half_metrics": half_counts,
+            "leagues": sorted(leagues),
+            "latest": max(dates) if dates else None,
+            "oldest": min(dates) if dates else None,
+            "errors": errors,
+        }
+
+    result["requests_planned"] = 1 + sum(v.get("matches", 0) for v in result["teams"].values())
+    result["ok"] = bool(result["teams"]) and any(v.get("detailed", 0) > 0 for v in result["teams"].values())
+    if not result["ok"] and not result["error"]:
+        result["error"] = "no_detailed_statistics"
+    return result
+
+def gm_render_apifootball_coverage_probe():
+    st.markdown("---")
+    st.markdown("### 🧪 Diagnóstico APIfootball • Union Berlin × Schalke 04")
+    st.caption("Teste temporário de manutenção. A chave da API nunca é exibida.")
+    with st.spinner("Validando partidas históricas e estatísticas reais…"):
+        probe = gm_apifootball_team_coverage("Union Berlin", "Schalke 04", 10)
+
+    if probe.get("error") and not probe.get("teams"):
+        st.error(f"A API respondeu, mas o teste histórico não pôde ser concluído: {probe.get('error')}")
+        return
+
+    st.caption(f"Chamadas usadas neste teste: {probe.get('requests_used', 0)} • H2H encontrados: {probe.get('h2h', 0)}")
+    rows = []
+    for team_name, data in probe.get("teams", {}).items():
+        row = {
+            "Equipe": team_name,
+            "Jogos": data.get("matches", 0),
+            "Com estatísticas": data.get("detailed", 0),
+        }
+        row.update(data.get("metrics", {}))
+        row.update(data.get("half_metrics", {}))
+        rows.append(row)
+    if rows:
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    for team_name, data in probe.get("teams", {}).items():
+        leagues = ", ".join(data.get("leagues") or []) or "—"
+        st.caption(f"{team_name}: {data.get('oldest') or '—'} → {data.get('latest') or '—'} • Competições: {leagues}")
+    if probe.get("ok"):
+        st.success("A nova fonte está retornando estatísticas detalhadas reais para o teste.")
+    else:
+        st.warning("A conexão funciona, mas este teste ainda não retornou cobertura estatística suficiente.")
 
 # ============================================================
 # MODO MANUTENÇÃO GLOBAL
@@ -212,6 +404,15 @@ if GM_MAINTENANCE_MODE:
         st.caption("✅ Nova fonte estatística conectada • validação de cobertura em andamento")
     else:
         st.caption("🔄 Atualização da base estatística em andamento")
+
+    # Diagnóstico temporário acessível apenas quando a URL contém ?gm_diag=coverage.
+    # Não expõe chave, secrets ou dados de usuário.
+    try:
+        _gm_diag = str(st.query_params.get("gm_diag", "") or "").strip().lower()
+    except Exception:
+        _gm_diag = ""
+    if _gm_diag == "coverage" and _gm_api_health.get("ok"):
+        gm_render_apifootball_coverage_probe()
     st.stop()
 
 st.markdown("""
