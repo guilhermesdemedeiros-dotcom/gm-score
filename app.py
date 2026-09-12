@@ -28,13 +28,70 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-11-v12-maintenance-lock"
+GM_BUILD = "2026-09-12-v13-apifootball-smoke"
 st.set_page_config(
     page_title="GM SCORE • Manutenção",
     page_icon="⚽",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
+
+# ============================================================
+# APIFOOTBALL.COM — CONEXÃO SEGURA / TESTE DE SAÚDE
+# A chave fica exclusivamente em st.secrets["apifootball"]["api_key"].
+# Nunca é exibida na interface nem gravada no repositório.
+# ============================================================
+APIFOOTBALL_BASE_URL = "https://apiv3.apifootball.com/"
+
+def gm_apifootball_api_key():
+    try:
+        cfg = st.secrets["apifootball"]
+        key = str(cfg.get("api_key", "") or "").strip()
+        return key
+    except Exception:
+        return ""
+
+@st.cache_data(ttl=300, show_spinner=False)
+def gm_apifootball_request(action, **params):
+    key = gm_apifootball_api_key()
+    if not key:
+        return None, "secret_missing"
+
+    query = {"action": action, "APIkey": key}
+    for k, v in params.items():
+        if v is not None and str(v).strip() != "":
+            query[k] = v
+
+    try:
+        response = requests.get(
+            APIFOOTBALL_BASE_URL,
+            params=query,
+            timeout=(5, 15),
+            headers={"User-Agent": "GM-SCORE/1.0"},
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        return None, f"request_error:{type(exc).__name__}"
+
+    # A API pode responder um objeto de erro mesmo com HTTP 200.
+    if isinstance(payload, dict):
+        lowered = {str(k).lower(): v for k, v in payload.items()}
+        if any(k in lowered for k in ("error", "errors", "message")) and not any(
+            k in payload for k in ("statistics", "match_id", "country_id", "league_id")
+        ):
+            return payload, "api_error"
+
+    return payload, None
+
+@st.cache_data(ttl=300, show_spinner=False)
+def gm_apifootball_healthcheck():
+    payload, err = gm_apifootball_request("get_countries")
+    if err:
+        return {"ok": False, "error": err, "countries": 0}
+    if isinstance(payload, list):
+        return {"ok": len(payload) > 0, "error": None, "countries": len(payload)}
+    return {"ok": False, "error": "unexpected_payload", "countries": 0}
 
 # ============================================================
 # MODO MANUTENÇÃO GLOBAL
@@ -44,6 +101,7 @@ st.set_page_config(
 GM_MAINTENANCE_MODE = True
 
 if GM_MAINTENANCE_MODE:
+    _gm_api_health = gm_apifootball_healthcheck()
     st.markdown(
         """
         <style>
@@ -150,6 +208,10 @@ if GM_MAINTENANCE_MODE:
         """,
         unsafe_allow_html=True,
     )
+    if _gm_api_health.get("ok"):
+        st.caption("✅ Nova fonte estatística conectada • validação de cobertura em andamento")
+    else:
+        st.caption("🔄 Atualização da base estatística em andamento")
     st.stop()
 
 st.markdown("""
