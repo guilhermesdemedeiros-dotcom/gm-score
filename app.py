@@ -28,7 +28,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-12-v20-apifootball-primary-engine"
+GM_BUILD = "2026-09-12-v21-production-coherence-fix"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -5724,8 +5724,8 @@ def contextual_analysis_rows(team_a, team_b, competition_name, competition_df, r
         "data_recovery_away": recovery_b,
         "data_recovery_version": "v11-historical-stat-recovery",
         "data_recovery_debug": {
-            "home": {"merged": _gm_recovery_diagnostic(recovery_a), "sofascore": _gm_recovery_diagnostic(sofa_a), "espn": _gm_recovery_diagnostic(espn_a), "football_data": _gm_recovery_diagnostic(fd_a)},
-            "away": {"merged": _gm_recovery_diagnostic(recovery_b), "sofascore": _gm_recovery_diagnostic(sofa_b), "espn": _gm_recovery_diagnostic(espn_b), "football_data": _gm_recovery_diagnostic(fd_b)},
+            "home": {"apifootball": _gm_recovery_diagnostic(api_a), "merged": _gm_recovery_diagnostic(recovery_a), "sofascore": _gm_recovery_diagnostic(sofa_a), "espn": _gm_recovery_diagnostic(espn_a), "football_data": _gm_recovery_diagnostic(fd_a)},
+            "away": {"apifootball": _gm_recovery_diagnostic(api_b), "merged": _gm_recovery_diagnostic(recovery_b), "sofascore": _gm_recovery_diagnostic(sofa_b), "espn": _gm_recovery_diagnostic(espn_b), "football_data": _gm_recovery_diagnostic(fd_b)},
         },
     }
     return a, b, ctx
@@ -6395,10 +6395,23 @@ def build_opportunities(a, b, team_a, team_b, competition_df=None):
     """
     candidates = []
 
-    try:
-        sample_games = int(min(float(a.get("Jogos", 0) or 0), float(b.get("Jogos", 0) or 0)))
-    except Exception:
-        sample_games = 0
+    # v21: a amostra para habilitar destaques considera a base efetivamente
+    # recuperada por métrica. A coluna Jogos da competição pode estar curta
+    # mesmo quando a APIfootball já entregou histórico individual consolidado.
+    def _opportunity_sample(row):
+        vals = []
+        try:
+            vals.append(int(float(row.get("Jogos", 0) or 0)))
+        except Exception:
+            pass
+        for metric in ("Gols pró", "Gols contra", "Escanteios", "Amarelos", "Chutes no alvo"):
+            try:
+                vals.append(int(row.get(f"_n_{metric}", 0) or 0))
+            except Exception:
+                pass
+        return max(vals) if vals else 0
+
+    sample_games = min(_opportunity_sample(a), _opportunity_sample(b))
     if sample_games < 8:
         return []
 
@@ -8920,7 +8933,7 @@ def render_analysis():
                 st.markdown(f"**{_team_label}**")
                 _side = _dbg.get(_side_key) or {}
                 _rows = []
-                for _src_key, _src_label in (("sofascore", "SofaScore"), ("espn", "ESPN"), ("football_data", "Football-Data histórico"), ("merged", "Base recuperada")):
+                for _src_key, _src_label in (("apifootball", "APIfootball (principal)"), ("sofascore", "SofaScore"), ("espn", "ESPN"), ("football_data", "Football-Data histórico"), ("merged", "Base final por métrica")):
                     _d = _side.get(_src_key) or {}
                     _cov = _d.get("coverage") or {}
                     _rows.append({
@@ -8936,10 +8949,26 @@ def render_analysis():
 
     opportunities = build_opportunities(a, b, team_a, team_b, df)
     st.markdown("#### ⭐ Oportunidades GM SCORE")
-    if comp_sample < 8:
-        st.caption("Destaques suspensos nesta partida: a base ainda está em Cautela. Os mercados continuam visíveis acima, mas só viram oportunidade com amostra consolidada.")
+    # v21: não usa mais somente a amostra bruta da competição para a mensagem.
+    # A APIfootball pode ter recuperado N>=8 por métrica mesmo quando o dataframe
+    # original da competição ainda possui poucos jogos.
+    def _display_effective_sample(row):
+        vals = []
+        try:
+            vals.append(int(float(row.get("Jogos", 0) or 0)))
+        except Exception:
+            pass
+        for metric in ("Gols pró", "Gols contra", "Escanteios", "Amarelos", "Chutes no alvo"):
+            try:
+                vals.append(int(row.get(f"_n_{metric}", 0) or 0))
+            except Exception:
+                pass
+        return max(vals) if vals else 0
+    _opp_sample = min(_display_effective_sample(a), _display_effective_sample(b))
+    if _opp_sample < 8:
+        st.caption("Destaques suspensos nesta partida: a base efetiva ainda está em Cautela. Os mercados continuam visíveis acima, mas só viram oportunidade com amostra consolidada.")
     elif analysis_context:
-        st.caption("Oportunidades usam somente mercados habilitados pela auditoria estatística e com amostra consolidada.")
+        st.caption("Oportunidades usam somente mercados habilitados pela auditoria estatística e com amostra efetiva consolidada (N ≥ 8).")
     if opportunities:
         for item in opportunities:
             c1, c2, c3 = st.columns([4.8, 1.3, 1.5])
