@@ -28,7 +28,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-12-v18-nominal-roster-audit"
+GM_BUILD = "2026-09-12-v19-fixed-ids-stat-coverage"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -8851,6 +8851,80 @@ GM_APIFOOTBALL_LEAGUE_TARGETS = {
     "UEFA Conference League": {"country": ["europe", "eurocups"], "league": ["conference league"]},
 }
 
+# IDs confirmados pela auditoria executada com a chave real do GM SCORE.
+# Manter um mapa fixo evita que uma liga homônima seja escolhida por similaridade.
+GM_APIFOOTBALL_FIXED_LEAGUE_IDS = {
+    "Inglaterra - Premier League": "152",
+    "Espanha - La Liga": "302",
+    "Itália - Serie A": "207",
+    "Alemanha - Bundesliga": "175",
+    "França - Ligue 1": "168",
+    "Portugal - Liga Portugal": "266",
+    "Holanda - Eredivisie": "244",
+    "Escócia - Premiership": "279",
+    "Turquia - Süper Lig": "322",
+    "Brasil - Série A": "99",
+    "Brasil - Série B": "75",
+    "Arábia Saudita - Saudi Pro League": "328",
+    "Estados Unidos - MLS": "332",
+    "Argentina - Liga Profesional": "44",
+    "México - Liga MX": "235",
+    "Colômbia - Primera A": "120",
+    "CONMEBOL Libertadores": "18",
+    "CONMEBOL Sul-Americana": "385",
+    "UEFA Champions League": "3",
+    "UEFA Europa League": "4",
+    "UEFA Conference League": "683",
+}
+
+# Aliases confirmados visualmente na resposta real da API. O nome exibido ao
+# cliente continua sendo o do GM SCORE; isto só melhora a resolução interna.
+GM_APIFOOTBALL_TEAM_ALIASES = {
+    "América-MG": ["América Mineiro"],
+    "Athletic-MG": ["Athletic Club MG"],
+    "Atlético-GO": ["Atlético Goianiense"],
+    "Náutico": ["Náutico FC"],
+    "São Bernardo": ["São Bernardo FC"],
+    "Sport": ["Sport Recife"],
+    "D.C. United": ["DC United"],
+    "Red Bull New York": ["New York RB"],
+    "San Jose Earthquakes": ["SJ Earthquakes"],
+    "Sporting Kansas City": ["Sporting KC"],
+    "Inter Miami CF": ["Inter Miami"],
+    "Paris Saint-Germain": ["PSG"],
+    "Independiente del Valle": ["Independiente Valle"],
+    "AZ Alkmaar": ["AZ"],
+    "GNK Dinamo": ["Dinamo Zagreb"],
+    "Hapoel Beer-Sheva": ["Hapoel Be'er Sheva"],
+    "Lyon": ["Olympique Lyonnais"],
+    "N.E.C.": ["NEC"],
+    "OFI Crete": ["OFI"],
+    "Olympiacos": ["Olympiakos Piraeus"],
+    "Union SG": ["Union Saint-Gilloise"],
+    "Bournemouth": ["AFC Bournemouth"],
+    "Celta": ["Celta de Vigo"],
+    "Jagiellonia": ["Jagiellonia Białystok"],
+    "Juventus": ["Juventus FC"],
+    "Leverkusen": ["Bayer Leverkusen"],
+    "Marseille": ["Olympique Marseille"],
+    "Omonia": ["Omonia Nicosia"],
+    "Arsenal": ["Arsenal FC"],
+    "Inter": ["Internazionale"],
+    "Leipzig": ["RB Leipzig"],
+    "América": ["Club América"],
+    "Atlético de San Luis": ["Atlético San Luis"],
+    "FC Juárez": ["Juárez"],
+    "Alianza FC": ["Alianza"],
+    "Deportivo Pereira": ["Deportivo Pereira FC"],
+    "Jaguares de Córdoba": ["Jaguares de Córdoba FC"],
+}
+
+# Entradas especiais que aparecem em algumas listas da API, mas não são clubes
+# regulares da competição e não devem causar falsa divergência no elenco.
+GM_APIFOOTBALL_NON_REGULAR_TEAMS = {
+    "Estados Unidos - MLS": {"liga mx all stars", "mls all stars"},
+}
+
 GM_APIFOOTBALL_USEFUL_CANDIDATES = [
     ("Inglaterra - Championship", ["england"], ["championship"]),
     ("Alemanha - 2. Bundesliga", ["germany"], ["2. bundesliga", "2 bundesliga"]),
@@ -8952,15 +9026,31 @@ def _gm_api_league_candidates(leagues, countries, names, limit=12):
     return [item for _, item in ranked[:max(1, int(limit))]]
 
 def _gm_team_name_match(a, b):
-    aa, bb = _gm_api_norm(a), _gm_api_norm(b)
-    stop = {"fc", "cf", "sc", "ac", "ec", "club", "clube", "de", "do", "da", "the"}
-    ta = [x for x in aa.split() if x not in stop]
-    tb = [x for x in bb.split() if x not in stop]
-    aa2, bb2 = " ".join(ta), " ".join(tb)
-    if aa2 == bb2: return True
-    if aa2 and bb2 and min(len(aa2), len(bb2)) >= 5 and (aa2 in bb2 or bb2 in aa2): return True
-    sa, sb = set(ta), set(tb)
-    return bool(sa and sb and len(sa & sb) / max(len(sa | sb), 1) >= 0.72)
+    def variants(value):
+        raw = str(value or "").strip()
+        vals = [raw]
+        for canonical, aliases in GM_APIFOOTBALL_TEAM_ALIASES.items():
+            pool = [canonical] + list(aliases or [])
+            norm_pool = {_gm_api_norm(x) for x in pool}
+            if _gm_api_norm(raw) in norm_pool:
+                vals.extend(pool)
+                break
+        return vals
+
+    def basic(x, y):
+        aa, bb = _gm_api_norm(x), _gm_api_norm(y)
+        stop = {"fc", "cf", "sc", "ac", "ec", "club", "clube", "de", "do", "da", "the"}
+        ta = [z for z in aa.split() if z not in stop]
+        tb = [z for z in bb.split() if z not in stop]
+        aa2, bb2 = " ".join(ta), " ".join(tb)
+        if aa2 == bb2:
+            return True
+        if aa2 and bb2 and min(len(aa2), len(bb2)) >= 5 and (aa2 in bb2 or bb2 in aa2):
+            return True
+        sa, sb = set(ta), set(tb)
+        return bool(sa and sb and len(sa & sb) / max(len(sa | sb), 1) >= 0.72)
+
+    return any(basic(x, y) for x in variants(a) for y in variants(b))
 
 def gm_render_apifootball_league_audit():
     try:
@@ -8987,12 +9077,19 @@ def gm_render_apifootball_league_audit():
             for comp in COMPETITIONS.keys():
                 target = GM_APIFOOTBALL_LEAGUE_TARGETS.get(comp, {})
                 expected = CURRENT_TEAM_ROSTERS.get(comp) or []
-                candidate_hits = _gm_api_league_candidates(leagues, target.get("country", []), target.get("league", []))
+                fixed_id = str(GM_APIFOOTBALL_FIXED_LEAGUE_IDS.get(comp) or "")
+                fixed_hit = next((x for x in leagues if str(x.get("league_id") or "") == fixed_id), None) if fixed_id else None
+                candidate_hits = ([fixed_hit] if fixed_hit else []) + [
+                    x for x in _gm_api_league_candidates(leagues, target.get("country", []), target.get("league", []))
+                    if not fixed_hit or str(x.get("league_id") or "") != fixed_id
+                ]
                 evaluated = []
                 for cand in candidate_hits:
                     cand_lid = str(cand.get("league_id") or "")
                     cand_teams, cand_err = gm_apifootball_league_teams(cand_lid) if cand_lid else ([], "missing_id")
-                    cand_names = [str(x.get("team_name") or "").strip() for x in cand_teams if str(x.get("team_name") or "").strip()]
+                    raw_names = [str(x.get("team_name") or "").strip() for x in cand_teams if str(x.get("team_name") or "").strip()]
+                    blocked = GM_APIFOOTBALL_NON_REGULAR_TEAMS.get(comp, set())
+                    cand_names = [name for name in raw_names if _gm_api_norm(name) not in blocked]
                     matched = sum(1 for name in expected if any(_gm_team_name_match(name, api) for api in cand_names)) if expected else 0
                     roster_ratio = matched / max(len(expected), 1) if expected else 0.0
                     base_score = _gm_league_name_score(cand.get("league_name"), target.get("league", [])) + _gm_country_score(cand.get("country_name"), target.get("country", []))
@@ -9096,8 +9193,121 @@ def gm_render_apifootball_league_audit():
             else:
                 st.info("Nenhuma das ligas adicionais prioritárias apareceu na cobertura desta chave/plano.")
 
-# A auditoria fica disponível somente ao administrador autenticado.
+@st.cache_data(ttl=3600, show_spinner=False)
+def gm_apifootball_league_stat_coverage(league_id, lookback_days=420, sample_matches=20):
+    """Mede cobertura REAL de estatísticas em partidas recentes de uma liga.
+
+    Uma chamada de get_events por competição é suficiente: contamos somente
+    partidas finalizadas e nunca transformamos campo ausente em zero.
+    """
+    end = date.today()
+    start = end - timedelta(days=int(lookback_days))
+    payload, err = gm_apifootball_request(
+        "get_events", league_id=str(league_id),
+        **{"from": start.isoformat(), "to": end.isoformat(), "timezone": "America/Sao_Paulo"}
+    )
+    if err or not isinstance(payload, list):
+        return {"ok": False, "error": err or "unexpected_payload", "n": 0, "metrics": {}}
+    finished = []
+    for ev in payload:
+        if not isinstance(ev, dict):
+            continue
+        status = _gm_api_norm(ev.get("match_status"))
+        if status not in {"finished", "ft", "after et", "after pen"}:
+            continue
+        finished.append(ev)
+    finished.sort(key=lambda x: str(x.get("match_date") or ""), reverse=True)
+    chosen = finished[:max(1, int(sample_matches))]
+    metric_aliases = {
+        "Gols": None,
+        "Escanteios": ("Corners", "Corner Kicks"),
+        "Cartões": ("Yellow Cards",),
+        "Faltas": ("Fouls",),
+        "Finalizações": ("Shots Total", "Goal Attempts", "Total Shots"),
+        "No alvo": ("Shots On Goal", "Shots on Goal", "On Target"),
+        "Impedimentos": ("Offsides",),
+        "Posse": ("Ball Possession",),
+        "Escanteios 1T": ("Corners", "Corner Kicks"),
+        "Finalizações 1T": ("Shots Total", "Goal Attempts", "Total Shots"),
+        "No alvo 1T": ("Shots On Goal", "Shots on Goal", "On Target"),
+    }
+    counts = {k: 0 for k in metric_aliases}
+    for ev in chosen:
+        stats = _gm_api_stat_map(ev.get("statistics"))
+        half = _gm_api_stat_map(ev.get("statistics_1half"))
+        hg = ev.get("match_hometeam_ft_score") or ev.get("match_hometeam_score")
+        ag = ev.get("match_awayteam_ft_score") or ev.get("match_awayteam_score")
+        if _gm_api_has_value(hg) and _gm_api_has_value(ag):
+            counts["Gols"] += 1
+        for label, aliases in metric_aliases.items():
+            if label == "Gols":
+                continue
+            block = half if label.endswith("1T") else stats
+            ok = False
+            for alias in aliases or ():
+                pair = block.get(alias)
+                if pair and _gm_api_has_value(pair.get("home")) and _gm_api_has_value(pair.get("away")):
+                    ok = True
+                    break
+            # Cartões também podem existir no bloco de eventos quando o agregado falta.
+            if label == "Cartões" and not ok and isinstance(ev.get("cards"), list):
+                ok = True
+            if ok:
+                counts[label] += 1
+    return {"ok": bool(chosen), "error": None, "n": len(chosen), "metrics": counts}
+
+
+def gm_render_apifootball_stat_audit():
+    try:
+        profile = gm_auth_get_profile()
+    except Exception:
+        profile = None
+    if (profile or {}).get("role") != "admin":
+        return
+    with st.expander("📊 Auditoria APIfootball — cobertura estatística das 21 ligas (admin)", expanded=False):
+        st.caption("Testa partidas finalizadas reais por league_id. Mede N por métrica e não inventa valores ausentes.")
+        if not st.button("📈 Testar estatísticas das 21 ligas", key="gm_run_api_stat_audit", use_container_width=True):
+            return
+        rows = []
+        progress = st.progress(0, text="Verificando cobertura estatística...")
+        comps = list(GM_APIFOOTBALL_FIXED_LEAGUE_IDS.items())
+        for idx, (comp, lid) in enumerate(comps, start=1):
+            result = gm_apifootball_league_stat_coverage(lid, lookback_days=420, sample_matches=20)
+            n = int(result.get("n") or 0)
+            metrics = result.get("metrics") or {}
+            def pct(name):
+                return round(100.0 * int(metrics.get(name, 0) or 0) / n) if n else 0
+            detail_core = [pct("Escanteios"), pct("Cartões"), pct("Finalizações"), pct("No alvo")]
+            if not result.get("ok"):
+                status = "❌ Sem amostra"
+            elif min(detail_core) >= 70:
+                status = "✅ Forte"
+            elif max(detail_core) >= 50:
+                status = "⚠️ Parcial"
+            else:
+                status = "🔸 Baixa"
+            rows.append({
+                "Liga": comp, "ID": lid, "N": n, "Status": status,
+                "Gols": f"{pct('Gols')}%", "Escanteios": f"{pct('Escanteios')}%",
+                "Cartões": f"{pct('Cartões')}%", "Finalizações": f"{pct('Finalizações')}%",
+                "No alvo": f"{pct('No alvo')}%", "Faltas": f"{pct('Faltas')}%",
+                "Impedimentos": f"{pct('Impedimentos')}%", "Posse": f"{pct('Posse')}%",
+                "Esc. 1T": f"{pct('Escanteios 1T')}%", "Finaliz. 1T": f"{pct('Finalizações 1T')}%",
+                "Alvo 1T": f"{pct('No alvo 1T')}%",
+            })
+            progress.progress(idx / len(comps), text=f"{idx}/{len(comps)} · {comp}")
+        progress.empty()
+        df = pd.DataFrame(rows)
+        st.dataframe(df, hide_index=True, use_container_width=True)
+        strong = sum(1 for r in rows if r["Status"] == "✅ Forte")
+        partial = sum(1 for r in rows if r["Status"] == "⚠️ Parcial")
+        low = len(rows) - strong - partial
+        st.markdown(f"**Resumo:** {strong} fortes • {partial} parciais • {low} com baixa/sem amostra")
+        st.caption("O objetivo é usar APIfootball como fonte principal onde a cobertura é forte e manter os fallbacks já existentes onde uma métrica específica for curta.")
+
+# As auditorias ficam disponíveis somente ao administrador autenticado.
 gm_render_apifootball_league_audit()
+gm_render_apifootball_stat_audit()
 
 # A agenda da barra lateral é renderizada no início da interface.
 # Mantemos apenas o botão de suporte também no final da tela principal.
