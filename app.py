@@ -5,6 +5,7 @@ import os
 import re
 import time
 import secrets
+import inspect
 import unicodedata
 from html.parser import HTMLParser
 from urllib.parse import quote
@@ -27,7 +28,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-11-data-recovery-v7-source-resolution-fix"
+GM_BUILD = "2026-09-11-v8-runtime-check"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -2053,6 +2054,26 @@ if (
 
 if _gm_profile_after_gate and _gm_profile_after_gate.get("role") == "admin":
     gm_render_auth_test_console()
+
+    # Runtime check: confirma visualmente qual arquivo/build o Streamlit está executando.
+    # Restrito ao administrador e sem expor segredos/configurações.
+    try:
+        _gm_runtime_file = os.path.basename(os.path.abspath(__file__))
+    except Exception:
+        _gm_runtime_file = "app.py"
+    try:
+        _gm_runtime_mtime = datetime.fromtimestamp(os.path.getmtime(__file__), tz=timezone.utc).astimezone(ZoneInfo("America/Sao_Paulo"))
+        _gm_runtime_mtime_txt = _gm_runtime_mtime.strftime("%d/%m/%Y %H:%M:%S")
+    except Exception:
+        _gm_runtime_mtime_txt = "indisponível"
+    _gm_runtime_checks = {
+        "Data Recovery v7+": "recover" in globals() or any("recover" in str(_k).lower() for _k in globals().keys()),
+        "Diagnóstico de cobertura": "render_match_analysis" in globals() or "analysis_context" in globals(),
+    }
+    with st.expander("🧭 Verificação da versão carregada (admin)", expanded=True):
+        st.markdown(f"**Build carregada:** `{GM_BUILD}`")
+        st.caption(f"Arquivo em execução: `{_gm_runtime_file}` • modificado: {_gm_runtime_mtime_txt} (Brasília)")
+        st.caption("Este bloco existe apenas para confirmar o deploy/runtime. Se ele não aparecer após publicar, o Streamlit não está executando este arquivo/build.")
 
 # Competições com estatísticas detalhadas em CSV público.
 EUROPE_LEAGUES = {
