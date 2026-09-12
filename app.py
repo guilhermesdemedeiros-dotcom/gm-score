@@ -28,7 +28,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-12-v22-stable-team-id-resolution"
+GM_BUILD = "2026-09-12-v23-21-leagues-team-identity-guard"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -5327,12 +5327,28 @@ def gm_apifootball_pair_profiles(team_a, team_b, competition_name=None, limit_pe
         league_id = None
 
     def team_variants(name):
-        vals = [str(name or "")]
+        # Resolução bidirecional: funciona tanto quando o GM SCORE já recebeu o
+        # nome novo e a API ainda usa o antigo, quanto no sentido inverso. Isso
+        # protege as 21 competições contra rebrandings e variações de cadastro
+        # sem trocar a identidade exibida ao cliente.
+        raw_name = str(name or "")
+        vals = [raw_name]
+        target_norm = _gm_api_norm(raw_name)
         try:
-            vals.extend(GM_APIFOOTBALL_TEAM_ALIASES.get(str(name), []) or [])
+            vals.extend(GM_APIFOOTBALL_TEAM_ALIASES.get(raw_name, []) or [])
+            for canonical, aliases in (GM_APIFOOTBALL_TEAM_ALIASES or {}).items():
+                group = [str(canonical)] + [str(x) for x in (aliases or [])]
+                norms = {_gm_api_norm(x) for x in group if _gm_api_norm(x)}
+                if target_norm and target_norm in norms:
+                    vals.extend(group)
         except Exception:
             pass
-        return [_gm_api_norm(x) for x in vals if _gm_api_norm(x)]
+        out, seen = [], set()
+        for value in vals:
+            norm = _gm_api_norm(value)
+            if norm and norm not in seen:
+                seen.add(norm); out.append(norm)
+        return out
 
     def resolve_from_league(name):
         if not league_id:
@@ -9116,6 +9132,8 @@ GM_APIFOOTBALL_TEAM_ALIASES = {
     "FC Juárez": ["Juárez"],
     "Alianza FC": ["Alianza"],
     "Deportivo Pereira": ["Deportivo Pereira FC"],
+    # Mudança oficial de identidade para 2026: é a mesma ficha/clube da antiga La Equidad.
+    "Internacional de Bogotá": ["La Equidad", "CD La Equidad", "Club Deportivo La Equidad"],
     "Jaguares de Córdoba": ["Jaguares de Córdoba FC"],
 }
 
