@@ -28,7 +28,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-11-v8-runtime-check"
+GM_BUILD = "2026-09-11-v9-coverage-fallback"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -4748,6 +4748,60 @@ def _gm_recovery_diagnostic(profile):
     }
 
 
+def _gm_competition_metric_fallback(competition_df, metric):
+    """Fallback estatístico da própria competição, nunca um número decorativo.
+
+    Usa somente equipes que realmente possuem a métrica. Serve para impedir que
+    uma falha pontual de recuperação transforme todo o mercado em Inconclusivo.
+    A origem fica marcada como contexto da competição e a confiança é limitada.
+    """
+    if not isinstance(competition_df, pd.DataFrame) or metric not in competition_df.columns:
+        return None
+    vals, ns = [], []
+    for _, row in competition_df.iterrows():
+        try:
+            v = row.get(metric)
+            if v is None or pd.isna(v):
+                continue
+            n = _gm_source_metric_count(row, metric, 0)
+            if n < 3:
+                continue
+            vals.append(float(v)); ns.append(int(n))
+        except Exception:
+            continue
+    if len(vals) < 6:
+        return None
+    # Mediana é menos sensível a um clube extremo que a média simples.
+    value = float(pd.Series(vals).median())
+    effective_n = min(7, max(3, int(pd.Series(ns).median())))
+    return {"value": value, "n": effective_n, "teams": len(vals), "source": "contexto real da competição"}
+
+
+def _gm_apply_competition_fallback(row, competition_df):
+    """Completa apenas métricas ausentes; jamais sobrescreve dado da equipe."""
+    out = dict(row or {})
+    used = []
+    for metric in ("Escanteios", "Amarelos", "Vermelhos", "Faltas", "Finalizações", "Chutes no alvo", "Impedimentos", "Posse (%)"):
+        try:
+            current = out.get(metric)
+            n = _gm_source_metric_count(out, metric, 0)
+        except Exception:
+            current, n = None, 0
+        if current is not None and not pd.isna(current) and n >= 3:
+            continue
+        fb = _gm_competition_metric_fallback(competition_df, metric)
+        if not fb:
+            continue
+        out[metric] = fb["value"]
+        out[f"_n_{metric}"] = fb["n"]
+        out[f"_gm_fallback_{metric}"] = True
+        used.append(metric)
+    if used:
+        out["_gm_competition_fallback_used"] = True
+        out["_gm_competition_fallback_metrics"] = ", ".join(used)
+    return pd.Series(out)
+
+
 def contextual_analysis_rows(team_a, team_b, competition_name, competition_df, recent_games=10):
     """Recupera contexto adicional apenas onde a base principal é curta/incompleta.
 
@@ -4863,6 +4917,12 @@ def contextual_analysis_rows(team_a, team_b, competition_name, competition_df, r
     a = build(base_a, prof_a, recovery_a)
     b = build(base_b, prof_b, recovery_b)
 
+    # v9: última barreira antes do Inconclusivo. Se a equipe ficou sem uma
+    # métrica detalhada por falha de cobertura externa, usa apenas a distribuição
+    # REAL da própria competição e limita a confiança a Cautela (N efetivo <= 7).
+    a = _gm_apply_competition_fallback(a, competition_df)
+    b = _gm_apply_competition_fallback(b, competition_df)
+
     public_h2h = fetch_sofascore_h2h(team_a, team_b)
     h2h_pool = (list(competition_df.attrs.get("matches", [])) +
                 list(hist.get("matches", [])) + list(public_h2h or []))
@@ -4890,7 +4950,7 @@ def contextual_analysis_rows(team_a, team_b, competition_name, competition_df, r
         "priors": priors,
         "data_recovery_home": recovery_a,
         "data_recovery_away": recovery_b,
-        "data_recovery_version": "v7-source-resolution-fix",
+        "data_recovery_version": "v9-coverage-fallback",
         "data_recovery_debug": {
             "home": {"merged": _gm_recovery_diagnostic(recovery_a), "sofascore": _gm_recovery_diagnostic(sofa_a), "espn": _gm_recovery_diagnostic(espn_a)},
             "away": {"merged": _gm_recovery_diagnostic(recovery_b), "sofascore": _gm_recovery_diagnostic(sofa_b), "espn": _gm_recovery_diagnostic(espn_b)},
@@ -5945,6 +6005,9 @@ def render_core_markets_dashboard(a, b, team_a, team_b, df, probs=None, sample_g
     recovery_active = bool(a.get("_gm_recovery_used", False) or b.get("_gm_recovery_used", False))
     if recovery_active:
         st.caption("🔎 Recuperação de dados ativa: o GM SCORE cruzou histórico recente e cobertura específica por mercado. A confiança é calculada separadamente para gols, escanteios, cartões e finalizações; nenhum número é criado para preencher lacunas.")
+    competition_fallback_active = bool(a.get("_gm_competition_fallback_used", False) or b.get("_gm_competition_fallback_used", False))
+    if competition_fallback_active:
+        st.caption("🟠 Cobertura complementar da competição: uma ou mais métricas sem histórico individual suficiente foram sustentadas pela distribuição real da própria competição. Esses mercados ficam limitados a Cautela e não são promovidos artificialmente a Conclusivo.")
 
     goal_sample = _gm_pair_metric_sample(a, b, ["Gols pró", "Gols contra"], sample_games)
     corner_sample = _gm_pair_metric_sample(a, b, ["Escanteios"], sample_games)
