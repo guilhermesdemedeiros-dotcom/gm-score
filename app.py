@@ -28,9 +28,9 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-12-v14-apifootball-coverage-probe"
+GM_BUILD = "2026-09-12-v15-apifootball-production"
 st.set_page_config(
-    page_title="GM SCORE • Manutenção",
+    page_title="GM SCORE",
     page_icon="⚽",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -290,7 +290,7 @@ def gm_render_apifootball_coverage_probe():
 # Bloqueia a interface inteira para todos os usuários antes de
 # autenticação, pesquisa, agenda, análises ou qualquer outra tela.
 # ============================================================
-GM_MAINTENANCE_MODE = True
+GM_MAINTENANCE_MODE = False
 
 if GM_MAINTENANCE_MODE:
     _gm_api_health = gm_apifootball_healthcheck()
@@ -5290,6 +5290,151 @@ def load_fd_historical_team_profile(competition_name, team_name, recent_games=12
         "coverage": coverage, "source": "Football-Data · histórico multitemporada",
     }
 
+@st.cache_data(ttl=21600, show_spinner=False)
+def gm_apifootball_pair_profiles(team_a, team_b, limit_per_team=20, lookback_days=520):
+    """Fonte estatística principal: histórico oficial real da APIfootball.
+
+    Resolve IDs pelo H2H e busca uma janela ampla por team_id. Mantém N por
+    métrica, ignora amistosos quando há partidas oficiais e nunca converte dado
+    ausente em zero. A resposta já traz statistics/statistics_1half e cards.
+    """
+    payload, err = gm_apifootball_request(
+        "get_H2H", firstTeam=team_a, secondTeam=team_b,
+        timezone="America/Sao_Paulo",
+    )
+    if err or not isinstance(payload, dict):
+        return {team_a: None, team_b: None, "_error": err or "h2h_unavailable"}
+
+    all_seed = []
+    for key in ("firstTeam_VS_secondTeam", "firstTeam_lastResults", "secondTeam_lastResults"):
+        all_seed.extend([x for x in (payload.get(key) or []) if isinstance(x, dict)])
+
+    def resolve_id(name):
+        target = _gm_api_norm(name)
+        best = None
+        for ev in all_seed:
+            for side in ("home", "away"):
+                nm = str(ev.get(f"match_{side}team_name") or "")
+                tid = str(ev.get(f"match_{side}team_id") or "").strip()
+                nn = _gm_api_norm(nm)
+                if not tid or not nn:
+                    continue
+                score = 3 if nn == target else (2 if target and (target in nn or nn in target) else 0)
+                if score and (best is None or score > best[0]):
+                    best = (score, tid)
+        return best[1] if best else None
+
+    end = date.today()
+    start = end - timedelta(days=int(lookback_days))
+    date_params = {"from": start.isoformat(), "to": end.isoformat(), "timezone": "America/Sao_Paulo"}
+
+    stat_aliases = {
+        "Escanteios": ("Corners", "Corner Kicks"),
+        "Amarelos": ("Yellow Cards",),
+        "Vermelhos": ("Red Cards",),
+        "Faltas": ("Fouls",),
+        "Finalizações": ("Shots Total", "Goal Attempts", "Total Shots"),
+        "Chutes no alvo": ("Shots On Goal", "Shots on Goal", "On Target"),
+        "Impedimentos": ("Offsides",),
+        "Posse (%)": ("Ball Possession",),
+        "Passes": ("Passes Total", "Total Passes"),
+        "Precisão passes (%)": ("Passes Accurate Percentage", "Pass Accuracy"),
+    }
+
+    def stat_value(stats, aliases, side):
+        for alias in aliases:
+            pair = stats.get(alias)
+            if pair and _gm_api_has_value(pair.get(side)):
+                return pair.get(side)
+        return None
+
+    def profile(team_name, team_id):
+        if not team_id:
+            return None
+        events, ev_err = gm_apifootball_request("get_events", team_id=team_id, **date_params)
+        if ev_err or not isinstance(events, list):
+            return None
+        target = _gm_api_norm(team_name)
+        finished = []
+        for ev in events:
+            if not isinstance(ev, dict):
+                continue
+            status = _gm_api_norm(ev.get("match_status"))
+            if status not in {"finished", "after et", "after pen", "after pen ", "ft"}:
+                continue
+            hn, an = _gm_api_norm(ev.get("match_hometeam_name")), _gm_api_norm(ev.get("match_awayteam_name"))
+            if not (target == hn or target == an or (target and (target in hn or hn in target or target in an or an in target))):
+                continue
+            league = _gm_api_norm(ev.get("league_name"))
+            country = _gm_api_norm(ev.get("country_name"))
+            is_friendly = "friendly" in league or "friendlies" in league or country == "world" and "friendly" in league
+            ev = dict(ev); ev["_gm_friendly"] = is_friendly
+            finished.append(ev)
+        finished.sort(key=lambda x: str(x.get("match_date") or ""), reverse=True)
+        official = [x for x in finished if not x.get("_gm_friendly")]
+        chosen = official[:int(limit_per_team)]
+        if len(chosen) < min(8, int(limit_per_team)):
+            seen = {str(x.get("match_id")) for x in chosen}
+            chosen += [x for x in finished if str(x.get("match_id")) not in seen][:int(limit_per_team)-len(chosen)]
+
+        acc = empty_team(team_name)
+        detailed = 0
+        used_ids = []
+        for ev in chosen:
+            hn = _gm_api_norm(ev.get("match_hometeam_name")); side = "home" if (target == hn or target in hn or hn in target) else "away"
+            opp = "away" if side == "home" else "home"
+            hs = to_num(ev.get("match_hometeam_ft_score") or ev.get("match_hometeam_score"))
+            aas = to_num(ev.get("match_awayteam_ft_score") or ev.get("match_awayteam_score"))
+            if hs is not None and aas is not None:
+                acc["Jogos"] += 1
+                acc["Gols pró"] += hs if side == "home" else aas
+                acc["Gols contra"] += aas if side == "home" else hs
+            stats = _gm_api_stat_map(ev.get("statistics"))
+            half = _gm_api_stat_map(ev.get("statistics_1half"))
+            if stats: detailed += 1
+            for metric, aliases in stat_aliases.items():
+                add_metric(acc, metric, stat_value(stats, aliases, side))
+            # Produção adversária = volume concedido pela equipe analisada.
+            add_metric(acc, "Finalizações contra", stat_value(stats, stat_aliases["Finalizações"], opp))
+            add_metric(acc, "Chutes no alvo contra", stat_value(stats, stat_aliases["Chutes no alvo"], opp))
+            c1 = stat_value(half, stat_aliases["Escanteios"], side)
+            add_metric(acc, "Escanteios 1T", c1)
+            ctot = stat_value(stats, stat_aliases["Escanteios"], side)
+            nct, nc1 = to_num(ctot), to_num(c1)
+            if nct is not None and nc1 is not None and nct >= nc1:
+                add_metric(acc, "Escanteios 2T", nct - nc1)
+            # Cartões: eventos são fallback real quando o bloco statistics omite a métrica.
+            if _gm_source_metric_count(acc, "Amarelos", 0) < acc.get("Jogos", 0):
+                cards = ev.get("cards") or []
+                yc = rc = 0
+                has_cards = isinstance(cards, list)
+                for card in cards if has_cards else []:
+                    if not isinstance(card, dict): continue
+                    belongs = bool(card.get("home_fault")) if side == "home" else bool(card.get("away_fault"))
+                    if not belongs: continue
+                    ct = _gm_api_norm(card.get("card"))
+                    if "yellow" in ct: yc += 1
+                    elif "red" in ct: rc += 1
+                if has_cards:
+                    # Só preenche por eventos quando a estatística agregada não veio nesta partida.
+                    if stat_value(stats, stat_aliases["Amarelos"], side) is None: add_metric(acc, "Amarelos", yc)
+                    if stat_value(stats, stat_aliases["Vermelhos"], side) is None: add_metric(acc, "Vermelhos", rc)
+            used_ids.append(str(ev.get("match_id") or ""))
+
+        if acc.get("Jogos", 0) <= 0:
+            return None
+        outdf = finish_averages({str(team_name): acc})
+        if outdf.empty: return None
+        row = outdf.iloc[0].to_dict()
+        row["_n_Gols pró"] = int(acc["Jogos"]); row["_n_Gols contra"] = int(acc["Jogos"])
+        metrics = ["Escanteios","Amarelos","Vermelhos","Faltas","Finalizações","Chutes no alvo","Impedimentos","Posse (%)","Passes","Precisão passes (%)","Finalizações contra","Chutes no alvo contra","Escanteios 1T","Escanteios 2T"]
+        return {"row": row, "games": int(acc["Jogos"]), "detailed_games": int(detailed),
+                "coverage": {m:int(row.get(f"_n_{m}",0) or 0) for m in metrics},
+                "event_ids": used_ids, "source":"APIfootball · histórico oficial detalhado"}
+
+    aid, bid = resolve_id(team_a), resolve_id(team_b)
+    return {team_a: profile(team_a, aid), team_b: profile(team_b, bid), "_error": None}
+
 def contextual_analysis_rows(team_a, team_b, competition_name, competition_df, recent_games=10):
     """Recupera contexto adicional apenas onde a base principal é curta/incompleta.
 
@@ -5329,6 +5474,12 @@ def contextual_analysis_rows(team_a, team_b, competition_name, competition_df, r
     recovery_a = recovery_b = None
     sofa_a = sofa_b = espn_a = espn_b = fd_a = fd_b = None
     if detailed_gap or low_results:
+        # v15: APIfootball é a fonte principal de recuperação detalhada. Uma única
+        # janela por equipe traz partidas oficiais e N independente por métrica.
+        api_pair = gm_apifootball_pair_profiles(team_a, team_b, limit_per_team=20, lookback_days=520)
+        api_a = api_pair.get(team_a) if isinstance(api_pair, dict) else None
+        api_b = api_pair.get(team_b) if isinstance(api_pair, dict) else None
+
         event = find_sofascore_event(team_a, team_b, search_days=7)
         aid = (event or {}).get("home_id")
         bid = (event or {}).get("away_id")
@@ -5354,8 +5505,8 @@ def contextual_analysis_rows(team_a, team_b, competition_name, competition_df, r
         fd_a = load_fd_historical_team_profile(competition_name, team_a, min(max(int(recent_games), 12), 18))
         fd_b = load_fd_historical_team_profile(competition_name, team_b, min(max(int(recent_games), 12), 18))
 
-        recovery_a = _gm_merge_recovery_profiles(sofa_a, espn_a, fd_a)
-        recovery_b = _gm_merge_recovery_profiles(sofa_b, espn_b, fd_b)
+        recovery_a = _gm_merge_recovery_profiles(api_a, sofa_a, espn_a, fd_a)
+        recovery_b = _gm_merge_recovery_profiles(api_b, sofa_b, espn_b, fd_b)
 
     def build(base, prof, recovery):
         out = dict(base)
