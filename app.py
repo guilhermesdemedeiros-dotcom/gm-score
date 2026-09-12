@@ -1,6 +1,9 @@
 import io
 import html
 import math
+import json
+import base64
+import hashlib
 import os
 import re
 import time
@@ -25,10 +28,16 @@ try:
 except Exception:
     create_client = None
 
+try:
+    from cryptography.fernet import Fernet, InvalidToken
+except Exception:
+    Fernet = None
+    InvalidToken = Exception
+
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-12-v28-commercial-final"
+GM_BUILD = "2026-09-12-v29-session-persistence-takeover"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -524,6 +533,124 @@ GM_AUTH_SESSION_KEYS = (
     "gm_auth_user_id",
     "gm_auth_email",
 )
+GM_AUTH_RESUME_PARAM = "gm_resume"
+GM_AUTH_RESUME_DAYS = 30
+
+
+def gm_auth_persistence_secret():
+    """Segredo privado usado apenas para proteger a sessão persistente do navegador."""
+    try:
+        cfg = st.secrets.get("auth", {})
+        value = str(cfg.get("persistence_secret", "") or "").strip()
+    except Exception:
+        value = ""
+    return value if len(value) >= 32 else ""
+
+
+def gm_auth_fernet():
+    secret = gm_auth_persistence_secret()
+    if not secret or Fernet is None:
+        return None
+    key = base64.urlsafe_b64encode(hashlib.sha256(secret.encode("utf-8")).digest())
+    return Fernet(key)
+
+
+def gm_auth_clear_resume_marker():
+    """Remove somente o marcador persistente de autenticação da URL."""
+    try:
+        if GM_AUTH_RESUME_PARAM in st.query_params:
+            del st.query_params[GM_AUTH_RESUME_PARAM]
+    except Exception:
+        pass
+
+
+def gm_auth_persist_current_session():
+    """Grava na URL um envelope criptografado para sobreviver a F5/reabertura da mesma URL.
+
+    O conteúdo nunca fica em texto puro e só pode ser aberto com o segredo privado
+    configurado no Streamlit. O envelope expira automaticamente.
+    """
+    fernet = gm_auth_fernet()
+    if fernet is None:
+        return False
+    access = str(st.session_state.get("gm_auth_access_token") or "").strip()
+    refresh = str(st.session_state.get("gm_auth_refresh_token") or "").strip()
+    user_id = str(st.session_state.get("gm_auth_user_id") or "").strip()
+    if not access or not refresh or not user_id:
+        return False
+    device_token = gm_device_session_token()
+    signature = hashlib.sha256(f"{access}|{refresh}|{user_id}|{device_token}".encode("utf-8")).hexdigest()
+    try:
+        existing = str(st.query_params.get(GM_AUTH_RESUME_PARAM, "") or "").strip()
+    except Exception:
+        existing = ""
+    if existing and st.session_state.get("_gm_auth_persist_signature") == signature:
+        return True
+    payload = {
+        "a": access,
+        "r": refresh,
+        "u": user_id,
+        "e": str(st.session_state.get("gm_auth_email") or ""),
+        "d": device_token,
+        "exp": int(time.time()) + (GM_AUTH_RESUME_DAYS * 86400),
+    }
+    encrypted = fernet.encrypt(json.dumps(payload, separators=(",", ":")).encode("utf-8")).decode("ascii")
+    try:
+        if str(st.query_params.get(GM_AUTH_RESUME_PARAM, "") or "") != encrypted:
+            st.query_params[GM_AUTH_RESUME_PARAM] = encrypted
+        st.session_state["_gm_auth_persist_signature"] = signature
+    except Exception:
+        return False
+    return True
+
+
+def gm_auth_try_restore_persistent_session():
+    """Restaura a autenticação após F5/reabertura sem pedir senha novamente."""
+    if st.session_state.get("gm_auth_access_token") and st.session_state.get("gm_auth_refresh_token"):
+        return True
+    try:
+        encrypted = str(st.query_params.get(GM_AUTH_RESUME_PARAM, "") or "").strip()
+    except Exception:
+        encrypted = ""
+    if not encrypted:
+        return False
+    fernet = gm_auth_fernet()
+    if fernet is None:
+        return False
+    try:
+        payload = json.loads(fernet.decrypt(encrypted.encode("ascii")).decode("utf-8"))
+        if int(payload.get("exp") or 0) < int(time.time()):
+            raise ValueError("persistent_session_expired")
+        access = str(payload.get("a") or "").strip()
+        refresh = str(payload.get("r") or "").strip()
+        user_id = str(payload.get("u") or "").strip()
+        email = str(payload.get("e") or "").strip()
+        device_token = str(payload.get("d") or "").strip()
+        if not access or not refresh or not user_id:
+            raise ValueError("persistent_session_invalid")
+        if device_token:
+            st.session_state["gm_device_session_token"] = device_token
+            try:
+                st.query_params["gm_session"] = device_token
+            except Exception:
+                pass
+        st.session_state["gm_auth_access_token"] = access
+        st.session_state["gm_auth_refresh_token"] = refresh
+        st.session_state["gm_auth_user_id"] = user_id
+        st.session_state["gm_auth_email"] = email
+        st.session_state.pop("gm_auth_profile", None)
+        st.session_state["_gm_auth_persist_signature"] = hashlib.sha256(
+            f"{access}|{refresh}|{user_id}|{device_token}".encode("utf-8")
+        ).hexdigest()
+        client = gm_auth_client_from_session()
+        if client is None:
+            raise ValueError("persistent_session_rejected")
+        gm_auth_persist_current_session()
+        return True
+    except Exception:
+        gm_auth_clear_local_session()
+        gm_auth_clear_resume_marker()
+        return False
 
 
 def gm_supabase_config():
@@ -575,6 +702,7 @@ def gm_auth_clear_local_session():
     for key in GM_AUTH_SESSION_KEYS:
         st.session_state.pop(key, None)
     st.session_state.pop("gm_auth_profile", None)
+    st.session_state.pop("_gm_auth_persist_signature", None)
 
 
 def gm_auth_store_session(access_token, refresh_token, user_id, email=""):
@@ -586,6 +714,8 @@ def gm_auth_store_session(access_token, refresh_token, user_id, email=""):
     st.session_state["gm_auth_user_id"] = str(user_id)
     st.session_state["gm_auth_email"] = str(email or "")
     st.session_state.pop("gm_auth_profile", None)
+    # Persistência segura é opcional e só ativa quando [auth].persistence_secret existe.
+    gm_auth_persist_current_session()
 
 
 def gm_auth_sign_in(email, password):
@@ -642,6 +772,7 @@ def gm_auth_client_from_session():
         if session is not None:
             st.session_state["gm_auth_access_token"] = session.access_token
             st.session_state["gm_auth_refresh_token"] = session.refresh_token
+            gm_auth_persist_current_session()
         return client
     except Exception:
         gm_auth_clear_local_session()
@@ -750,7 +881,10 @@ def gm_session_result(data):
 def gm_start_or_validate_session():
     token = gm_device_session_token()
     started = bool(st.session_state.get("gm_device_session_started"))
-    fn = "gm_validate_session" if started else "gm_start_session"
+    # Regra v29: o acesso mais recente assume a conta. Em vez de bloquear o novo
+    # acesso, o Supabase troca o token ativo; os acessos anteriores caem na próxima
+    # validação/heartbeat.
+    fn = "gm_validate_session" if started else "gm_takeover_session"
     data = gm_session_rpc(fn, {"p_session_token": token})
     ok, reason = gm_session_result(data)
     if ok:
@@ -760,6 +894,18 @@ def gm_start_or_validate_session():
         # um rerun normal do Streamlit; a autoridade continua sendo o Supabase.
         st.session_state["gm_session_last_validation_monotonic"] = time.monotonic()
     return ok, reason
+
+
+def gm_drop_replaced_local_session():
+    """Derruba somente este navegador quando outro acesso assumiu a conta.
+
+    Não chama gm_end_session nem sign_out remoto, portanto não interfere na sessão
+    mais nova que acabou de assumir a conta.
+    """
+    gm_auth_clear_local_session()
+    gm_auth_clear_resume_marker()
+    gm_clear_device_session_marker()
+    st.session_state["gm_session_replaced_notice"] = True
 
 
 def gm_session_heartbeat_tick():
@@ -800,6 +946,8 @@ def gm_session_heartbeat_tick():
         return
 
     st.session_state["gm_session_heartbeat_reason"] = str(reason or "unknown")
+    if str(reason or "") in {"another_session_active", "session_mismatch"}:
+        gm_drop_replaced_local_session()
     st.rerun()
 
 
@@ -836,6 +984,7 @@ def gm_auth_sign_out():
         except Exception:
             pass
     gm_auth_clear_local_session()
+    gm_auth_clear_resume_marker()
     gm_clear_device_session_marker()
 
 
@@ -2446,7 +2595,11 @@ def gm_render_public_portal():
 
                 if not session_ok:
                     if session_reason in {"another_session_active", "session_mismatch"}:
-                        gm_render_session_conflict(profile, session_reason)
+                        # Este navegador foi substituído por um acesso mais recente.
+                        # Cai localmente sem bloquear o novo acesso e sem criar ping-pong
+                        # de restauração automática.
+                        gm_drop_replaced_local_session()
+                        st.rerun()
                     elif session_reason == "blocked":
                         gm_render_waiting_access(profile, "blocked")
                     elif session_reason in {"vip_expired", "vip_not_active"}:
@@ -2613,6 +2766,8 @@ def gm_render_public_portal():
         gm_auth_clear_local_session()
 
     gm_render_public_intro()
+    if st.session_state.pop("gm_session_replaced_notice", False):
+        st.info("Este acesso foi encerrado porque a conta entrou no GM SCORE em outro acesso mais recente.")
     # Destino dos botões de acesso exibidos no topo da página pública.
     st.markdown('<div id="gm-acesso"></div>', unsafe_allow_html=True)
     st.markdown("## 🔐 Acesse sua conta ou entre para o VIP")
@@ -2638,6 +2793,10 @@ def gm_render_public_portal():
 # Não troca tokens, não autentica automaticamente e não inicia a trava de sessão VIP.
 if gm_render_email_confirmation_notice():
     st.stop()
+
+# Restaura silenciosamente a sessão após F5/reabertura da mesma URL quando o
+# segredo privado de persistência está configurado no Streamlit.
+gm_auth_try_restore_persistent_session()
 
 # Portal de acesso. Usuários anônimos, pendentes, expirados ou bloqueados param aqui.
 # VIPs e administradores seguem para o mesmo aplicativo completo já existente.
