@@ -28,7 +28,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-12-v24-final-statistical-coherence"
+GM_BUILD = "2026-09-12-v25-public-launch-refresh"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -1767,100 +1767,81 @@ def _gm_safe_html(value):
 
 
 def gm_render_vip_showcase(compact=False):
-    """Vitrine pública do VIP. Todo número exibido aqui é explicitamente demonstrativo."""
-    st.markdown("### 🚀 Uma prévia de como o GM SCORE organiza a partida")
-    st.caption("Demonstração visual do painel VIP. Os valores abaixo são ilustrativos e não representam uma partida real.")
+    """Vitrine pública fiel ao que é entregue dentro do VIP, sem números decorativos."""
+    st.markdown("### 🚀 O que você recebe dentro do GM SCORE VIP")
+    st.caption("A vitrine abaixo mostra recursos reais do aplicativo. As estimativas são geradas somente depois que você seleciona uma partida e dependem da cobertura disponível para cada métrica.")
 
     st.markdown(
         """
         <style>
         .gm-vip-hero{position:relative;overflow:hidden;border:1px solid rgba(34,197,94,.38);border-radius:22px;padding:20px;
-          background:
-            radial-gradient(circle at 84% 14%,rgba(74,222,128,.18),transparent 28%),
-            linear-gradient(145deg,rgba(22,128,58,.22),rgba(15,23,42,.94));
-          box-shadow:0 18px 48px rgba(0,0,0,.22);margin:.35rem 0 1rem 0;color:#f8fafc}
-        .gm-vip-hero:after{content:"";position:absolute;right:-42px;bottom:-80px;width:220px;height:220px;border:1px solid rgba(134,239,172,.12);border-radius:50%}
+          background:radial-gradient(circle at 84% 14%,rgba(74,222,128,.18),transparent 28%),linear-gradient(145deg,rgba(22,128,58,.22),rgba(15,23,42,.94));
+          box-shadow:0 18px 48px rgba(0,0,0,.22);margin:.35rem 0 1rem;color:#f8fafc}
         .gm-vip-kicker{font-size:.70rem;font-weight:850;letter-spacing:.14em;color:#86efac;text-transform:uppercase}
-        .gm-vip-title{font-size:1.65rem;font-weight:900;margin:.38rem 0 .2rem;letter-spacing:-.025em}
-        .gm-vip-sub{font-size:.87rem;color:#cbd5e1;margin-bottom:1rem;max-width:720px;line-height:1.45}
-        .gm-vip-scoregrid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}
-        .gm-vip-scorebox{background:rgba(15,23,42,.74);border:1px solid rgba(148,163,184,.20);border-radius:14px;padding:12px;text-align:center}
-        .gm-vip-scorebox b{display:block;font-size:1.35rem;color:#fff;margin-top:2px}
-        .gm-vip-scorebox span{font-size:.70rem;color:#94a3b8;text-transform:uppercase;letter-spacing:.06em}
-        .gm-demo-bars{display:grid;gap:10px;margin-top:15px}
-        .gm-bar-label{display:flex;justify-content:space-between;gap:14px;font-size:.82rem;margin-bottom:5px;color:#e2e8f0}
-        .gm-bar-label b{color:#bbf7d0}
-        .gm-bar-track{height:10px;border-radius:999px;background:rgba(148,163,184,.17);overflow:hidden;border:1px solid rgba(148,163,184,.08)}
-        .gm-bar-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,#15803d,#4ade80)}
-        .gm-chip{display:inline-block;border:1px solid rgba(74,222,128,.30);background:rgba(22,163,74,.12);color:#bbf7d0;border-radius:999px;padding:5px 9px;margin:3px 3px 3px 0;font-size:.76rem;font-weight:750}
+        .gm-vip-title{font-size:1.65rem;font-weight:900;margin:.38rem 0 .25rem;letter-spacing:-.025em}
+        .gm-vip-sub{font-size:.87rem;color:#cbd5e1;margin-bottom:1rem;max-width:720px;line-height:1.5}
+        .gm-delivery-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin-top:13px}
+        .gm-delivery{background:rgba(15,23,42,.72);border:1px solid rgba(148,163,184,.20);border-radius:14px;padding:12px}
+        .gm-delivery b{display:block;font-size:.86rem;color:#f8fafc;margin-bottom:4px}.gm-delivery span{font-size:.74rem;color:#94a3b8;line-height:1.35}
+        .gm-trust-row{display:flex;gap:7px;flex-wrap:wrap;margin-top:13px}.gm-chip{display:inline-block;border:1px solid rgba(74,222,128,.30);background:rgba(22,163,74,.12);color:#bbf7d0;border-radius:999px;padding:5px 9px;font-size:.75rem;font-weight:750}
         .gm-section-card{border:1px solid rgba(148,163,184,.22);border-radius:17px;padding:14px 15px;background:rgba(30,41,59,.18);min-height:100%}
-        .gm-section-card h4{margin:0 0 7px 0;font-size:.98rem}.gm-section-card p{margin:0;color:inherit;opacity:.78;font-size:.84rem;line-height:1.43}
-        .gm-comp-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:9px}
-        .gm-comp{border:1px solid rgba(148,163,184,.20);border-radius:12px;padding:9px 10px;background:rgba(30,41,59,.14);font-size:.83rem;font-weight:650}
-        .gm-opportunities{display:grid;gap:9px;margin:.55rem 0 1.2rem}
-        .gm-opportunity{border:1px solid rgba(148,163,184,.20);border-radius:15px;padding:12px 13px;background:linear-gradient(135deg,rgba(30,41,59,.16),rgba(22,163,74,.05))}
-        .gm-opportunity-top{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:7px;font-size:.86rem;font-weight:750}
-        .gm-opportunity-top strong{font-size:1.05rem;color:#22c55e}.gm-opportunity small{display:block;margin-top:6px;opacity:.66;font-size:.73rem}
-        @media(max-width:700px){.gm-vip-scoregrid{grid-template-columns:1fr 1fr 1fr}.gm-comp-grid{grid-template-columns:1fr}.gm-vip-title{font-size:1.38rem}}
+        .gm-section-card h4{margin:0 0 7px;font-size:.98rem}.gm-section-card p{margin:0;color:inherit;opacity:.78;font-size:.84rem;line-height:1.43}
+        .gm-comp-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:9px}.gm-comp{border:1px solid rgba(148,163,184,.20);border-radius:12px;padding:9px 10px;background:rgba(30,41,59,.14);font-size:.83rem;font-weight:650}
+        .gm-confidence{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:.6rem 0 1rem}.gm-confidence>div{border:1px solid rgba(148,163,184,.20);border-radius:13px;padding:10px 11px;background:rgba(30,41,59,.14);font-size:.78rem;line-height:1.35}.gm-confidence b{display:block;margin-bottom:3px}
+        @media(max-width:700px){.gm-delivery-grid{grid-template-columns:1fr 1fr}.gm-comp-grid{grid-template-columns:1fr}.gm-vip-title{font-size:1.38rem}}
+        @media(max-width:480px){.gm-delivery-grid{grid-template-columns:1fr}.gm-confidence{grid-template-columns:1fr}}
         </style>
         <div class="gm-vip-hero">
-          <div class="gm-vip-kicker">Demonstração visual • valores ilustrativos</div>
-          <div class="gm-vip-title">⚽ Time A <span style="opacity:.45">×</span> Time B</div>
-          <div class="gm-vip-sub">O painel real usa a partida selecionada e os dados disponíveis para transformar histórico, contexto e modelo em probabilidades estimadas.</div>
-          <div class="gm-vip-scoregrid">
-            <div class="gm-vip-scorebox"><span>Casa</span><b>46%</b></div>
-            <div class="gm-vip-scorebox"><span>Empate</span><b>28%</b></div>
-            <div class="gm-vip-scorebox"><span>Fora</span><b>26%</b></div>
+          <div class="gm-vip-kicker">Painel VIP • análise da partida selecionada</div>
+          <div class="gm-vip-title">⚽ Escolha o confronto. O GM SCORE organiza a leitura.</div>
+          <div class="gm-vip-sub">O aplicativo reúne histórico e métricas disponíveis, gera projeções e apresenta cada mercado com o nível de amostra correspondente. Quando os dados não sustentam uma conclusão, isso é informado na própria tela.</div>
+          <div class="gm-delivery-grid">
+            <div class="gm-delivery"><b>⚽ Resultado e gols</b><span>1X2, dupla chance, gols por tempo/equipe e linhas suportadas.</span></div>
+            <div class="gm-delivery"><b>🚩 Escanteios</b><span>Partida, 1º/2º tempo e projeções por equipe quando disponíveis.</span></div>
+            <div class="gm-delivery"><b>🟨 Cartões</b><span>Total, por equipe e mercados de ambas receberem cartões.</span></div>
+            <div class="gm-delivery"><b>🥅 Finalizações</b><span>Total, no alvo e por equipe conforme cobertura da fonte.</span></div>
+            <div class="gm-delivery"><b>⭐ Oportunidades</b><span>Destaques somente em mercados habilitados e com amostra consolidada.</span></div>
+            <div class="gm-delivery"><b>📤 Compartilhar em HD</b><span>Arte da análise pronta para compartilhar diretamente pelo celular.</span></div>
           </div>
-          <div class="gm-demo-bars">
-            <div><div class="gm-bar-label"><span>Mais de 1,5 gols</span><b>82%</b></div><div class="gm-bar-track"><div class="gm-bar-fill" style="width:82%"></div></div></div>
-            <div><div class="gm-bar-label"><span>Mais de 7,5 escanteios</span><b>74%</b></div><div class="gm-bar-track"><div class="gm-bar-fill" style="width:74%"></div></div></div>
-            <div><div class="gm-bar-label"><span>Mais de 3,5 cartões</span><b>68%</b></div><div class="gm-bar-track"><div class="gm-bar-fill" style="width:68%"></div></div></div>
-          </div>
-          <div style="margin-top:13px">
-            <span class="gm-chip">🎯 Probabilidades</span><span class="gm-chip">🛡️ Dupla chance</span><span class="gm-chip">💰 Odds justas</span><span class="gm-chip">📈 Contexto</span>
-          </div>
+          <div class="gm-trust-row"><span class="gm-chip">Sem garantia de resultado</span><span class="gm-chip">Amostra por métrica</span><span class="gm-chip">Odds justas quando aplicável</span></div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    st.markdown("#### 📊 O que você encontra na análise")
+    st.markdown("#### 📊 Transparência da análise")
+    st.markdown(
+        """
+        <div class="gm-confidence">
+          <div><b>🟢 Conclusivo</b>Amostra consolidada para a métrica analisada.</div>
+          <div><b>🟡 Cautela</b>Amostra ainda curta; a leitura permanece visível com aviso.</div>
+          <div><b>⚪ Inconclusivo</b>Sem base suficiente; o GM SCORE não força uma estimativa.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.caption("As probabilidades são estimativas estatísticas, não promessa de acerto. A disponibilidade de cada mercado varia conforme os dados reais da competição e da partida.")
+
+    st.markdown("#### 📌 Recursos incluídos")
     st.markdown(
         """
         <div class="gm-comp-grid" style="margin-bottom:1rem">
-          <div class="gm-section-card"><h4>⚽ Resultado e gols</h4><p>Probabilidade 1X2, dupla chance, gols esperados e linhas de gols calculadas a partir dos dados disponíveis.</p></div>
-          <div class="gm-section-card"><h4>🚩 Escanteios</h4><p>Médias, expectativa do confronto e probabilidades estimadas para diferentes linhas.</p></div>
-          <div class="gm-section-card"><h4>🟨 Cartões</h4><p>Perfil disciplinar, médias das equipes e expectativa estatística para a partida.</p></div>
-          <div class="gm-section-card"><h4>🥅 Finalizações</h4><p>Finalizações, chutes no alvo e leitura do potencial ofensivo quando a fonte fornece esses dados.</p></div>
-          <div class="gm-section-card"><h4>📈 Forma e contexto</h4><p>Momento recente, mando, força da competição e confronto direto quando houver base verificada.</p></div>
-          <div class="gm-section-card"><h4>💰 Odds justas</h4><p>Probabilidades finais do modelo convertidas em odds justas; comparação de mercado apenas quando houver cotação validada.</p></div>
+          <div class="gm-section-card"><h4>📅 Agenda e seleção</h4><p>Escolha a competição, a data e o confronto disponível ou selecione as equipes.</p></div>
+          <div class="gm-section-card"><h4>📈 Contexto da partida</h4><p>Forma, histórico e métricas usadas pelo modelo conforme a cobertura encontrada.</p></div>
+          <div class="gm-section-card"><h4>💰 Odds justas</h4><p>Conversão das probabilidades finais do modelo; comparação de mercado somente quando houver cotação validada.</p></div>
+          <div class="gm-section-card"><h4>📰 Central de notícias</h4><p>Atualizações e comunicados do GM SCORE disponíveis dentro da conta.</p></div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    st.markdown("#### 🎯 Como as oportunidades aparecem")
-    st.caption("Exemplo visual com números ilustrativos. No VIP, as linhas são calculadas para a partida realmente selecionada.")
-    st.markdown(
-        """
-        <div class="gm-opportunities">
-          <div class="gm-opportunity"><div class="gm-opportunity-top"><span>⚽ Mais de 1,5 gols</span><strong>82%</strong></div><div class="gm-bar-track"><div class="gm-bar-fill" style="width:82%"></div></div><small>Probabilidade estimada • exemplo demonstrativo</small></div>
-          <div class="gm-opportunity"><div class="gm-opportunity-top"><span>🚩 Mais de 7,5 escanteios</span><strong>74%</strong></div><div class="gm-bar-track"><div class="gm-bar-fill" style="width:74%"></div></div><small>Probabilidade estimada • exemplo demonstrativo</small></div>
-          <div class="gm-opportunity"><div class="gm-opportunity-top"><span>🟨 Mais de 3,5 cartões</span><strong>68%</strong></div><div class="gm-bar-track"><div class="gm-bar-fill" style="width:68%"></div></div><small>Probabilidade estimada • exemplo demonstrativo</small></div>
-          <div class="gm-opportunity"><div class="gm-opportunity-top"><span>🛡️ Dupla chance 1X</span><strong>66%</strong></div><div class="gm-bar-track"><div class="gm-bar-fill" style="width:66%"></div></div><small>Probabilidade estimada • exemplo demonstrativo</small></div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.markdown("### 🌍 Competições disponíveis no GM SCORE")
-    st.caption("As competições abaixo fazem parte da cobertura atual do aplicativo.")
+    st.markdown("### 🌍 21 competições disponíveis")
+    st.caption("Cobertura atual do GM SCORE. A quantidade de métricas disponíveis pode variar entre competições e partidas.")
     competition_html = ''.join(f'<div class="gm-comp">{_gm_safe_html(item)}</div>' for item in GM_PUBLIC_COMPETITIONS)
     st.markdown(f'<div class="gm-comp-grid">{competition_html}</div>', unsafe_allow_html=True)
 
     if not compact:
-        st.success("⭐ Com o VIP ativo, o cliente escolhe a partida e recebe a análise gerada com os dados realmente disponíveis para aquela competição.")
+        st.success("⭐ No VIP, a análise é gerada para a partida realmente selecionada — sem números decorativos na entrega ao cliente.")
 
 
 def gm_render_public_intro():
@@ -1893,13 +1874,14 @@ def gm_render_public_intro():
         <section class="gm-public-hero">
           <div class="gm-public-ball">⚽</div>
           <div class="gm-public-kicker">GM SCORE VIP • análise pré-jogo</div>
-          <div class="gm-public-title">Informação para enxergar a partida <span>com mais clareza.</span></div>
-          <div class="gm-public-copy">Dados, contexto e probabilidades estimadas organizados em uma leitura objetiva. Sem prometer certezas: o foco é identificar os cenários que os dados sustentam.</div>
+          <div class="gm-public-title">Dados da partida organizados para uma leitura <span>mais objetiva.</span></div>
+          <div class="gm-public-copy">Escolha o confronto e veja projeções, probabilidades estimadas e métricas disponíveis em um único painel. Quando a amostra não é suficiente, o próprio GM SCORE informa.</div>
           <div class="gm-public-pills">
             <span class="gm-public-pill">⚽ Resultado e gols</span>
             <span class="gm-public-pill">🚩 Escanteios</span>
             <span class="gm-public-pill">🟨 Cartões</span>
-            <span class="gm-public-pill">🎯 Odds justas</span>
+            <span class="gm-public-pill">🥅 Finalizações</span>
+            <span class="gm-public-pill">⭐ Oportunidades</span>
           </div>
         </section>
         <div class="gm-feature-grid">
