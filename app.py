@@ -27,7 +27,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-11-data-recovery-v4-global-coverage"
+GM_BUILD = "2026-09-11-data-recovery-v5-complete-market-search"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -2916,7 +2916,7 @@ def to_num(value):
         return None
 
 
-HIDDEN_OPP_METRICS = ["Finalizações contra", "Chutes no alvo contra"]
+HIDDEN_OPP_METRICS = ["Finalizações contra", "Chutes no alvo contra", "Escanteios 1T", "Escanteios 2T"]
 
 
 def empty_team(name):
@@ -3878,7 +3878,7 @@ def _gm_sofascore_stat_map(name):
 
 
 def _gm_extract_sofascore_event_stats(payload):
-    """Extrai estatísticas de tempo regulamentar/ALL do payload público do SofaScore."""
+    """Extrai estatísticas FT/ALL do SofaScore sem misturar períodos."""
     out = {}
     periods = payload.get("statistics", []) if isinstance(payload, dict) else []
     chosen = []
@@ -3889,7 +3889,9 @@ def _gm_extract_sofascore_event_stats(payload):
         if p in ("ALL", "FULL", "MATCH", "FT", ""):
             chosen.append(period)
     if not chosen:
-        chosen = [x for x in periods if isinstance(x, dict)]
+        # Só usa fallback quando não há bloco agregado. Blocos 1ST/2ND não são
+        # somados aqui para evitar dupla contagem ou períodos incompatíveis.
+        chosen = [x for x in periods if isinstance(x, dict) and str(x.get("period") or "").upper() not in ("1ST", "2ND", "FIRST", "SECOND")][:1]
     for period in chosen:
         for group in period.get("groups", []) or []:
             if not isinstance(group, dict):
@@ -3905,6 +3907,62 @@ def _gm_extract_sofascore_event_stats(payload):
                     continue
                 out[metric] = (hv, av)
     return out
+
+
+def _gm_extract_sofascore_period_stats(payload):
+    """Extrai métricas separadas por tempo quando o SofaScore realmente as publica."""
+    out = {"1T": {}, "2T": {}}
+    periods = payload.get("statistics", []) if isinstance(payload, dict) else []
+    for period in periods:
+        if not isinstance(period, dict):
+            continue
+        raw = str(period.get("period") or "").upper()
+        if raw in ("1ST", "FIRST", "FIRST_HALF", "1H"):
+            bucket = "1T"
+        elif raw in ("2ND", "SECOND", "SECOND_HALF", "2H"):
+            bucket = "2T"
+        else:
+            continue
+        for group in period.get("groups", []) or []:
+            if not isinstance(group, dict):
+                continue
+            for item in group.get("statisticsItems", []) or []:
+                if not isinstance(item, dict):
+                    continue
+                metric = _gm_sofascore_stat_map(item.get("name"))
+                if not metric or metric in out[bucket]:
+                    continue
+                hv, av = to_num(item.get("home")), to_num(item.get("away"))
+                if hv is None and av is None:
+                    continue
+                out[bucket][metric] = (hv, av)
+    return out
+
+
+def _gm_extract_sofascore_cards_from_incidents(payload):
+    """Conta cartões por equipe pelos incidentes quando o bloco de estatísticas omite cartões."""
+    counts = {"home_y": 0, "away_y": 0, "home_r": 0, "away_r": 0}
+    found = False
+    for inc in (payload or {}).get("incidents", []) or []:
+        if not isinstance(inc, dict):
+            continue
+        itype = str(inc.get("incidentType") or inc.get("type") or "").lower()
+        cls = str(inc.get("incidentClass") or inc.get("class") or "").lower()
+        if "card" not in itype and cls not in ("yellow", "red", "yellowred", "yellow_red", "secondyellow"):
+            continue
+        is_home = inc.get("isHome")
+        if is_home is None:
+            side = str(inc.get("homeAway") or "").lower()
+            is_home = side == "home" if side in ("home", "away") else None
+        if is_home is None:
+            continue
+        found = True
+        prefix = "home" if bool(is_home) else "away"
+        if cls in ("red", "yellowred", "yellow_red", "secondyellow", "second_yellow"):
+            counts[f"{prefix}_r"] += 1
+        else:
+            counts[f"{prefix}_y"] += 1
+    return counts if found else None
 
 
 def _gm_recovery_team_key(name):
@@ -4010,24 +4068,29 @@ def _gm_sofascore_team_search_id(team):
 
 
 @st.cache_data(ttl=21600, show_spinner=False)
-def load_sofascore_recent_profile(team_id, team_name, recent_games=8):
+def load_sofascore_recent_profile(team_id, team_name, recent_games=12):
     """Recupera histórico recente detalhado de uma equipe no SofaScore.
 
-    É uma camada de recuperação, não uma fonte que força resultado. Cada métrica
-    carrega sua própria cobertura e só entra no modelo quando há amostra real.
+    v5 procura mais fundo antes de desistir. A coleta só para quando alcança a
+    janela desejada de resultados E uma cobertura razoável das métricas-chave,
+    ou quando esgota as páginas disponíveis. Cartões também têm fallback pelos
+    incidentes do jogo, pois nem todo campeonato os publica no bloco statistics.
     """
     try:
         team_id = int(team_id)
     except Exception:
         return None
+
+    target_games = max(8, min(int(recent_games or 12), 18))
     events = []
-    for page in (0, 1):
-        urls = [
+    seen_event_ids = set()
+    # Mais páginas ajudam ligas/camadas onde parte dos jogos não possui stats.
+    for page in range(0, 4):
+        payload = None
+        for url in (
             f"https://api.sofascore.com/api/v1/team/{team_id}/events/last/{page}",
             f"https://www.sofascore.com/api/v1/team/{team_id}/events/last/{page}",
-        ]
-        payload = None
-        for url in urls:
+        ):
             try:
                 r = requests.get(url, headers=HEADERS, timeout=10)
                 if r.status_code == 200:
@@ -4036,18 +4099,24 @@ def load_sofascore_recent_profile(team_id, team_name, recent_games=8):
                 continue
         if not payload:
             continue
-        events.extend(payload.get("events", []) or [])
-        if len(events) >= max(14, int(recent_games) * 2):
+        for ev in payload.get("events", []) or []:
+            eid = ev.get("id") if isinstance(ev, dict) else None
+            if eid and eid not in seen_event_ids:
+                seen_event_ids.add(eid); events.append(ev)
+        if len(events) >= max(36, target_games * 3):
             break
 
     acc = empty_team(str(team_name or team_id))
     detailed_games = 0
     used_events = 0
-    seen = set()
+    used_ids = []
+
+    def key_coverage(metric):
+        return int(acc.get(f"_n_{metric}", 0) or 0)
+
     for ev in events:
-        if not isinstance(ev, dict) or ev.get("id") in seen or not _gm_sofascore_finished(ev):
+        if not isinstance(ev, dict) or not _gm_sofascore_finished(ev):
             continue
-        seen.add(ev.get("id"))
         home_id = (ev.get("homeTeam") or {}).get("id")
         away_id = (ev.get("awayTeam") or {}).get("id")
         if team_id not in (home_id, away_id):
@@ -4060,9 +4129,10 @@ def load_sofascore_recent_profile(team_id, team_name, recent_games=8):
             acc["Gols pró"] += gf
             acc["Gols contra"] += ga
             used_events += 1
+            used_ids.append(ev.get("id"))
 
-        stat_payload = None
         eid = ev.get("id")
+        stat_payload = None
         if eid:
             for url in (
                 f"https://api.sofascore.com/api/v1/event/{eid}/statistics",
@@ -4074,7 +4144,9 @@ def load_sofascore_recent_profile(team_id, team_name, recent_games=8):
                         stat_payload = rr.json(); break
                 except Exception:
                     continue
+
         stats = _gm_extract_sofascore_event_stats(stat_payload or {})
+        period_stats = _gm_extract_sofascore_period_stats(stat_payload or {})
         if stats:
             detailed_games += 1
             idx = 0 if side == "home" else 1
@@ -4087,7 +4159,43 @@ def load_sofascore_recent_profile(team_id, team_name, recent_games=8):
                     add_metric(acc, "Finalizações contra", pair[opp_idx])
                 elif metric == "Chutes no alvo":
                     add_metric(acc, "Chutes no alvo contra", pair[opp_idx])
-        if used_events >= int(recent_games):
+            # Separação de escanteios por tempo só entra quando publicada de fato.
+            for bucket, hidden_metric in (("1T", "Escanteios 1T"), ("2T", "Escanteios 2T")):
+                pair = (period_stats.get(bucket) or {}).get("Escanteios")
+                if pair:
+                    add_metric(acc, hidden_metric, pair[idx])
+
+        # Fallback de cartões: muitos campeonatos têm incidentes mesmo quando
+        # statistics não lista amarelos/vermelhos.
+        if eid and (key_coverage("Amarelos") < target_games or key_coverage("Vermelhos") < max(3, target_games // 2)):
+            incident_payload = None
+            for url in (
+                f"https://api.sofascore.com/api/v1/event/{eid}/incidents",
+                f"https://www.sofascore.com/api/v1/event/{eid}/incidents",
+            ):
+                try:
+                    rr = requests.get(url, headers=HEADERS, timeout=8)
+                    if rr.status_code == 200:
+                        incident_payload = rr.json(); break
+                except Exception:
+                    continue
+            cards = _gm_extract_sofascore_cards_from_incidents(incident_payload or {})
+            if cards:
+                # Só usa incidentes para a métrica que NÃO veio no statistics,
+                # evitando contar o mesmo jogo duas vezes.
+                idx_home = side == "home"
+                y = cards["home_y"] if idx_home else cards["away_y"]
+                r = cards["home_r"] if idx_home else cards["away_r"]
+                if "Amarelos" not in stats:
+                    add_metric(acc, "Amarelos", y)
+                if "Vermelhos" not in stats:
+                    add_metric(acc, "Vermelhos", r)
+
+        # Não encerra apenas por quantidade de placares. Antes exige cobertura
+        # das métricas que sustentam os principais mercados.
+        key_ns = [key_coverage(m) for m in ("Escanteios", "Amarelos", "Finalizações", "Chutes no alvo")]
+        enough_detail = sum(n >= min(8, target_games) for n in key_ns) >= 3
+        if used_events >= target_games and enough_detail:
             break
 
     if acc.get("Jogos", 0) <= 0:
@@ -4096,30 +4204,37 @@ def load_sofascore_recent_profile(team_id, team_name, recent_games=8):
     if outdf is None or outdf.empty:
         return None
     row = outdf.iloc[0].to_dict()
-    # Gols sempre têm cobertura igual ao número de resultados reais utilizados.
     row["_n_Gols pró"] = int(acc.get("Jogos", 0))
     row["_n_Gols contra"] = int(acc.get("Jogos", 0))
+    coverage = {
+        m: int(row.get(f"_n_{m}", 0) or 0)
+        for m in ("Escanteios", "Amarelos", "Vermelhos", "Faltas", "Finalizações", "Chutes no alvo", "Escanteios 1T", "Escanteios 2T")
+    }
     return {
         "row": row,
         "games": int(acc.get("Jogos", 0)),
         "detailed_games": int(detailed_games),
-        "source": "SofaScore · histórico recente",
+        "coverage": coverage,
+        "event_ids": [x for x in used_ids if x],
+        "source": "SofaScore · histórico detalhado + incidentes",
     }
 
 
 def _gm_blend_recovery_metric(current_value, current_n, recovery_value, recovery_n):
-    """Combina uma base curta com recuperação real sem somar amostras possivelmente sobrepostas."""
+    """Combina coberturas reais sem somar partidas potencialmente sobrepostas.
+
+    v5: uma base principal com 6-7 jogos não bloqueia mais um histórico detalhado
+    maior. Se a recuperação possui cobertura superior, ela pode elevar a amostra
+    efetiva até o maior N observado, nunca pela soma das duas fontes.
+    """
     if recovery_value is None or recovery_n < 3:
         return current_value, current_n, False
     if current_value is None or current_n <= 0:
         return float(recovery_value), int(recovery_n), True
-    if current_n >= 6:
+    if int(recovery_n) <= int(current_n):
         return float(current_value), int(current_n), False
-    # Quando a base principal é curta, ela mantém prioridade, mas o histórico
-    # recente detalhado reduz a fragilidade. A cobertura efetiva usa max(), não
-    # soma, para evitar dupla contagem de partidas presentes nas duas fontes.
-    cw = max(float(current_n), 1.0)
-    rw = min(float(recovery_n), 6.0)
+    cw = max(min(float(current_n), 10.0), 1.0)
+    rw = max(min(float(recovery_n), 12.0), 1.0)
     value = (float(current_value) * cw + float(recovery_value) * rw) / (cw + rw)
     return value, max(int(current_n), int(recovery_n)), True
 
@@ -4203,8 +4318,10 @@ def contextual_analysis_rows(team_a, team_b, competition_name, competition_df, r
     ga = int(float(base_a.get("Jogos", 0) or 0)); gb = int(float(base_b.get("Jogos", 0) or 0))
 
     key_detail = ["Escanteios", "Amarelos", "Finalizações", "Chutes no alvo"]
+    # v5: antes de classificar um mercado como Cautela/Inconclusivo, tenta
+    # completar a cobertura específica até o patamar de 8 jogos.
     detailed_gap = any(
-        _gm_source_metric_count(row, metric) < 3
+        _gm_source_metric_count(row, metric) < 8
         for row in (base_a, base_b) for metric in key_detail
     )
     low_results = min(ga, gb) < 6
@@ -4235,9 +4352,9 @@ def contextual_analysis_rows(team_a, team_b, competition_name, competition_df, r
         if not bid:
             found = _gm_sofascore_team_search_id(team_b); bid = (found or {}).get("id")
         if aid:
-            recovery_a = load_sofascore_recent_profile(aid, team_a, min(max(int(recent_games), 8), 12))
+            recovery_a = load_sofascore_recent_profile(aid, team_a, min(max(int(recent_games), 12), 18))
         if bid:
-            recovery_b = load_sofascore_recent_profile(bid, team_b, min(max(int(recent_games), 8), 12))
+            recovery_b = load_sofascore_recent_profile(bid, team_b, min(max(int(recent_games), 12), 18))
 
     def build(base, prof, recovery):
         out = dict(base)
@@ -4257,11 +4374,13 @@ def contextual_analysis_rows(team_a, team_b, competition_name, competition_df, r
             "Finalizações": None, "Chutes no alvo": None, "Faltas": None,
             "Impedimentos": None, "Posse (%)": None,
             "Finalizações contra": None, "Chutes no alvo contra": None,
+            "Escanteios 1T": None, "Escanteios 2T": None,
         }
         metrics = [
             "Gols pró", "Gols contra", "Escanteios", "Amarelos", "Vermelhos",
             "Faltas", "Finalizações", "Chutes no alvo", "Impedimentos", "Posse (%)",
             "Finalizações contra", "Chutes no alvo contra",
+            "Escanteios 1T", "Escanteios 2T",
         ]
         for metric in metrics:
             current_n = _gm_source_metric_count(base, metric, cg)
@@ -4318,7 +4437,7 @@ def contextual_analysis_rows(team_a, team_b, competition_name, competition_df, r
         "priors": priors,
         "data_recovery_home": recovery_a,
         "data_recovery_away": recovery_b,
-        "data_recovery_version": "v4-global-coverage",
+        "data_recovery_version": "v5-complete-market-search",
     }
     return a, b, ctx
 
@@ -5434,9 +5553,28 @@ def render_core_markets_dashboard(a, b, team_a, team_b, df, probs=None, sample_g
         _gm_market_card("⛳ Escanteios na partida", c_status,
                         projection=f"{c['total']:.2f}".replace('.', ',') if c else None,
                         lines=_gm_pct_lines(c['total'], [6.5,7.5,8.5,9.5,10.5]) if c else None)
-        inc = _gm_market_status(sample_games, available=False)
-        _gm_market_card("⏱️ Escanteios — 1º tempo", inc, note="A fonte atual não fornece separação por tempo com cobertura suficiente.")
-        _gm_market_card("⏱️ Escanteios — 2º tempo", inc, note="A fonte atual não fornece separação por tempo com cobertura suficiente.")
+        c1a, c1b = metric_value(a, "Escanteios 1T"), metric_value(b, "Escanteios 1T")
+        c2a, c2b = metric_value(a, "Escanteios 2T"), metric_value(b, "Escanteios 2T")
+        c1_sample = _gm_pair_metric_sample(a, b, ["Escanteios 1T"], 0)
+        c2_sample = _gm_pair_metric_sample(a, b, ["Escanteios 2T"], 0)
+        c1_total = (c1a + c1b) if c1a is not None and c1b is not None else None
+        c2_total = (c2a + c2b) if c2a is not None and c2b is not None else None
+        c1_status = _gm_market_status(sample_games, available=c1_total is not None, specific_sample=c1_sample)
+        c2_status = _gm_market_status(sample_games, available=c2_total is not None, specific_sample=c2_sample)
+        _gm_market_card(
+            "⏱️ Escanteios — 1º tempo", c1_status,
+            projection=f"{c1_total:.2f}".replace('.', ',') if c1_total is not None else None,
+            lines=_gm_pct_lines(c1_total, [2.5,3.5,4.5,5.5,6.5]) if c1_total is not None else None,
+            note=(f"Base específica recuperada: {c1_sample} partidas com divisão por tempo." if c1_total is not None
+                  else "Separação por tempo não encontrada com cobertura suficiente após a busca complementar."),
+        )
+        _gm_market_card(
+            "⏱️ Escanteios — 2º tempo", c2_status,
+            projection=f"{c2_total:.2f}".replace('.', ',') if c2_total is not None else None,
+            lines=_gm_pct_lines(c2_total, [2.5,3.5,4.5,5.5,6.5]) if c2_total is not None else None,
+            note=(f"Base específica recuperada: {c2_sample} partidas com divisão por tempo." if c2_total is not None
+                  else "Separação por tempo não encontrada com cobertura suficiente após a busca complementar."),
+        )
         _gm_team_market_card(
             "👥 Escanteios por equipe", c_status, team_a, team_b,
             home_projection=c['home'] if c else None,
