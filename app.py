@@ -28,7 +28,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-12-v21-production-coherence-fix"
+GM_BUILD = "2026-09-12-v22-stable-team-id-resolution"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -5351,17 +5351,22 @@ def gm_apifootball_pair_profiles(team_a, team_b, competition_name=None, limit_pe
                 continue
             nn = _gm_api_norm(api_name)
             score = 0
-            for target in targets:
-                if nn == target:
-                    score = max(score, 100)
-                elif target and (target in nn or nn in target):
-                    score = max(score, 82)
-                else:
-                    sa, sb = set(target.split()), set(nn.split())
-                    if sa and sb:
-                        overlap = len(sa & sb) / max(len(sa | sb), 1)
-                        if overlap >= 0.66:
-                            score = max(score, int(70 * overlap))
+            # O mesmo resolvedor auditado das 21 ligas passa a ser a regra central.
+            # Isso cobre aliases oficiais, acentos, FC/CF/SC e variações de nome.
+            if _gm_team_name_match(name, api_name):
+                score = 100 if nn in targets else 92
+            else:
+                for target in targets:
+                    if nn == target:
+                        score = max(score, 100)
+                    elif target and min(len(target), len(nn)) >= 5 and (target in nn or nn in target):
+                        score = max(score, 82)
+                    else:
+                        sa, sb = set(target.split()), set(nn.split())
+                        if sa and sb:
+                            overlap = len(sa & sb) / max(len(sa | sb), 1)
+                            if overlap >= 0.72:
+                                score = max(score, int(80 * overlap))
             if best is None or score > best[0]:
                 best = (score, tid)
         return best[1] if best and best[0] >= 65 else None
@@ -5421,9 +5426,18 @@ def gm_apifootball_pair_profiles(team_a, team_b, competition_name=None, limit_pe
     def is_finished(ev):
         return _gm_api_norm(ev.get("match_status")) in {"finished", "after et", "after pen", "ft"}
 
-    def belongs_to(ev, targets):
-        hn, an = _gm_api_norm(ev.get("match_hometeam_name")), _gm_api_norm(ev.get("match_awayteam_name"))
-        return any(t == hn or t == an or (t and (t in hn or hn in t or t in an or an in t)) for t in targets)
+    def belongs_to(ev, targets, team_id=None):
+        # Depois de resolver o clube, IDs oficiais são a fonte de verdade.
+        # Nome fica apenas como fallback para respostas antigas/incompletas da API.
+        tid = str(team_id or "").strip()
+        if tid:
+            hid = str(ev.get("match_hometeam_id") or "").strip()
+            aid = str(ev.get("match_awayteam_id") or "").strip()
+            if hid or aid:
+                return tid in {hid, aid}
+        hn = str(ev.get("match_hometeam_name") or "")
+        an = str(ev.get("match_awayteam_name") or "")
+        return any(_gm_team_name_match(t, hn) or _gm_team_name_match(t, an) for t in targets)
 
     def official_event(ev):
         league = _gm_api_norm(ev.get("league_name"))
@@ -5441,7 +5455,7 @@ def gm_apifootball_pair_profiles(team_a, team_b, competition_name=None, limit_pe
                 pooled.extend(events)
         # 2) se a temporada/fase ainda estiver curta, completa com partidas oficiais
         # recentes do mesmo clube (copas/divisão anterior), preservando IDs reais.
-        league_finished = [x for x in pooled if isinstance(x, dict) and is_finished(x) and belongs_to(x, targets)]
+        league_finished = [x for x in pooled if isinstance(x, dict) and is_finished(x) and belongs_to(x, targets, team_id)]
         if len(league_finished) < int(limit_per_team):
             events, ev_err = gm_apifootball_request("get_events", team_id=team_id, **date_params)
             if not ev_err and isinstance(events, list):
@@ -5449,7 +5463,7 @@ def gm_apifootball_pair_profiles(team_a, team_b, competition_name=None, limit_pe
 
         seen, finished = set(), []
         for ev in pooled:
-            if not isinstance(ev, dict) or not is_finished(ev) or not belongs_to(ev, targets):
+            if not isinstance(ev, dict) or not is_finished(ev) or not belongs_to(ev, targets, team_id):
                 continue
             mid = str(ev.get("match_id") or "").strip()
             if mid and mid in seen:
@@ -5471,8 +5485,16 @@ def gm_apifootball_pair_profiles(team_a, team_b, competition_name=None, limit_pe
         detailed = 0
         used_ids = []
         for ev in chosen:
-            hn = _gm_api_norm(ev.get("match_hometeam_name"))
-            side = "home" if any(t == hn or (t and (t in hn or hn in t)) for t in targets) else "away"
+            hid = str(ev.get("match_hometeam_id") or "").strip()
+            aid = str(ev.get("match_awayteam_id") or "").strip()
+            tid = str(team_id or "").strip()
+            if tid and hid == tid:
+                side = "home"
+            elif tid and aid == tid:
+                side = "away"
+            else:
+                hn = str(ev.get("match_hometeam_name") or "")
+                side = "home" if any(_gm_team_name_match(t, hn) for t in targets) else "away"
             opp = "away" if side == "home" else "home"
             hs = to_num(ev.get("match_hometeam_ft_score") or ev.get("match_hometeam_score"))
             aas = to_num(ev.get("match_awayteam_ft_score") or ev.get("match_awayteam_score"))
@@ -9059,6 +9081,8 @@ GM_APIFOOTBALL_TEAM_ALIASES = {
     "América-MG": ["América Mineiro"],
     "Athletic-MG": ["Athletic Club MG"],
     "Atlético-GO": ["Atlético Goianiense"],
+    "Atlético-MG": ["Atlético Mineiro", "Clube Atlético Mineiro", "Atletico Mineiro", "Atletico-MG"],
+    "Athletico-PR": ["Athletico Paranaense", "Atletico Paranaense"],
     "Náutico": ["Náutico FC"],
     "São Bernardo": ["São Bernardo FC"],
     "Sport": ["Sport Recife"],
