@@ -28,7 +28,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-12-v23-21-leagues-team-identity-guard"
+GM_BUILD = "2026-09-12-v24-final-statistical-coherence"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -1928,6 +1928,29 @@ def gm_render_public_intro():
     )
 
 
+def _gm_display_1x2_percentages(probs):
+    """Arredonda 1X2 para inteiros preservando soma visual exata de 100%."""
+    if not probs:
+        return {"home": 0, "draw": 0, "away": 0}
+    keys = ("home", "draw", "away")
+    vals = []
+    for key in keys:
+        try:
+            vals.append(max(float(probs.get(key, 0.0) or 0.0), 0.0))
+        except Exception:
+            vals.append(0.0)
+    total = sum(vals)
+    if total <= 0:
+        return {"home": 0, "draw": 0, "away": 0}
+    scaled = [v * 100.0 / total for v in vals]
+    base = [int(math.floor(v)) for v in scaled]
+    missing = 100 - sum(base)
+    order = sorted(range(3), key=lambda i: (scaled[i] - base[i], scaled[i]), reverse=True)
+    for i in order[:max(missing, 0)]:
+        base[i] += 1
+    return dict(zip(keys, base))
+
+
 def gm_render_match_hero(team_a, team_b, league_name, season_text, probs=None, updated_until=None, sample=None):
     """Cabeçalho visual da partida real, sem alterar nenhum cálculo do modelo."""
     team_a_html = _gm_safe_html(team_a)
@@ -1944,14 +1967,15 @@ def gm_render_match_hero(team_a, team_b, league_name, season_text, probs=None, u
         meta += f" • amostra mínima: {int(sample)} jogo(s)"
 
     if probs:
-        home = max(0.0, min(100.0, float(probs.get("home", 0.0))))
-        draw = max(0.0, min(100.0, float(probs.get("draw", 0.0))))
-        away = max(0.0, min(100.0, float(probs.get("away", 0.0))))
+        _display_1x2 = _gm_display_1x2_percentages(probs)
+        home = _display_1x2["home"]
+        draw = _display_1x2["draw"]
+        away = _display_1x2["away"]
         probability_html = f"""
           <div class="gm-real-probgrid">
-            <div class="gm-real-probbox"><span>Vitória casa</span><b>{home:.0f}%</b></div>
-            <div class="gm-real-probbox"><span>Empate</span><b>{draw:.0f}%</b></div>
-            <div class="gm-real-probbox"><span>Vitória fora</span><b>{away:.0f}%</b></div>
+            <div class="gm-real-probbox"><span>Vitória casa</span><b>{home}%</b></div>
+            <div class="gm-real-probbox"><span>Empate</span><b>{draw}%</b></div>
+            <div class="gm-real-probbox"><span>Vitória fora</span><b>{away}%</b></div>
           </div>
           <div class="gm-real-note">Probabilidades estimadas pelo modelo GM SCORE para a partida selecionada — não representam garantia de resultado.</div>
         """
@@ -6433,27 +6457,15 @@ def build_opportunities(a, b, team_a, team_b, competition_df=None):
     """
     candidates = []
 
-    # v21: a amostra para habilitar destaques considera a base efetivamente
-    # recuperada por métrica. A coluna Jogos da competição pode estar curta
-    # mesmo quando a APIfootball já entregou histórico individual consolidado.
-    def _opportunity_sample(row):
-        vals = []
-        try:
-            vals.append(int(float(row.get("Jogos", 0) or 0)))
-        except Exception:
-            pass
-        for metric in ("Gols pró", "Gols contra", "Escanteios", "Amarelos", "Chutes no alvo"):
-            try:
-                vals.append(int(row.get(f"_n_{metric}", 0) or 0))
-            except Exception:
-                pass
-        return max(vals) if vals else 0
+    # v24: oportunidade é habilitada pela amostra DA PRÓPRIA MÉTRICA.
+    # Um N alto em escanteios, por exemplo, nunca libera oportunidade de gols.
+    goal_sample = _gm_pair_metric_sample(a, b, ["Gols pró", "Gols contra"], 0)
+    corner_sample = _gm_pair_metric_sample(a, b, ["Escanteios"], 0)
+    card_sample = _gm_pair_metric_sample(a, b, ["Amarelos"], 0)
 
-    sample_games = min(_opportunity_sample(a), _opportunity_sample(b))
-    if sample_games < 8:
-        return []
-
-    def add_market(group, emoji, label, lam, lines, basis, min_good=70):
+    def add_market(group, emoji, label, lam, lines, basis, min_good=70, metric_sample=0):
+        if int(metric_sample or 0) < 8:
+            return
         opts = []
         for line in lines:
             pct = prob_over_half_line(max(float(lam), 0.05), line) * 100
@@ -6490,7 +6502,7 @@ def build_opportunities(a, b, team_a, team_b, competition_df=None):
         lam_total, goal_ctx = competition_adjusted_goal_total(raw_goal_total, a, b, league_name, competition_df)
         add_market(
             "Gols", "⚽", "gols", lam_total, (0.5, 1.5, 2.5, 3.5, 4.5, 5.5),
-            f"Projeção ajustada ao perfil da competição: {lam_total:.2f} gols", min_good=65
+            f"Projeção ajustada ao perfil da competição: {lam_total:.2f} gols", min_good=65, metric_sample=goal_sample
         )
 
     specs = [
@@ -6512,7 +6524,8 @@ def build_opportunities(a, b, team_a, team_b, competition_df=None):
             if av is None or bv is None:
                 continue
             lam = av + bv
-        add_market(metric, emoji, label, lam, lines, f"Média combinada: {lam:.2f}")
+        _metric_sample = card_sample if metric == "Cartões" else corner_sample
+        add_market(metric, emoji, label, lam, lines, f"Média combinada: {lam:.2f}", metric_sample=_metric_sample)
 
     # Exibe primeiro as linhas fortes; uma única sugestão por categoria.
     candidates.sort(key=lambda x: (-x["Chance"], x["Categoria"]))
@@ -6864,7 +6877,8 @@ def render_core_markets_dashboard(a, b, team_a, team_b, df, probs=None, sample_g
         status_result = _gm_market_status(sample_games, available=bool(probs), specific_sample=goal_sample)
         rows = None
         if probs:
-            rows = [(f"🏠 {team_a}", f"{float(probs['home']):.0f}%"), ("🤝 Empate", f"{float(probs['draw']):.0f}%"), (f"✈️ {team_b}", f"{float(probs['away']):.0f}%")]
+            _display_1x2 = _gm_display_1x2_percentages(probs)
+            rows = [(f"🏠 {team_a}", f"{_display_1x2['home']}%"), ("🤝 Empate", f"{_display_1x2['draw']}%"), (f"✈️ {team_b}", f"{_display_1x2['away']}%")]
         _gm_market_card("🏆 Resultado final", status_result, compact_rows=rows,
                         note="Distribuição 1X2 final do modelo; casa + empate + fora = 100%." if probs else None)
 
@@ -8439,10 +8453,11 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
 
     result_lines = []
     if probs:
+        _display_1x2 = _gm_display_1x2_percentages(probs)
         result_lines = [
-            [f"Vitória {team_a}", f"{probs['home']:.0f}%", float(probs['home'])],
-            ["Empate", f"{probs['draw']:.0f}%", float(probs['draw'])],
-            [f"Vitória {team_b}", f"{probs['away']:.0f}%", float(probs['away'])],
+            [f"Vitória {team_a}", f"{_display_1x2['home']}%", float(probs['home'])],
+            ["Empate", f"{_display_1x2['draw']}%", float(probs['draw'])],
+            [f"Vitória {team_b}", f"{_display_1x2['away']}%", float(probs['away'])],
         ]
 
     exp_lines = []
@@ -8987,26 +9002,16 @@ def render_analysis():
 
     opportunities = build_opportunities(a, b, team_a, team_b, df)
     st.markdown("#### ⭐ Oportunidades GM SCORE")
-    # v21: não usa mais somente a amostra bruta da competição para a mensagem.
-    # A APIfootball pode ter recuperado N>=8 por métrica mesmo quando o dataframe
-    # original da competição ainda possui poucos jogos.
-    def _display_effective_sample(row):
-        vals = []
-        try:
-            vals.append(int(float(row.get("Jogos", 0) or 0)))
-        except Exception:
-            pass
-        for metric in ("Gols pró", "Gols contra", "Escanteios", "Amarelos", "Chutes no alvo"):
-            try:
-                vals.append(int(row.get(f"_n_{metric}", 0) or 0))
-            except Exception:
-                pass
-        return max(vals) if vals else 0
-    _opp_sample = min(_display_effective_sample(a), _display_effective_sample(b))
-    if _opp_sample < 8:
-        st.caption("Destaques suspensos nesta partida: a base efetiva ainda está em Cautela. Os mercados continuam visíveis acima, mas só viram oportunidade com amostra consolidada.")
+    # v24: a mensagem usa a mesma regra do seletor: N específico por mercado.
+    _opp_metric_samples = {
+        "gols": _gm_pair_metric_sample(a, b, ["Gols pró", "Gols contra"], 0),
+        "escanteios": _gm_pair_metric_sample(a, b, ["Escanteios"], 0),
+        "cartões": _gm_pair_metric_sample(a, b, ["Amarelos"], 0),
+    }
+    if max(_opp_metric_samples.values(), default=0) < 8:
+        st.caption("Destaques suspensos nesta partida: nenhum mercado habilitado possui amostra específica consolidada (N ≥ 8). Os mercados continuam visíveis acima conforme a cobertura disponível.")
     elif analysis_context:
-        st.caption("Oportunidades usam somente mercados habilitados pela auditoria estatística e com amostra efetiva consolidada (N ≥ 8).")
+        st.caption("Cada oportunidade exige amostra específica consolidada (N ≥ 8) no próprio mercado; cobertura de uma métrica não libera outra.")
     if opportunities:
         for item in opportunities:
             c1, c2, c3 = st.columns([4.8, 1.3, 1.5])
