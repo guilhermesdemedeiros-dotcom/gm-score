@@ -28,7 +28,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-12-v17-league-team-audit-fix"
+GM_BUILD = "2026-09-12-v18-nominal-roster-audit"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -9011,22 +9011,43 @@ def gm_render_apifootball_league_audit():
                 lid = str(hit.get("league_id") or "")
                 found_ids.add(lid)
                 missing = []
+                matched_api = set()
+                pairs = []
                 if expected:
                     for name in expected:
-                        if not any(_gm_team_name_match(name, api) for api in api_names):
+                        matches = [(idx, api) for idx, api in enumerate(api_names) if _gm_team_name_match(name, api)]
+                        if matches:
+                            idx, api = matches[0]
+                            matched_api.add(idx)
+                            pairs.append((name, api))
+                        else:
                             missing.append(name)
+                extras = [api for idx, api in enumerate(api_names) if idx not in matched_api]
                 min_expected = int(MIN_TEAMS.get(comp, 0) or 0)
+                count_mismatch = bool(expected and len(api_names) != len(expected))
+                # Torneios continentais normalmente incluem classificatórias; equipes extras
+                # não são erro por si só. Em ligas nacionais, diferença de quantidade exige revisão.
+                is_continental = comp.startswith("UEFA ") or comp.startswith("CONMEBOL ")
                 if terr:
                     status = "⚠️ Liga localizada / equipes indisponíveis"
                 elif expected and missing:
                     status = "⚠️ Divergências de equipes"
+                elif count_mismatch and not is_continental:
+                    status = "⚠️ Quantidade de equipes divergente"
                 elif min_expected and len(api_names) < max(2, int(min_expected * 0.70)):
                     status = "⚠️ Lista de equipes parcial"
                 else:
                     status = "✅ Coberta"
-                checked = "OK" if expected and not missing else (f"{len(missing)} divergência(s)" if expected else "lista API")
-                rows.append({"GM SCORE": comp, "Status": status, "Liga API": hit.get("league_name") or "—", "ID": lid or "—", "Equipes API": len(api_names), "Esperado": MIN_TEAMS.get(comp, "—"), "Equipes conferidas": checked})
-                team_details.append((comp, lid, api_names, expected, missing))
+                if expected and missing:
+                    checked = f"{len(missing)} sem correspondência"
+                elif count_mismatch and not is_continental:
+                    checked = f"GM {len(expected)} × API {len(api_names)}"
+                elif expected:
+                    checked = "OK"
+                else:
+                    checked = "lista API"
+                rows.append({"GM SCORE": comp, "Status": status, "Liga API": hit.get("league_name") or "—", "ID": lid or "—", "Equipes API": len(api_names), "Esperado": len(expected) if expected else MIN_TEAMS.get(comp, "—"), "Equipes conferidas": checked})
+                team_details.append((comp, lid, api_names, expected, missing, extras, pairs, is_continental))
 
             df_audit = pd.DataFrame(rows)
             st.dataframe(df_audit, hide_index=True, use_container_width=True)
@@ -9035,11 +9056,32 @@ def gm_render_apifootball_league_audit():
             missing_count = sum(1 for r in rows if str(r["Status"]).startswith("❌"))
             st.markdown(f"**Resumo:** {covered}/{len(rows)} cobertas • {warnings} com revisão • {missing_count} não localizadas")
 
-            with st.expander("👥 Equipes retornadas por cada liga", expanded=False):
-                for comp, lid, api_names, expected, missing in team_details:
-                    st.markdown(f"**{comp}** · API league_id `{lid}` · {len(api_names)} equipes")
+            with st.expander("👥 Auditoria nominal — divergências e nomes oficiais", expanded=True):
+                st.caption("Mostra exatamente o que precisa ser revisado. Em torneios continentais, equipes extras podem ser clubes das fases preliminares e não são tratadas automaticamente como erro.")
+                for detail in team_details:
+                    # Compatibilidade com registros produzidos antes da ampliação do diagnóstico.
+                    comp, lid, api_names, expected, missing = detail[:5]
+                    extras = detail[5] if len(detail) > 5 else []
+                    pairs = detail[6] if len(detail) > 6 else []
+                    is_continental = detail[7] if len(detail) > 7 else False
+                    needs_review = bool(missing or (expected and len(api_names) != len(expected) and not is_continental))
+                    if not needs_review:
+                        continue
+                    st.markdown(f"**{comp}** · API league_id `{lid}` · GM `{len(expected) if expected else 0}` × API `{len(api_names)}`")
                     if missing:
-                        st.warning("Nomes do elenco GM SCORE sem correspondência segura na API: " + ", ".join(missing))
+                        st.error("GM SCORE sem correspondência segura: " + " • ".join(missing))
+                    if extras:
+                        label = "Equipes extras/sem par na API" if not is_continental else "Equipes adicionais da API (podem incluir classificatórias)"
+                        st.info(label + ": " + " • ".join(extras))
+                    if pairs:
+                        renamed = [(gm, api) for gm, api in pairs if _gm_api_norm(gm) != _gm_api_norm(api)]
+                        if renamed:
+                            st.caption("Correspondências por alias: " + " | ".join(f"{gm} ↔ {api}" for gm, api in renamed))
+
+            with st.expander("📋 Lista completa de equipes retornadas", expanded=False):
+                for detail in team_details:
+                    comp, lid, api_names = detail[0], detail[1], detail[2]
+                    st.markdown(f"**{comp}** · API league_id `{lid}` · {len(api_names)} equipes")
                     st.caption(" • ".join(api_names) if api_names else "Nenhuma equipe retornada.")
 
             suggestions = []
