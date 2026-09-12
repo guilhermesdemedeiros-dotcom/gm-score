@@ -27,7 +27,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-11-data-recovery-v5-complete-market-search"
+GM_BUILD = "2026-09-11-data-recovery-v6-multisource"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -3858,21 +3858,38 @@ def _gm_sofascore_stat_map(name):
     key = clean_col(name or "")
     mapping = {
         "total_shots": "Finalizações",
+        "totalshots": "Finalizações",
         "shots": "Finalizações",
         "shot_attempts": "Finalizações",
+        "total_attempts": "Finalizações",
+        "goal_attempts": "Finalizações",
+        "attempts": "Finalizações",
         "shots_on_target": "Chutes no alvo",
+        "shotsontarget": "Chutes no alvo",
         "shots_on_goal": "Chutes no alvo",
+        "on_target": "Chutes no alvo",
         "corner_kicks": "Escanteios",
+        "cornerkicks": "Escanteios",
+        "corner_kick": "Escanteios",
         "corners": "Escanteios",
         "yellow_cards": "Amarelos",
+        "yellowcards": "Amarelos",
         "yellow_card": "Amarelos",
+        "yellowcards": "Amarelos",
         "red_cards": "Vermelhos",
+        "redcards": "Vermelhos",
         "red_card": "Vermelhos",
+        "redcards": "Vermelhos",
         "fouls": "Faltas",
         "fouls_committed": "Faltas",
+        "foulscommitted": "Faltas",
+        "total_fouls": "Faltas",
         "offsides": "Impedimentos",
+        "offside": "Impedimentos",
         "ball_possession": "Posse (%)",
+        "ballpossession": "Posse (%)",
         "possession": "Posse (%)",
+        "possession_pct": "Posse (%)",
     }
     return mapping.get(key)
 
@@ -3902,7 +3919,12 @@ def _gm_extract_sofascore_event_stats(payload):
                 metric = _gm_sofascore_stat_map(item.get("name"))
                 if not metric or metric in out:
                     continue
-                hv, av = to_num(item.get("home")), to_num(item.get("away"))
+                hv = to_num(item.get("home"))
+                av = to_num(item.get("away"))
+                if hv is None:
+                    hv = to_num(item.get("homeValue"))
+                if av is None:
+                    av = to_num(item.get("awayValue"))
                 if hv is None and av is None:
                     continue
                 out[metric] = (hv, av)
@@ -4306,6 +4328,355 @@ def _blend_metric(current_value, current_games, domestic_value, prior_value, lea
     return sum(v*w for v,w in vals) / den if den else None
 
 
+
+
+# ============================================================
+# DATA RECOVERY v6 - segunda fonte pública (ESPN)
+# ============================================================
+# A recuperação ESPN é usada apenas quando a cobertura detalhada da fonte
+# principal é insuficiente. Não altera odds, pagamentos, autenticação ou agenda.
+
+
+def _gm_espn_stat_map(name):
+    key = clean_col(name or "")
+    mapping = {
+        "shots": "Finalizações",
+        "sh": "Finalizações",
+        "total_shots": "Finalizações",
+        "totalshots": "Finalizações",
+        "shots_total": "Finalizações",
+        "shot_attempts": "Finalizações",
+        "shotattempts": "Finalizações",
+        "total_attempts": "Finalizações",
+        "totalattempts": "Finalizações",
+        "shots_on_target": "Chutes no alvo",
+        "shotsontarget": "Chutes no alvo",
+        "shots_on_goal": "Chutes no alvo",
+        "shotsongoal": "Chutes no alvo",
+        "sog": "Chutes no alvo",
+        "corner_kicks": "Escanteios",
+        "cornerkicks": "Escanteios",
+        "corners": "Escanteios",
+        "ck": "Escanteios",
+        "yellow_cards": "Amarelos",
+        "yellowcards": "Amarelos",
+        "yc": "Amarelos",
+        "red_cards": "Vermelhos",
+        "redcards": "Vermelhos",
+        "rc": "Vermelhos",
+        "fouls_committed": "Faltas",
+        "foulscommitted": "Faltas",
+        "fouls": "Faltas",
+        "fc": "Faltas",
+        "offsides": "Impedimentos",
+        "offside": "Impedimentos",
+        "off": "Impedimentos",
+        "possession": "Posse (%)",
+        "possession_pct": "Posse (%)",
+        "possessionpct": "Posse (%)",
+        "possession_percentage": "Posse (%)",
+        "possessionpercentage": "Posse (%)",
+        "poss": "Posse (%)",
+    }
+    return mapping.get(key)
+
+
+def _gm_espn_stat_value(item):
+    if not isinstance(item, dict):
+        return None
+    for key in ("value", "displayValue"):
+        value = item.get(key)
+        n = to_num(value)
+        if n is not None:
+            return n
+    return None
+
+
+def _gm_espn_team_objects(payload):
+    """Extrai objetos de equipe dos diferentes envelopes usados pela ESPN."""
+    out = []
+    if not isinstance(payload, dict):
+        return out
+    # /teams normalmente vem dentro de sports -> leagues -> teams.
+    for sport in payload.get("sports", []) or []:
+        for league in (sport or {}).get("leagues", []) or []:
+            for entry in (league or {}).get("teams", []) or []:
+                team = (entry or {}).get("team") if isinstance(entry, dict) else None
+                if isinstance(team, dict):
+                    out.append(team)
+    # Alguns endpoints retornam teams diretamente.
+    for entry in payload.get("teams", []) or []:
+        if isinstance(entry, dict):
+            team = entry.get("team") if isinstance(entry.get("team"), dict) else entry
+            if isinstance(team, dict):
+                out.append(team)
+    return out
+
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def _gm_espn_team_id(league_slug, team_name):
+    if not league_slug or not team_name:
+        return None
+    try:
+        data = _espn_get_json(
+            f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league_slug}/teams?limit=500",
+            timeout=12,
+        )
+    except Exception:
+        return None
+    best = None
+    for team in _gm_espn_team_objects(data):
+        tid = team.get("id")
+        names = [team.get("displayName"), team.get("shortDisplayName"), team.get("name"), team.get("abbreviation")]
+        for name in names:
+            if not tid or not name:
+                continue
+            sim = _gm_recovery_team_similarity(team_name, name)
+            if sim >= 0.70 and (best is None or sim > best[0]):
+                best = (sim, str(tid), str(team.get("displayName") or name))
+    if best:
+        return {"id": best[1], "name": best[2], "similarity": best[0]}
+    return None
+
+
+def _gm_espn_event_finished(event):
+    if not isinstance(event, dict):
+        return False
+    status = event.get("status") or {}
+    stype = status.get("type") if isinstance(status, dict) else {}
+    if not isinstance(stype, dict):
+        stype = {}
+    if stype.get("completed") is True:
+        return True
+    raw = " ".join(str(x or "") for x in (
+        stype.get("state"), stype.get("name"), stype.get("description"),
+        stype.get("shortDetail"), status.get("displayClock") if isinstance(status, dict) else "",
+    )).lower()
+    return any(x in raw for x in ("post", "final", "full time", "ft", "completed"))
+
+
+def _gm_espn_event_team_side(event, team_id, team_name=None):
+    comps = event.get("competitions", []) if isinstance(event, dict) else []
+    if not comps:
+        return None, None, None
+    competitors = (comps[0] or {}).get("competitors", []) or []
+    own = opp = None
+    for comp in competitors:
+        team = (comp or {}).get("team") or {}
+        tid = str(team.get("id") or "")
+        nm = team.get("displayName") or team.get("shortDisplayName") or team.get("name") or ""
+        if (team_id and tid == str(team_id)) or (team_name and _gm_recovery_team_similarity(team_name, nm) >= 0.82):
+            own = comp
+        else:
+            if opp is None:
+                opp = comp
+    if not own:
+        return None, None, None
+    side = own.get("homeAway")
+    # Resolve adversário de forma explícita depois que achou a própria equipe.
+    for comp in competitors:
+        if comp is own:
+            continue
+        opp = comp
+        break
+    return side, own, opp
+
+
+def _gm_espn_competitor_score(comp):
+    if not isinstance(comp, dict):
+        return None
+    score = comp.get("score")
+    if isinstance(score, dict):
+        for key in ("value", "displayValue"):
+            n = to_num(score.get(key))
+            if n is not None:
+                return n
+    return to_num(score)
+
+
+def _gm_extract_espn_summary_stats(payload, team_id=None, team_name=None):
+    """Retorna métricas da equipe e do adversário a partir do boxscore ESPN."""
+    box = (payload or {}).get("boxscore") or {}
+    teams = box.get("teams", []) if isinstance(box, dict) else []
+    own_stats = opp_stats = None
+    for entry in teams or []:
+        team = (entry or {}).get("team") or {}
+        tid = str(team.get("id") or "")
+        nm = team.get("displayName") or team.get("shortDisplayName") or team.get("name") or ""
+        mapped = {}
+        for stat in (entry or {}).get("statistics", []) or []:
+            label = stat.get("name") or stat.get("label") or stat.get("abbreviation") or stat.get("displayName")
+            metric = _gm_espn_stat_map(label)
+            if not metric:
+                continue
+            value = _gm_espn_stat_value(stat)
+            if value is not None:
+                mapped[metric] = value
+        if (team_id and tid == str(team_id)) or (team_name and _gm_recovery_team_similarity(team_name, nm) >= 0.82):
+            own_stats = mapped
+        else:
+            if opp_stats is None:
+                opp_stats = mapped
+    return own_stats or {}, opp_stats or {}
+
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def load_espn_recent_profile(league_slug, team_name, recent_games=12):
+    """Recupera histórico detalhado ESPN como segunda fonte independente.
+
+    A ESPN é consultada somente para complementar cobertura. Cada métrica mantém
+    a quantidade real de jogos em que foi encontrada; ausência nunca vira zero.
+    """
+    found = _gm_espn_team_id(league_slug, team_name)
+    if not found:
+        return None
+    team_id = found.get("id")
+    try:
+        schedule = _espn_get_json(
+            f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league_slug}/teams/{team_id}/schedule?limit=100",
+            timeout=14,
+        )
+    except Exception:
+        return None
+    events = schedule.get("events", []) if isinstance(schedule, dict) else []
+    target_games = max(8, min(int(recent_games or 12), 18))
+    acc = empty_team(str(team_name))
+    used_ids = []
+    detailed_games = 0
+
+    # Agenda geralmente vem em ordem cronológica; priorizamos os mais recentes.
+    def event_ts(ev):
+        try:
+            return pd.to_datetime(ev.get("date"), utc=True, errors="coerce").value
+        except Exception:
+            return 0
+    events = sorted([e for e in events if isinstance(e, dict)], key=event_ts, reverse=True)
+
+    for ev in events:
+        if not _gm_espn_event_finished(ev):
+            continue
+        side, own_comp, opp_comp = _gm_espn_event_team_side(ev, team_id, team_name)
+        if own_comp is None:
+            continue
+        gf = _gm_espn_competitor_score(own_comp)
+        ga = _gm_espn_competitor_score(opp_comp)
+        if gf is not None and ga is not None:
+            acc["Jogos"] += 1
+            acc["Gols pró"] += gf
+            acc["Gols contra"] += ga
+
+        eid = ev.get("id")
+        if not eid:
+            continue
+        try:
+            summary = _espn_get_json(
+                f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league_slug}/summary?event={eid}",
+                timeout=11,
+            )
+        except Exception:
+            summary = None
+        own_stats, opp_stats = _gm_extract_espn_summary_stats(summary or {}, team_id, team_name)
+        if own_stats:
+            detailed_games += 1
+            for metric, value in own_stats.items():
+                if metric in DISPLAY_METRICS:
+                    add_metric(acc, metric, value)
+            if own_stats.get("Finalizações") is not None and opp_stats.get("Finalizações") is not None:
+                add_metric(acc, "Finalizações contra", opp_stats.get("Finalizações"))
+            if own_stats.get("Chutes no alvo") is not None and opp_stats.get("Chutes no alvo") is not None:
+                add_metric(acc, "Chutes no alvo contra", opp_stats.get("Chutes no alvo"))
+        used_ids.append(str(eid))
+
+        key_ns = [int(acc.get(f"_n_{m}", 0) or 0) for m in ("Escanteios", "Amarelos", "Finalizações", "Chutes no alvo")]
+        enough_detail = sum(n >= min(8, target_games) for n in key_ns) >= 3
+        if int(acc.get("Jogos", 0) or 0) >= target_games and enough_detail:
+            break
+        if int(acc.get("Jogos", 0) or 0) >= max(target_games * 2, 24):
+            break
+
+    if int(acc.get("Jogos", 0) or 0) <= 0:
+        return None
+    outdf = finish_averages({str(team_id): acc})
+    if outdf is None or outdf.empty:
+        return None
+    row = outdf.iloc[0].to_dict()
+    row["_n_Gols pró"] = int(acc.get("Jogos", 0))
+    row["_n_Gols contra"] = int(acc.get("Jogos", 0))
+    coverage = {m: int(row.get(f"_n_{m}", 0) or 0) for m in (
+        "Escanteios", "Amarelos", "Vermelhos", "Faltas", "Finalizações", "Chutes no alvo",
+        "Finalizações contra", "Chutes no alvo contra",
+    )}
+    return {
+        "row": row,
+        "games": int(acc.get("Jogos", 0)),
+        "detailed_games": int(detailed_games),
+        "coverage": coverage,
+        "event_ids": used_ids,
+        "source": "ESPN · boxscore histórico",
+        "team_id": str(team_id),
+    }
+
+
+def _gm_merge_recovery_profiles(*profiles):
+    """Escolhe a melhor cobertura real por métrica entre fontes independentes.
+
+    Não soma N porque as partidas podem se sobrepor. Para cada métrica, usa a
+    fonte com maior amostra; isso evita inflar confiança e permite que uma fonte
+    complete o que a outra não publica.
+    """
+    profiles = [p for p in profiles if isinstance(p, dict) and isinstance(p.get("row"), dict)]
+    if not profiles:
+        return None
+    metrics = [
+        "Gols pró", "Gols contra", "Escanteios", "Amarelos", "Vermelhos", "Faltas",
+        "Finalizações", "Chutes no alvo", "Impedimentos", "Posse (%)",
+        "Finalizações contra", "Chutes no alvo contra", "Escanteios 1T", "Escanteios 2T",
+    ]
+    merged = {"Time": profiles[0]["row"].get("Time")}
+    winners = {}
+    for metric in metrics:
+        best = None
+        for prof in profiles:
+            row = prof["row"]
+            n = _gm_source_metric_count(row, metric, prof.get("games", 0))
+            value = row.get(metric)
+            if value is None or pd.isna(value) or n <= 0:
+                continue
+            candidate = (int(n), float(value), prof.get("source") or "fonte complementar")
+            if best is None or candidate[0] > best[0]:
+                best = candidate
+        if best:
+            merged[metric] = best[1]
+            merged[f"_n_{metric}"] = best[0]
+            winners[metric] = best[2]
+        else:
+            merged[metric] = None
+            merged[f"_n_{metric}"] = 0
+    games = max(int(p.get("games", 0) or 0) for p in profiles)
+    merged["Jogos"] = games
+    merged_sources = sorted(set(winners.values()))
+    return {
+        "row": merged,
+        "games": games,
+        "detailed_games": max(int(p.get("detailed_games", 0) or 0) for p in profiles),
+        "coverage": {m: int(merged.get(f"_n_{m}", 0) or 0) for m in metrics},
+        "source": " + ".join(merged_sources) if merged_sources else "recuperação multifuente",
+        "metric_sources": winners,
+        "profiles": profiles,
+    }
+
+
+def _gm_recovery_diagnostic(profile):
+    if not profile:
+        return {"games": 0, "detailed": 0, "coverage": {}, "source": None}
+    return {
+        "games": int(profile.get("games", 0) or 0),
+        "detailed": int(profile.get("detailed_games", 0) or 0),
+        "coverage": dict(profile.get("coverage") or {}),
+        "source": profile.get("source"),
+    }
+
+
 def contextual_analysis_rows(team_a, team_b, competition_name, competition_df, recent_games=10):
     """Recupera contexto adicional apenas onde a base principal é curta/incompleta.
 
@@ -4343,6 +4714,7 @@ def contextual_analysis_rows(team_a, team_b, competition_name, competition_df, r
     # Recuperação detalhada é acionada somente quando realmente falta cobertura.
     # Primeiro tentamos obter os IDs pelo evento exato; a busca por nome é fallback.
     recovery_a = recovery_b = None
+    sofa_a = sofa_b = espn_a = espn_b = None
     if detailed_gap or low_results:
         event = find_sofascore_event(team_a, team_b, search_days=7)
         aid = (event or {}).get("home_id")
@@ -4352,9 +4724,19 @@ def contextual_analysis_rows(team_a, team_b, competition_name, competition_df, r
         if not bid:
             found = _gm_sofascore_team_search_id(team_b); bid = (found or {}).get("id")
         if aid:
-            recovery_a = load_sofascore_recent_profile(aid, team_a, min(max(int(recent_games), 12), 18))
+            sofa_a = load_sofascore_recent_profile(aid, team_a, min(max(int(recent_games), 12), 18))
         if bid:
-            recovery_b = load_sofascore_recent_profile(bid, team_b, min(max(int(recent_games), 12), 18))
+            sofa_b = load_sofascore_recent_profile(bid, team_b, min(max(int(recent_games), 12), 18))
+
+        # v6: quando a primeira fonte não entrega cobertura suficiente, consulta
+        # uma segunda fonte pública independente. O N das fontes não é somado.
+        league_slug = ESPN_FIXTURE_LEAGUES.get(competition_name)
+        if league_slug:
+            espn_a = load_espn_recent_profile(league_slug, team_a, min(max(int(recent_games), 12), 18))
+            espn_b = load_espn_recent_profile(league_slug, team_b, min(max(int(recent_games), 12), 18))
+
+        recovery_a = _gm_merge_recovery_profiles(sofa_a, espn_a)
+        recovery_b = _gm_merge_recovery_profiles(sofa_b, espn_b)
 
     def build(base, prof, recovery):
         out = dict(base)
@@ -4437,7 +4819,11 @@ def contextual_analysis_rows(team_a, team_b, competition_name, competition_df, r
         "priors": priors,
         "data_recovery_home": recovery_a,
         "data_recovery_away": recovery_b,
-        "data_recovery_version": "v5-complete-market-search",
+        "data_recovery_version": "v6-multisource",
+        "data_recovery_debug": {
+            "home": {"merged": _gm_recovery_diagnostic(recovery_a), "sofascore": _gm_recovery_diagnostic(sofa_a), "espn": _gm_recovery_diagnostic(espn_a)},
+            "away": {"merged": _gm_recovery_diagnostic(recovery_b), "sofascore": _gm_recovery_diagnostic(sofa_b), "espn": _gm_recovery_diagnostic(espn_b)},
+        },
     }
     return a, b, ctx
 
@@ -7592,6 +7978,35 @@ def render_analysis():
                 st.caption("Mercado público 1X2 não confirmado para o evento exato; valor/edge só é calculado quando houver cotação validada.")
 
     expectations = render_match_probability_dashboard(a, b, team_a, team_b, df, probs=probs, sample_games=comp_sample)
+
+    # Diagnóstico visível somente para administrador. Se alguma fonte pública
+    # falhar em produção, estes Ns mostram imediatamente se a falha ocorreu na
+    # localização da equipe, no histórico ou na leitura das estatísticas.
+    try:
+        _diag_profile = gm_auth_get_profile()
+    except Exception:
+        _diag_profile = None
+    if (_diag_profile or {}).get("role") == "admin" and analysis_context and analysis_context.get("data_recovery_debug"):
+        with st.expander("🧪 Diagnóstico de cobertura (admin)", expanded=False):
+            st.caption("N = partidas em que a métrica foi realmente encontrada. Fontes não são somadas para evitar duplicação de amostra.")
+            _dbg = analysis_context.get("data_recovery_debug") or {}
+            for _side_key, _team_label in (("home", team_a), ("away", team_b)):
+                st.markdown(f"**{_team_label}**")
+                _side = _dbg.get(_side_key) or {}
+                _rows = []
+                for _src_key, _src_label in (("sofascore", "SofaScore"), ("espn", "ESPN"), ("merged", "Base recuperada")):
+                    _d = _side.get(_src_key) or {}
+                    _cov = _d.get("coverage") or {}
+                    _rows.append({
+                        "Fonte": _src_label,
+                        "Jogos": int(_d.get("games", 0) or 0),
+                        "Detalhados": int(_d.get("detailed", 0) or 0),
+                        "Escanteios": int(_cov.get("Escanteios", 0) or 0),
+                        "Cartões": int(_cov.get("Amarelos", 0) or 0),
+                        "Finalizações": int(_cov.get("Finalizações", 0) or 0),
+                        "No alvo": int(_cov.get("Chutes no alvo", 0) or 0),
+                    })
+                st.dataframe(pd.DataFrame(_rows), hide_index=True, use_container_width=True)
 
     opportunities = build_opportunities(a, b, team_a, team_b, df)
     st.markdown("#### ⭐ Oportunidades GM SCORE")
