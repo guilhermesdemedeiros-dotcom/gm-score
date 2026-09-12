@@ -28,12 +28,30 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-12-v27-auto-calibration-monitor"
+GM_BUILD = "2026-09-12-v28-commercial-final"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
     layout="wide",
     initial_sidebar_state="collapsed",
+)
+
+# ============================================================
+# IDENTIDADE VISUAL — TEMA ESCURO FIXO
+# ============================================================
+st.markdown(
+    """
+    <style>
+    :root{color-scheme:dark;}
+    html,body,.stApp,[data-testid="stAppViewContainer"],[data-testid="stMain"]{background:#0b1015!important;color:#f8fafc!important;}
+    [data-testid="stHeader"]{background:rgba(11,16,21,.96)!important;}
+    [data-testid="stSidebar"]{background:#0d141b!important;}
+    [data-testid="stSidebar"] *{color:#f1f5f9;}
+    .stTextInput input,.stTextArea textarea,.stNumberInput input,[data-baseweb="select"]>div{background:#111923!important;color:#f8fafc!important;border-color:rgba(148,163,184,.28)!important;}
+    [data-testid="stForm"],div[data-testid="stExpander"]{border-color:rgba(148,163,184,.22)!important;}
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
 
 # ============================================================
@@ -1241,6 +1259,214 @@ def gm_render_admin_news_manager():
                         st.caption(str(exc))
 
 
+
+# ============================================================
+# AVALIAÇÕES PÚBLICAS — CLIENTES VIP + RESPOSTA OFICIAL
+# ============================================================
+def gm_reviews_rpc(function_name, params=None):
+    """Executa RPCs de avaliações com a sessão autenticada atual."""
+    client = gm_auth_client_from_session()
+    if client is None:
+        raise RuntimeError("Sessão autenticada indisponível.")
+    result = client.rpc(function_name, params or {}).execute()
+    return getattr(result, "data", None)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def gm_public_reviews():
+    """Lista somente avaliações públicas; nunca expõe e-mail."""
+    try:
+        client = gm_new_supabase_client()
+        result = client.rpc("gm_list_public_reviews").execute()
+        rows = getattr(result, "data", None) or []
+        return [row for row in rows if isinstance(row, dict)]
+    except Exception:
+        return []
+
+
+def _gm_review_stars(rating):
+    try:
+        value = max(1, min(5, int(rating)))
+    except Exception:
+        value = 0
+    return "⭐" * value + "☆" * max(0, 5 - value)
+
+
+def gm_render_public_reviews():
+    """Bloco público de avaliações reais cadastradas por clientes VIP."""
+    rows = gm_public_reviews()
+    st.markdown("### ⭐ Avaliações de clientes")
+    st.caption("Avaliações publicadas por usuários identificados do GM SCORE. Respostas da equipe aparecem junto ao comentário.")
+
+    if not rows:
+        st.info("As primeiras avaliações de clientes aparecerão aqui.")
+        return
+
+    ratings = []
+    for row in rows:
+        try:
+            ratings.append(float(row.get("rating") or 0))
+        except Exception:
+            pass
+    avg = sum(ratings) / len(ratings) if ratings else 0.0
+    st.markdown(
+        f"""
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:.35rem 0 .8rem">
+          <div style="font-size:1.7rem;font-weight:950;color:#f8fafc">{avg:.1f}/5</div>
+          <div style="font-size:1.05rem;color:#facc15">{_gm_review_stars(round(avg))}</div>
+          <div style="font-size:.82rem;color:#94a3b8">{len(rows)} avaliação(ões) pública(s)</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    for row in rows[:12]:
+        name = _gm_safe_html(row.get("reviewer_name") or "Cliente GM SCORE")
+        comment = _gm_safe_html(row.get("comment") or "")
+        reply = str(row.get("admin_reply") or "").strip()
+        stars = _gm_review_stars(row.get("rating"))
+        when = gm_admin_format_datetime(row.get("created_at"))
+        reply_html = ""
+        if reply:
+            reply_html = (
+                '<div style="margin-top:10px;padding:10px 11px;border-left:3px solid #22c55e;'
+                'background:rgba(34,197,94,.08);border-radius:8px"><b style="color:#86efac">'
+                'Resposta GM SCORE</b><div style="margin-top:4px;color:#dbe4ea">'
+                + _gm_safe_html(reply)
+                + '</div></div>'
+            )
+        st.markdown(
+            f"""
+            <div style="border:1px solid rgba(148,163,184,.20);border-radius:15px;padding:13px 14px;margin:.55rem 0;background:rgba(15,23,42,.48)">
+              <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap">
+                <b style="color:#f8fafc">{name}</b><span style="color:#facc15;letter-spacing:.03em">{stars}</span>
+              </div>
+              <div style="font-size:.72rem;color:#64748b;margin-top:2px">{_gm_safe_html(when)}</div>
+              <div style="margin-top:8px;line-height:1.5;color:#dbe4ea">{comment}</div>
+              {reply_html}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+def gm_render_review_form(profile):
+    """Permite uma avaliação por usuário; nova submissão atualiza a anterior."""
+    if not profile or profile.get("role") == "admin":
+        return
+    try:
+        mine = gm_reviews_rpc("gm_my_review") or []
+        current = mine[0] if isinstance(mine, list) and mine else (mine if isinstance(mine, dict) else {})
+    except Exception:
+        current = {}
+
+    try:
+        current_rating = max(1, min(5, int(current.get("rating") or 5)))
+    except Exception:
+        current_rating = 5
+    current_comment = str(current.get("comment") or "")
+    options = [1, 2, 3, 4, 5]
+    with st.form("gm_review_form", clear_on_submit=False):
+        st.markdown("### ⭐ Avalie o GM SCORE")
+        st.caption("Sua avaliação será pública com o nome cadastrado na sua conta. Seu e-mail nunca é exibido.")
+        rating = st.radio(
+            "Sua nota",
+            options,
+            index=options.index(current_rating),
+            horizontal=True,
+            format_func=lambda n: "⭐" * n,
+        )
+        comment = st.text_area(
+            "Comentário, reclamação ou dica",
+            value=current_comment,
+            max_chars=1200,
+            height=120,
+            placeholder="Conte como está sendo sua experiência com o GM SCORE.",
+        )
+        submitted = st.form_submit_button("Publicar avaliação", type="primary", use_container_width=True)
+    if submitted:
+        clean = str(comment or "").strip()
+        if len(clean) < 3:
+            st.warning("Escreva um comentário com pelo menos 3 caracteres.")
+            return
+        try:
+            gm_reviews_rpc("gm_submit_review", {"p_rating": int(rating), "p_comment": clean})
+            gm_public_reviews.clear()
+            st.success("✅ Avaliação publicada. Obrigado pelo feedback.")
+            st.session_state["gm_reviews_open"] = False
+            st.rerun()
+        except Exception:
+            st.error("Não foi possível publicar a avaliação agora. Tente novamente.")
+
+
+def gm_render_review_dialog(profile):
+    if not st.session_state.get("gm_reviews_open"):
+        return
+    if hasattr(st, "dialog"):
+        @st.dialog("⭐ Avaliar GM SCORE", width="large")
+        def _gm_review_dialog():
+            gm_render_review_form(profile)
+            if st.button("Fechar", use_container_width=True, key="gm_review_close"):
+                st.session_state["gm_reviews_open"] = False
+                st.rerun()
+        _gm_review_dialog()
+    else:
+        with st.expander("⭐ Avaliar GM SCORE", expanded=True):
+            gm_render_review_form(profile)
+            if st.button("Fechar", use_container_width=True, key="gm_review_close_fallback"):
+                st.session_state["gm_reviews_open"] = False
+                st.rerun()
+
+
+def gm_render_admin_reviews_manager():
+    st.markdown("### ⭐ Avaliações de clientes")
+    st.caption("Responda avaliações, reclamações e sugestões. A resposta aparece publicamente junto à avaliação.")
+    try:
+        rows = gm_admin_rpc("gm_admin_list_reviews") or []
+    except Exception:
+        st.error("Não foi possível carregar as avaliações administrativas.")
+        return
+    rows = [row for row in rows if isinstance(row, dict)]
+    if not rows:
+        st.info("Nenhuma avaliação recebida ainda.")
+        return
+
+    for row in rows[:50]:
+        rid = row.get("review_id")
+        name = str(row.get("reviewer_name") or "Cliente GM SCORE")
+        rating = row.get("rating")
+        public = bool(row.get("is_public", True))
+        st.markdown(f"**{name}** • {_gm_review_stars(rating)}")
+        st.caption(gm_admin_format_datetime(row.get("created_at")))
+        st.write(str(row.get("comment") or ""))
+        with st.form(f"gm_admin_review_reply_{rid}"):
+            reply = st.text_area(
+                "Resposta oficial",
+                value=str(row.get("admin_reply") or ""),
+                max_chars=1200,
+                height=90,
+                key=f"gm_admin_review_reply_text_{rid}",
+            )
+            save = st.form_submit_button("💬 Salvar resposta", use_container_width=True)
+        if save:
+            try:
+                gm_admin_rpc("gm_admin_reply_review", {"p_review_id": int(rid), "p_reply": str(reply or "").strip()})
+                gm_public_reviews.clear()
+                st.success("Resposta salva.")
+                st.rerun()
+            except Exception:
+                st.error("Não foi possível salvar a resposta.")
+        toggle_label = "🙈 Ocultar do público" if public else "👁 Tornar pública"
+        if st.button(toggle_label, use_container_width=True, key=f"gm_admin_review_public_{rid}"):
+            try:
+                gm_admin_rpc("gm_admin_set_review_public", {"p_review_id": int(rid), "p_is_public": not public})
+                gm_public_reviews.clear()
+                st.rerun()
+            except Exception:
+                st.error("Não foi possível alterar a visibilidade.")
+        st.markdown("---")
+
+
 def gm_admin_format_datetime(value):
     if not value:
         return "—"
@@ -1282,6 +1508,8 @@ def gm_render_admin_panel(profile):
             st.rerun()
 
     gm_render_admin_news_manager()
+    st.markdown("---")
+    gm_render_admin_reviews_manager()
     st.markdown("---")
     st.markdown("### 👥 Gestão de clientes VIP")
 
@@ -1892,6 +2120,9 @@ def gm_render_public_intro():
     gm_render_vip_showcase(compact=False)
 
     st.markdown("---")
+    gm_render_public_reviews()
+
+    st.markdown("---")
     gm_render_payment_plans()
 
     st.markdown("### 🔐 Como liberar seu acesso")
@@ -2230,7 +2461,7 @@ def gm_render_public_portal():
 
                 # Heartbeat leve: enquanto a área VIP estiver realmente aberta,
                 # revalida o mesmo token a cada ~2 minutos. Isso mantém
-                # last_seen_at recente e permite que a janela de 7 minutos no
+                # last_seen_at recente e permite que a janela ampliada de 60 minutos no
                 # Supabase diferencie uma sessão ativa de uma aba abandonada.
                 gm_render_session_heartbeat()
 
@@ -2354,6 +2585,10 @@ def gm_render_public_portal():
                             "a confirmação válida do pagamento pelo Mercado Pago."
                         )
 
+                if state == "vip":
+                    if st.button("⭐ Avaliar GM SCORE", use_container_width=True, key="gm_sidebar_review"):
+                        st.session_state["gm_reviews_open"] = True
+                        st.rerun()
                 if state == "admin":
                     if st.button("🛠 Painel Administrativo", use_container_width=True, key="gm_sidebar_admin_panel"):
                         st.session_state["gm_admin_panel_open"] = True
@@ -2362,6 +2597,7 @@ def gm_render_public_portal():
                     gm_auth_sign_out()
                     st.session_state.pop("gm_admin_panel_open", None)
                     st.session_state.pop("gm_news_open", None)
+                    st.session_state.pop("gm_reviews_open", None)
                     st.rerun()
                 st.markdown("---")
             return True
@@ -2426,6 +2662,9 @@ if _gm_profile_after_gate:
 
 if _gm_profile_after_gate and st.session_state.get("gm_news_open"):
     gm_render_news_center()
+
+if _gm_profile_after_gate and st.session_state.get("gm_reviews_open"):
+    gm_render_review_dialog(_gm_profile_after_gate)
 
 if (
     _gm_profile_after_gate
