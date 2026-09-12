@@ -27,7 +27,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-11-data-recovery-v6-multisource"
+GM_BUILD = "2026-09-11-data-recovery-v7-source-resolution-fix"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -2591,9 +2591,19 @@ def find_sofascore_event(home, away, day_iso=None, search_days=2):
             for ev in payload.get("events", []):
                 eh = str((ev.get("homeTeam") or {}).get("name") or "")
                 ea = str((ev.get("awayTeam") or {}).get("name") or "")
-                sh = _team_similarity(wanted_h, eh)
-                sa = _team_similarity(wanted_a, ea)
-                if sh >= 0.78 and sa >= 0.78:
+                # Para recuperação estatística usamos a resolução tolerante,
+                # capaz de casar Athletico-PR/Athletico Paranaense, FC/prefixos etc.
+                # Também exclui explicitamente feminino/base/reserva.
+                hobj, aobj = ev.get("homeTeam") or {}, ev.get("awayTeam") or {}
+                if str(hobj.get("gender") or "M").upper() not in ("M", "MALE"):
+                    continue
+                if str(aobj.get("gender") or "M").upper() not in ("M", "MALE"):
+                    continue
+                if SECONDARY_TEAM_RE.search(eh) or SECONDARY_TEAM_RE.search(ea):
+                    continue
+                sh = _gm_recovery_team_similarity(wanted_h, eh)
+                sa = _gm_recovery_team_similarity(wanted_a, ea)
+                if sh >= 0.72 and sa >= 0.72:
                     candidates.append((sh + sa, ev, d.isoformat()))
         except Exception:
             continue
@@ -2602,7 +2612,7 @@ def find_sofascore_event(home, away, day_iso=None, search_days=2):
     candidates.sort(key=lambda x: x[0], reverse=True)
     score, ev, event_day = candidates[0]
     # Exige correspondência forte das duas pontas para não trocar equipes homônimas.
-    if score < 1.68:
+    if score < 1.55:
         return None
     return {
         "event_id": ev.get("id"),
@@ -3871,15 +3881,21 @@ def _gm_sofascore_stat_map(name):
         "corner_kicks": "Escanteios",
         "cornerkicks": "Escanteios",
         "corner_kick": "Escanteios",
+        "corner": "Escanteios",
         "corners": "Escanteios",
+        "corner_kicks_total": "Escanteios",
         "yellow_cards": "Amarelos",
         "yellowcards": "Amarelos",
         "yellow_card": "Amarelos",
+        "yellow": "Amarelos",
         "yellowcards": "Amarelos",
+        "yellow_cards_total": "Amarelos",
         "red_cards": "Vermelhos",
         "redcards": "Vermelhos",
         "red_card": "Vermelhos",
+        "red": "Vermelhos",
         "redcards": "Vermelhos",
+        "red_cards_total": "Vermelhos",
         "fouls": "Faltas",
         "fouls_committed": "Faltas",
         "foulscommitted": "Faltas",
@@ -3894,72 +3910,91 @@ def _gm_sofascore_stat_map(name):
     return mapping.get(key)
 
 
+def _gm_sofascore_stat_items(node):
+    """Percorre envelopes de estatísticas tolerando pequenas mudanças de schema.
+
+    O SofaScore já publicou itens em ``statisticsItems`` e também em envelopes
+    intermediários diferentes. A v7 não assume uma única profundidade: qualquer
+    dicionário com nome da estatística + valores home/away vira candidato.
+    """
+    if isinstance(node, dict):
+        label = (node.get("name") or node.get("label") or node.get("title")
+                 or node.get("statisticsType") or node.get("key"))
+        has_values = any(k in node for k in ("home", "away", "homeValue", "awayValue"))
+        if label and has_values:
+            yield node
+        for value in node.values():
+            if isinstance(value, (dict, list)):
+                yield from _gm_sofascore_stat_items(value)
+    elif isinstance(node, list):
+        for value in node:
+            if isinstance(value, (dict, list)):
+                yield from _gm_sofascore_stat_items(value)
+
+
 def _gm_extract_sofascore_event_stats(payload):
-    """Extrai estatísticas FT/ALL do SofaScore sem misturar períodos."""
+    """Extrai estatísticas agregadas do jogo sem depender de um único schema."""
     out = {}
     periods = payload.get("statistics", []) if isinstance(payload, dict) else []
     chosen = []
-    for period in periods:
+    for period in periods if isinstance(periods, list) else []:
         if not isinstance(period, dict):
             continue
         p = str(period.get("period") or "").upper()
         if p in ("ALL", "FULL", "MATCH", "FT", ""):
             chosen.append(period)
-    if not chosen:
-        # Só usa fallback quando não há bloco agregado. Blocos 1ST/2ND não são
-        # somados aqui para evitar dupla contagem ou períodos incompatíveis.
-        chosen = [x for x in periods if isinstance(x, dict) and str(x.get("period") or "").upper() not in ("1ST", "2ND", "FIRST", "SECOND")][:1]
-    for period in chosen:
-        for group in period.get("groups", []) or []:
-            if not isinstance(group, dict):
+    # Se o endpoint não separar períodos como esperado, percorre o payload todo.
+    search_nodes = chosen or ([payload] if isinstance(payload, dict) else [])
+    for node in search_nodes:
+        for item in _gm_sofascore_stat_items(node):
+            metric = _gm_sofascore_stat_map(
+                item.get("name") or item.get("label") or item.get("title")
+                or item.get("statisticsType") or item.get("key")
+            )
+            if not metric or metric in out:
                 continue
-            for item in group.get("statisticsItems", []) or []:
-                if not isinstance(item, dict):
-                    continue
-                metric = _gm_sofascore_stat_map(item.get("name"))
-                if not metric or metric in out:
-                    continue
-                hv = to_num(item.get("home"))
-                av = to_num(item.get("away"))
-                if hv is None:
-                    hv = to_num(item.get("homeValue"))
-                if av is None:
-                    av = to_num(item.get("awayValue"))
-                if hv is None and av is None:
-                    continue
-                out[metric] = (hv, av)
+            hv = to_num(item.get("home"))
+            av = to_num(item.get("away"))
+            if hv is None:
+                hv = to_num(item.get("homeValue"))
+            if av is None:
+                av = to_num(item.get("awayValue"))
+            if hv is None and av is None:
+                continue
+            out[metric] = (hv, av)
     return out
 
-
 def _gm_extract_sofascore_period_stats(payload):
-    """Extrai métricas separadas por tempo quando o SofaScore realmente as publica."""
+    """Extrai métricas separadas por tempo quando a fonte realmente as publica."""
     out = {"1T": {}, "2T": {}}
     periods = payload.get("statistics", []) if isinstance(payload, dict) else []
-    for period in periods:
+    for period in periods if isinstance(periods, list) else []:
         if not isinstance(period, dict):
             continue
         raw = str(period.get("period") or "").upper()
-        if raw in ("1ST", "FIRST", "FIRST_HALF", "1H"):
+        if raw in ("1ST", "FIRST", "FIRST_HALF", "1H", "FIRSTHALF"):
             bucket = "1T"
-        elif raw in ("2ND", "SECOND", "SECOND_HALF", "2H"):
+        elif raw in ("2ND", "SECOND", "SECOND_HALF", "2H", "SECONDHALF"):
             bucket = "2T"
         else:
             continue
-        for group in period.get("groups", []) or []:
-            if not isinstance(group, dict):
+        for item in _gm_sofascore_stat_items(period):
+            metric = _gm_sofascore_stat_map(
+                item.get("name") or item.get("label") or item.get("title")
+                or item.get("statisticsType") or item.get("key")
+            )
+            if not metric or metric in out[bucket]:
                 continue
-            for item in group.get("statisticsItems", []) or []:
-                if not isinstance(item, dict):
-                    continue
-                metric = _gm_sofascore_stat_map(item.get("name"))
-                if not metric or metric in out[bucket]:
-                    continue
-                hv, av = to_num(item.get("home")), to_num(item.get("away"))
-                if hv is None and av is None:
-                    continue
-                out[bucket][metric] = (hv, av)
+            hv = to_num(item.get("home"))
+            av = to_num(item.get("away"))
+            if hv is None:
+                hv = to_num(item.get("homeValue"))
+            if av is None:
+                av = to_num(item.get("awayValue"))
+            if hv is None and av is None:
+                continue
+            out[bucket][metric] = (hv, av)
     return out
-
 
 def _gm_extract_sofascore_cards_from_incidents(payload):
     """Conta cartões por equipe pelos incidentes quando o bloco de estatísticas omite cartões."""
@@ -4045,11 +4080,11 @@ def _gm_team_search_queries(team):
 
 @st.cache_data(ttl=21600, show_spinner=False)
 def _gm_sofascore_team_search_id(team):
-    """Resolve o ID SofaScore com tolerância a nomes locais/abreviados.
+    """Resolve equipe profissional masculina no SofaScore com nome tolerante.
 
-    A v3 usava a mesma similaridade rígida de odds. Isso falhava, por exemplo,
-    em ``Athletico-PR`` x ``Athletico Paranaense`` e fazia TODA a cobertura do
-    par cair para zero. A busca v4 tenta variantes seguras e valida futebol.
+    v7 corrige um defeito importante: clubes podem ter equipes masculina,
+    feminina, base ou reserva com praticamente o mesmo nome. A similaridade do
+    texto sozinha não basta; candidatos incompatíveis agora são descartados.
     """
     best_global = None
     for query in _gm_team_search_queries(team):
@@ -4074,6 +4109,13 @@ def _gm_sofascore_team_search_id(team):
                     if sport_slug and sport_slug != "football":
                         continue
                     if etype and etype not in ("team", "club"):
+                        continue
+                    # Fundamental: não confundir principal masculina com feminina/base/reserva.
+                    gender = str(entity.get("gender") or "").upper()
+                    if gender and gender not in ("M", "MALE"):
+                        continue
+                    nm_blob = " ".join(str(entity.get(k) or "") for k in ("name", "shortName", "slug"))
+                    if SECONDARY_TEAM_RE.search(nm_blob):
                         continue
                     name = str(entity.get("name") or "")
                     tid = entity.get("id")
@@ -4139,8 +4181,16 @@ def load_sofascore_recent_profile(team_id, team_name, recent_games=12):
     for ev in events:
         if not isinstance(ev, dict) or not _gm_sofascore_finished(ev):
             continue
-        home_id = (ev.get("homeTeam") or {}).get("id")
-        away_id = (ev.get("awayTeam") or {}).get("id")
+        hteam = ev.get("homeTeam") or {}
+        ateam = ev.get("awayTeam") or {}
+        if str(hteam.get("gender") or "M").upper() not in ("M", "MALE"):
+            continue
+        if str(ateam.get("gender") or "M").upper() not in ("M", "MALE"):
+            continue
+        if SECONDARY_TEAM_RE.search(str(hteam.get("name") or "")) or SECONDARY_TEAM_RE.search(str(ateam.get("name") or "")):
+            continue
+        home_id = hteam.get("id")
+        away_id = ateam.get("id")
         if team_id not in (home_id, away_id):
             continue
         side = "home" if team_id == home_id else "away"
@@ -4819,7 +4869,7 @@ def contextual_analysis_rows(team_a, team_b, competition_name, competition_df, r
         "priors": priors,
         "data_recovery_home": recovery_a,
         "data_recovery_away": recovery_b,
-        "data_recovery_version": "v6-multisource",
+        "data_recovery_version": "v7-source-resolution-fix",
         "data_recovery_debug": {
             "home": {"merged": _gm_recovery_diagnostic(recovery_a), "sofascore": _gm_recovery_diagnostic(sofa_a), "espn": _gm_recovery_diagnostic(espn_a)},
             "away": {"merged": _gm_recovery_diagnostic(recovery_b), "sofascore": _gm_recovery_diagnostic(sofa_b), "espn": _gm_recovery_diagnostic(espn_b)},
