@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-13-v37-high-margin-opportunities"
+GM_BUILD = "2026-09-13-v39-complete-fixture-coverage"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -8768,6 +8768,71 @@ def load_apifootball_fixtures_for_date(target_date):
     return fixtures
 
 
+@st.cache_data(ttl=600, show_spinner=False)
+def load_apifootball_competition_fixtures_for_date(competition, target_date):
+    """Consulta DIRETAMENTE uma competição por league_id + data.
+
+    A consulta global do provedor pode, em alguns momentos, retornar uma grade
+    parcial. Para a tela da competição selecionada fazemos uma chamada focada
+    no league_id auditado, garantindo que um jogo não desapareça apenas porque
+    outra fonte retornou uma lista incompleta.
+    """
+    league_id = (GM_APIFOOTBALL_FIXED_LEAGUE_IDS or {}).get(competition)
+    if not league_id:
+        return []
+    if isinstance(target_date, pd.Timestamp):
+        target_date = target_date.date()
+    if isinstance(target_date, datetime):
+        target_date = target_date.date()
+    if not isinstance(target_date, date):
+        try:
+            target_date = pd.to_datetime(target_date).date()
+        except Exception:
+            return []
+
+    payload, err = gm_apifootball_request(
+        "get_events",
+        **{
+            "from": target_date.isoformat(),
+            "to": target_date.isoformat(),
+            "league_id": str(league_id),
+        },
+        timezone="America/Sao_Paulo",
+    )
+    if err or not isinstance(payload, list):
+        return []
+
+    fixtures = []
+    for ev in payload:
+        if not isinstance(ev, dict):
+            continue
+        if str(ev.get("league_id") or "").strip() != str(league_id):
+            continue
+        home = str(ev.get("match_hometeam_name") or "").strip()
+        away = str(ev.get("match_awayteam_name") or "").strip()
+        if not home or not away:
+            continue
+        match_date = str(ev.get("match_date") or target_date.isoformat()).strip()
+        try:
+            event_date = pd.to_datetime(match_date, errors="coerce").date()
+        except Exception:
+            event_date = target_date
+        if event_date != target_date:
+            continue
+        fixtures.append({
+            "competition": competition,
+            "home": home,
+            "away": away,
+            "time": str(ev.get("match_time") or "").strip(),
+            "br_date": target_date,
+            "match_id": str(ev.get("match_id") or "").strip(),
+            "league_id": str(ev.get("league_id") or "").strip(),
+            "status": str(ev.get("match_status") or "").strip(),
+            "source": "APIfootball · liga direta",
+        })
+    return fixtures
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_fixtures_for_date(target_date):
     """Carrega somente jogos das competições suportadas para uma data de Brasília."""
@@ -8928,8 +8993,14 @@ def load_competition_fixtures_for_date(competition, target_date):
 
     fixtures = []
 
-    # Fonte oficial primária por league_id auditado. O helper global faz uma única
-    # consulta por data e aqui apenas filtramos a competição escolhida.
+    # v39: consulta focada por league_id primeiro. Isso evita depender da resposta
+    # global do provedor, que pode vir parcial em determinados momentos.
+    try:
+        fixtures.extend(load_apifootball_competition_fixtures_for_date(competition, target_date))
+    except Exception:
+        pass
+
+    # Mantém a consulta global como segunda confirmação.
     try:
         fixtures.extend([f for f in load_apifootball_fixtures_for_date(target_date) if f.get("competition") == competition])
     except Exception:
@@ -8954,13 +9025,14 @@ def load_competition_fixtures_for_date(competition, target_date):
     except Exception:
         pass
 
-    # Mantém todas as fontes anteriores como fallback, mas somente se a consulta
-    # focada ainda não encontrou partidas.
-    if not fixtures:
-        try:
-            fixtures.extend([f for f in load_fixtures_for_date(target_date) if f.get("competition") == competition])
-        except Exception:
-            pass
+    # v39: SEMPRE mescla as fontes anteriores. Antes, bastava uma fonte devolver
+    # um único jogo para o fallback ser ignorado; isso podia ocultar partidas da
+    # mesma rodada. Agora cada fonte complementa as demais e a deduplicação final
+    # escolhe a melhor versão de cada confronto.
+    try:
+        fixtures.extend([f for f in load_fixtures_for_date(target_date) if f.get("competition") == competition])
+    except Exception:
+        pass
 
     best = {}
     for f in fixtures:
@@ -10790,36 +10862,106 @@ def _gm_daily_best_odd_row(rows):
     return max(rows, key=rank)
 
 
-def gm_daily_pick_candidates(target_date):
+def _gm_daily_kickoff_at(target_date, time_value):
+    """Converte data + horário informado pela agenda em datetime de Brasília."""
+    try:
+        day = target_date.date() if isinstance(target_date, datetime) else target_date
+        if isinstance(day, pd.Timestamp):
+            day = day.date()
+        if not isinstance(day, date):
+            day = pd.to_datetime(day).date()
+        label = _gm_daily_time_label(time_value)
+        m = re.fullmatch(r"(\d{2}):(\d{2})", label)
+        if not m:
+            return None
+        return datetime(day.year, day.month, day.day, int(m.group(1)), int(m.group(2)), tzinfo=BRASILIA_TZ)
+    except Exception:
+        return None
+
+
+def gm_daily_pick_candidates(target_date, cutoff_at=None):
+    """Monta candidatos somente entre partidas ainda não iniciadas.
+
+    Quando cutoff_at é informado (geração das oportunidades do dia), qualquer jogo
+    com início anterior ao horário de geração + margem operacional fica fora. Isso
+    impede publicar Bingo/Matadeira com partidas já encerradas, em andamento ou
+    prestes a começar.
+    """
     target_iso = target_date.isoformat() if hasattr(target_date, "isoformat") else str(target_date)
     payload = gm_daily_pick_source_payload(target_iso)
     if payload.get("error"):
         return [], {"error": payload.get("error"), "predictions": len(payload.get("predictions") or []), "odds": len(payload.get("odds") or [])}
     allowed_ids = {str(v) for v in (GM_APIFOOTBALL_FIXED_LEAGUE_IDS or {}).values()}
     odd_map = _gm_daily_pick_bookmaker_rows(payload.get("odds") or [])
-    fixture_time_map = {}
+    fixture_map = {}
     try:
         for fx in load_apifootball_fixtures_for_date(target_date):
             mid_fx = str((fx or {}).get("match_id") or "").strip()
             if mid_fx:
-                fixture_time_map[mid_fx] = _gm_daily_time_label((fx or {}).get("time"))
+                fixture_map[mid_fx] = {
+                    "time": _gm_daily_time_label((fx or {}).get("time")),
+                    "status": _gm_api_norm((fx or {}).get("status")),
+                }
     except Exception:
-        fixture_time_map = {}
+        fixture_map = {}
+
+    if cutoff_at is not None and getattr(cutoff_at, "tzinfo", None) is None:
+        cutoff_at = cutoff_at.replace(tzinfo=BRASILIA_TZ)
+
+    blocked_status_tokens = {
+        "finished", "ft", "after et", "after pen", "cancelled", "canceled",
+        "postponed", "abandoned", "awarded", "live", "in play", "inplay",
+        "halftime", "half time", "1st half", "2nd half",
+    }
     candidates = []
+    excluded_past = excluded_status = excluded_unknown_time = 0
     for pred in payload.get("predictions") or []:
-        if not isinstance(pred, dict) or str(pred.get("league_id") or "") not in allowed_ids: continue
+        if not isinstance(pred, dict) or str(pred.get("league_id") or "") not in allowed_ids:
+            continue
         home, away = str(pred.get("match_hometeam_name") or "").strip(), str(pred.get("match_awayteam_name") or "").strip()
-        if not home or not away or not valid_fixture_team(home) or not valid_fixture_team(away): continue
-        mid = str(pred.get("match_id") or "").strip(); odd_row = _gm_daily_best_odd_row(odd_map.get(mid) or [])
-        if not odd_row: continue
+        if not home or not away or not valid_fixture_team(home) or not valid_fixture_team(away):
+            continue
+        mid = str(pred.get("match_id") or "").strip()
+        fx = fixture_map.get(mid) or {}
+        status = _gm_api_norm(fx.get("status") or pred.get("match_status") or "")
+        if status and any(tok in status for tok in blocked_status_tokens):
+            excluded_status += 1
+            continue
+        time_label = _gm_daily_time_label(fx.get("time") or pred.get("match_time") or "")
+        kickoff_at = _gm_daily_kickoff_at(target_date, time_label)
+        if cutoff_at is not None:
+            if kickoff_at is None:
+                excluded_unknown_time += 1
+                continue
+            if kickoff_at <= cutoff_at:
+                excluded_past += 1
+                continue
+
+        odd_row = _gm_daily_best_odd_row(odd_map.get(mid) or [])
+        if not odd_row:
+            continue
         bookmaker = str(odd_row.get("odd_bookmakers") or odd_row.get("bookmaker") or "Mercado").strip()
         for code, label, pkey, okey in _gm_daily_market_specs():
             p, odd = _gm_daily_num(pred.get(pkey)), _gm_daily_num(odd_row.get(okey))
-            if p is None or odd is None or odd <= 1.01 or p <= 0 or p >= 100: continue
-            implied = 100.0 / odd; edge = p - implied
-            candidates.append({"match_id": mid, "date": target_iso, "time": _gm_daily_time_label(pred.get("match_time") or fixture_time_map.get(mid) or ""), "league_id": str(pred.get("league_id") or ""), "competition": str(pred.get("league_name") or ""), "home": home, "away": away, "market_code": code, "market": label, "probability": round(p, 2), "odd": round(odd, 3), "implied_probability": round(implied, 2), "edge": round(edge, 2), "bookmaker": bookmaker})
-    return candidates, {"error": None, "predictions": len(payload.get("predictions") or []), "odds": len(payload.get("odds") or []), "candidates": len(candidates)}
-
+            if p is None or odd is None or odd <= 1.01 or p <= 0 or p >= 100:
+                continue
+            implied = 100.0 / odd
+            edge = p - implied
+            candidates.append({
+                "match_id": mid, "date": target_iso, "time": time_label,
+                "kickoff_at": kickoff_at.isoformat() if kickoff_at else None,
+                "league_id": str(pred.get("league_id") or ""), "competition": str(pred.get("league_name") or ""),
+                "home": home, "away": away, "market_code": code, "market": label,
+                "probability": round(p, 2), "odd": round(odd, 3),
+                "implied_probability": round(implied, 2), "edge": round(edge, 2), "bookmaker": bookmaker,
+            })
+    return candidates, {
+        "error": None, "predictions": len(payload.get("predictions") or []),
+        "odds": len(payload.get("odds") or []), "candidates": len(candidates),
+        "excluded_past": excluded_past, "excluded_status": excluded_status,
+        "excluded_unknown_time": excluded_unknown_time,
+        "cutoff_at": cutoff_at.isoformat() if cutoff_at is not None else None,
+    }
 
 def _gm_daily_combo_payload(legs, bet_type, pick_kind="dica"):
     legs = _gm_daily_sort_legs(legs)
@@ -10839,14 +10981,7 @@ def _gm_daily_distinct_matches(legs):
 
 
 def _gm_daily_high_margin_candidate(candidate, pick_kind):
-    """Filtro conservador das Oportunidades GM, com cuidado extra nos mercados UNDER.
-
-    A regra não transforma ausência de evidência em confiança. Para o Bingo, mercados
-    de margem estreita (principalmente U1.5) ficam de fora; linhas UNDER só entram
-    quando a probabilidade estimada é alta o bastante para oferecer folga estatística.
-    Odds individuais baixas são aceitas e até preferidas quando ajudam a compor uma
-    múltipla mais robusta.
-    """
+    """Filtro v38: margem alta, sem tratar double chance/UNDER como 'automaticamente seguros'."""
     try:
         odd = float(candidate.get("odd") or 0.0)
         prob = float(candidate.get("probability") or 0.0)
@@ -10855,47 +10990,64 @@ def _gm_daily_high_margin_candidate(candidate, pick_kind):
         return False
     code = str(candidate.get("market_code") or "").upper().strip()
 
-    # Margens específicas por perfil. Quanto mais agressivo o produto final, mais
-    # conservadora é cada perna individual.
+    # UNDER é o ponto mais sensível desta camada. U1.5 não entra em nenhuma das
+    # oportunidades. Matadeira/Bingo também não usam U2.5/U3.5: para os produtos
+    # conservadores preferimos mercados que não perdem margem a cada gol inesperado.
+    if code == "U1.5":
+        return False
+    if pick_kind in {"matadeira", "bingo"} and code in {"U2.5", "U3.5"}:
+        return False
+
+    # 1X/X2 também não são considerados seguros só pelo nome. Exigem vantagem
+    # probabilística forte e odd individual baixa; quanto mais agressivo o produto,
+    # maior a exigência da perna.
+    if code in {"1X", "X2"}:
+        if pick_kind == "bingo":
+            return prob >= 92.0 and odd <= 1.30 and edge >= 0.20
+        if pick_kind == "matadeira":
+            return prob >= 89.0 and odd <= 1.34 and edge >= 0.50
+        return prob >= 84.0 and odd <= 1.42 and edge >= 1.50
+
+    if code == "12":
+        if pick_kind == "bingo":
+            return prob >= 91.0 and odd <= 1.32 and edge >= 0.25
+        if pick_kind == "matadeira":
+            return prob >= 88.0 and odd <= 1.36 and edge >= 0.60
+        return prob >= 83.0 and odd <= 1.45 and edge >= 1.50
+
     if pick_kind == "bingo":
-        if not (1.04 <= odd <= 1.55):
+        if not (1.03 <= odd <= 1.50):
             return False
-        # UNDER 1.5 tem pouca margem operacional: um jogo com 2 gols já derruba a perna.
-        if code == "U1.5":
-            return False
-        if code == "U2.5":
-            return prob >= 89.0 and edge >= 0.4 and odd <= 1.42
-        if code == "U3.5":
-            return prob >= 85.0 and edge >= 0.3 and odd <= 1.48
-        if code in {"O3.5", "X", "BTTS_Y"}:
-            return prob >= 90.0 and edge >= 0.8 and odd <= 1.38
+        if code in {"X", "O3.5", "BTTS_Y"}:
+            return prob >= 92.0 and edge >= 0.8 and odd <= 1.32
         if code in {"1", "2"}:
-            return prob >= 86.0 and edge >= 0.5 and odd <= 1.45
-        if code in {"1X", "X2", "12", "O1.5"}:
-            return prob >= 84.0 and edge >= 0.2
+            return prob >= 88.0 and edge >= 0.5 and odd <= 1.40
+        if code == "O1.5":
+            return prob >= 88.0 and edge >= 0.2 and odd <= 1.38
         if code in {"O2.5", "BTTS_N"}:
-            return prob >= 87.0 and edge >= 0.5 and odd <= 1.45
-        return prob >= 86.0 and edge >= 0.5
+            return prob >= 90.0 and edge >= 0.6 and odd <= 1.38
+        return prob >= 88.0 and edge >= 0.5
 
     if pick_kind == "matadeira":
-        if code == "U1.5":
-            return prob >= 86.0 and edge >= 2.0
-        if code == "U2.5":
+        if code in {"X", "O3.5", "BTTS_Y"}:
+            return prob >= 82.0 and edge >= 2.0
+        if code in {"1", "2"}:
+            return prob >= 76.0 and edge >= 2.0
+        if code == "O1.5":
+            return prob >= 82.0 and edge >= 1.0
+        if code in {"O2.5", "BTTS_N"}:
             return prob >= 80.0 and edge >= 1.5
-        if code == "U3.5":
-            return prob >= 78.0 and edge >= 1.0
-        return True
+        return prob >= 78.0 and edge >= 1.5
 
-    # Dica do Dia: ainda pode assumir risco intermediário, mas UNDER precisa de
-    # margem maior do que os filtros genéricos anteriores.
-    if code == "U1.5":
-        return prob >= 78.0 and edge >= 3.0
+    # Dica do Dia continua intermediária, mas UNDER só entra com uma folga muito
+    # maior. Isso evita que uma linha 'Menos de' seja escolhida por preço apenas.
     if code == "U2.5":
-        return prob >= 72.0 and edge >= 2.5
+        return prob >= 84.0 and edge >= 3.0 and odd <= 1.55
     if code == "U3.5":
-        return prob >= 70.0 and edge >= 2.0
+        return prob >= 86.0 and edge >= 2.5 and odd <= 1.48
+    if code in {"X", "O3.5", "BTTS_Y"}:
+        return prob >= 68.0 and edge >= 4.0
     return True
-
 
 def gm_daily_pick_choose(candidates, pick_kind="dica"):
     # v37: aplica primeiro o filtro de margem alta, especialmente para mercados
@@ -10904,10 +11056,10 @@ def gm_daily_pick_choose(candidates, pick_kind="dica"):
     if pick_kind == "matadeira":
         simples = []
         for c in candidates:
-            if 1.50 <= c["odd"] <= 1.89 and c["probability"] >= 65.0 and c["edge"] >= 3.0:
+            if 1.50 <= c["odd"] <= 1.85 and c["probability"] >= 76.0 and c["edge"] >= 3.0:
                 combo = _gm_daily_combo_payload([c], "simple", "matadeira"); combo["score"] += 4.0 if 1.60 <= c["odd"] <= 1.85 else 0.0; simples.append(combo)
         if simples: return max(simples, key=lambda x: x["score"])
-        base = sorted([c for c in candidates if 1.15 <= c["odd"] <= 1.42 and c["probability"] >= 82.0 and c["edge"] >= 1.5], key=lambda c: c["probability"] + c["edge"], reverse=True)[:34]
+        base = sorted([c for c in candidates if 1.08 <= c["odd"] <= 1.38 and c["probability"] >= 88.0 and c["edge"] >= 0.8], key=lambda c: c["probability"] + c["edge"], reverse=True)[:34]
         combos=[]
         for legs in itertools.combinations(base,2):
             if not _gm_daily_distinct_matches(legs): continue
@@ -10915,7 +11067,7 @@ def gm_daily_pick_choose(candidates, pick_kind="dica"):
             if 1.50 <= combo["total_odd"] <= 1.89:
                 combo["score"] += 4.0 if 1.60 <= combo["total_odd"] <= 1.85 else 0.0; combos.append(combo)
         if combos: return max(combos,key=lambda x:x["score"])
-        base = sorted([c for c in candidates if 1.08 <= c["odd"] <= 1.28 and c["probability"] >= 87.0 and c["edge"] >= .8], key=lambda c:c["probability"]+c["edge"], reverse=True)[:26]
+        base = sorted([c for c in candidates if 1.04 <= c["odd"] <= 1.25 and c["probability"] >= 91.0 and c["edge"] >= .3], key=lambda c:c["probability"]+c["edge"], reverse=True)[:26]
         combos=[]
         for legs in itertools.combinations(base,3):
             if _gm_daily_distinct_matches(legs):
@@ -10934,20 +11086,20 @@ def gm_daily_pick_choose(candidates, pick_kind="dica"):
             odd = float(c.get("odd") or 0.0)
             prob = float(c.get("probability") or 0.0)
             edge = float(c.get("edge") or 0.0)
-            if not (1.04 <= odd <= 1.55):
+            if not (1.03 <= odd <= 1.50):
                 continue
             # Faixa principal: odds baixas podem compor a múltipla sem problema.
             # O filtro por mercado acima já exige probabilidade alta; aqui apenas
             # reforçamos a preferência por preços menores.
-            if odd <= 1.35:
-                if prob < 84.0 or edge < 0.2:
+            if odd <= 1.30:
+                if prob < 88.0 or edge < 0.2:
                     continue
-            elif odd <= 1.45:
-                if prob < 86.0 or edge < 0.4:
+            elif odd <= 1.40:
+                if prob < 90.0 or edge < 0.4:
                     continue
             else:
-                # 1,46–1,55 só entra quando a sustentação é excepcional.
-                if prob < 90.0 or edge < 0.8:
+                # 1,41–1,50 só entra quando a sustentação é excepcional.
+                if prob < 93.0 or edge < 0.8:
                     continue
             item = dict(c)
             # Ranking individual: probabilidade domina; odds mais altas recebem
@@ -11005,7 +11157,7 @@ def gm_daily_pick_choose(candidates, pick_kind="dica"):
                         combo = _gm_daily_combo_payload(new_legs, "multiple", "bingo")
                         combo["score"] = round(rank, 3)
                         combo["model_meta_bingo"] = {
-                            "strategy": "high_margin_multi_leg_v37",
+                            "strategy": "future_only_high_margin_v38",
                             "leg_count": len(new_legs),
                             "max_leg_odd": round(max(float(x["odd"]) for x in new_legs), 3),
                             "min_leg_probability": round(worst_prob, 2),
@@ -11019,16 +11171,16 @@ def gm_daily_pick_choose(candidates, pick_kind="dica"):
             # Se já existe uma combinação forte entre 3,50 e 4,50, ainda deixa o
             # beam avançar até mais pernas, mas não precisa perseguir odd enorme.
         return best
-    simples=[_gm_daily_combo_payload([c],"simple","dica") for c in candidates if 1.90 <= c["odd"] <= 2.10 and c["probability"] >= 56.0 and c["edge"] >= 4.0]
+    simples=[_gm_daily_combo_payload([c],"simple","dica") for c in candidates if 1.90 <= c["odd"] <= 2.10 and c["probability"] >= 61.0 and c["edge"] >= 4.5]
     if simples: return max(simples,key=lambda x:x["score"])
-    base=sorted([c for c in candidates if 1.22 <= c["odd"] <= 1.70 and c["probability"] >= 72.0 and c["edge"] >= 2.5], key=lambda c:c["probability"]+c["edge"], reverse=True)[:36]
+    base=sorted([c for c in candidates if 1.12 <= c["odd"] <= 1.55 and c["probability"] >= 80.0 and c["edge"] >= 1.8], key=lambda c:c["probability"]+c["edge"], reverse=True)[:36]
     doubles=[]
     for legs in itertools.combinations(base,2):
         if _gm_daily_distinct_matches(legs):
             combo=_gm_daily_combo_payload(list(legs),"double","dica")
             if 1.90 <= combo["total_odd"] <= 2.10: doubles.append(combo)
     if doubles: return max(doubles,key=lambda x:x["score"])
-    base=sorted([c for c in candidates if 1.15 <= c["odd"] <= 1.48 and c["probability"] >= 80.0 and c["edge"] >= 1.5], key=lambda c:c["probability"]+c["edge"], reverse=True)[:28]
+    base=sorted([c for c in candidates if 1.08 <= c["odd"] <= 1.38 and c["probability"] >= 86.0 and c["edge"] >= 1.0], key=lambda c:c["probability"]+c["edge"], reverse=True)[:28]
     triples=[]
     for legs in itertools.combinations(base,3):
         if _gm_daily_distinct_matches(legs):
@@ -11051,7 +11203,8 @@ def gm_daily_pick_publish_today(force_refresh=False):
     if force_refresh:
         try: gm_daily_pick_source_payload.clear()
         except Exception: pass
-    candidates, meta=gm_daily_pick_candidates(today)
+    cutoff_at = datetime.now(BRASILIA_TZ) + timedelta(minutes=10)
+    candidates, meta=gm_daily_pick_candidates(today, cutoff_at=cutoff_at)
     if meta.get("error"): return {"ok":False,"reason":"source_error","meta":meta}
     published=[]
     for pick_kind in missing:
@@ -11138,7 +11291,7 @@ def _gm_daily_pick_card(row, target_date, pick_kind):
 
 def gm_render_daily_pick_page():
     st.markdown("## ⭐ Oportunidades GM do Dia")
-    st.caption("Três leituras independentes para o dia. Se uma faixa não atingir os filtros de qualidade, o GM SCORE marca como sem seleção em vez de forçar uma entrada.")
+    st.caption("Três leituras independentes para o dia. Só entram partidas com início pelo menos 10 minutos após a geração pelo administrador. Se uma faixa não atingir os filtros de qualidade, o GM SCORE marca como sem seleção em vez de forçar uma entrada.")
     st.markdown('''<div class="gm-risk-rule"><span class="gm-risk-green">QUANTO MAIOR A ODD</span><span class="gm-risk-arrow">→</span><span class="gm-risk-red">MENORES AS CHANCES</span></div>''',unsafe_allow_html=True)
     try: profile=gm_auth_get_profile()
     except Exception: profile=None
