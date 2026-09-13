@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-13-v39-complete-fixture-coverage"
+GM_BUILD = "2026-09-13-v40-complete-fixture-dedupe"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -8523,6 +8523,112 @@ ESPN_FIXTURE_LEAGUES = {
 }
 
 
+# Fonte pública complementar de agenda. Não participa de probabilidades/odds;
+# serve apenas para descobrir partidas que uma das agendas principais omita.
+THESPORTSDB_LEAGUE_ALIASES = {
+    "english premier league": "Inglaterra - Premier League",
+    "premier league": "Inglaterra - Premier League",
+    "spanish la liga": "Espanha - La Liga", "la liga": "Espanha - La Liga",
+    "italian serie a": "Itália - Serie A", "serie a": "Itália - Serie A",
+    "german bundesliga": "Alemanha - Bundesliga", "bundesliga": "Alemanha - Bundesliga",
+    "french ligue 1": "França - Ligue 1", "ligue 1": "França - Ligue 1",
+    "portuguese primeira liga": "Portugal - Liga Portugal", "liga portugal": "Portugal - Liga Portugal",
+    "dutch eredivisie": "Holanda - Eredivisie", "eredivisie": "Holanda - Eredivisie",
+    "scottish premiership": "Escócia - Premiership",
+    "turkish super lig": "Turquia - Süper Lig", "super lig": "Turquia - Süper Lig",
+    "brazilian serie a": "Brasil - Série A", "brazilian serie b": "Brasil - Série B",
+    "saudi pro league": "Arábia Saudita - Saudi Pro League",
+    "american major league soccer": "Estados Unidos - MLS", "major league soccer": "Estados Unidos - MLS",
+    "argentinian primera division": "Argentina - Liga Profesional", "liga profesional de futbol": "Argentina - Liga Profesional",
+    "mexican primera league": "México - Liga MX", "liga mx": "México - Liga MX",
+    "colombian primera a": "Colômbia - Primera A",
+    "copa libertadores": "CONMEBOL Libertadores", "copa sudamericana": "CONMEBOL Sul-Americana",
+    "uefa champions league": "UEFA Champions League", "uefa europa league": "UEFA Europa League",
+    "uefa europa conference league": "UEFA Conference League", "uefa conference league": "UEFA Conference League",
+}
+
+
+def _gm_competition_from_public_league_name(value):
+    norm = _gm_api_norm(value)
+    for token, comp in THESPORTSDB_LEAGUE_ALIASES.items():
+        if _gm_api_norm(token) == norm or _gm_api_norm(token) in norm:
+            return comp
+    return None
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def load_thesportsdb_fixtures_for_date(target_date):
+    """Agenda suplementar via TheSportsDB (chave pública de teste 3).
+
+    Usada somente como redundância de calendário; nunca entra no motor
+    estatístico, odds, pagamentos ou autenticação.
+    """
+    if isinstance(target_date, pd.Timestamp): target_date = target_date.date()
+    if isinstance(target_date, datetime): target_date = target_date.date()
+    try:
+        target_date = target_date if isinstance(target_date, date) else pd.to_datetime(target_date).date()
+    except Exception:
+        return []
+    try:
+        r = requests.get(
+            "https://www.thesportsdb.com/api/v1/json/3/eventsday.php",
+            params={"d": target_date.isoformat(), "s": "Soccer"}, timeout=15,
+            headers={"Accept": "application/json"},
+        )
+        if r.status_code != 200: return []
+        data = r.json() if r.content else {}
+    except Exception:
+        return []
+    out=[]
+    for ev in (data or {}).get("events", []) or []:
+        if not isinstance(ev, dict): continue
+        comp = _gm_competition_from_public_league_name(ev.get("strLeague") or ev.get("strLeagueAlternate") or "")
+        if not comp or comp not in COMPETITIONS: continue
+        home=str(ev.get("strHomeTeam") or "").strip(); away=str(ev.get("strAwayTeam") or "").strip()
+        if not home or not away: continue
+        br_date=target_date; br_time=""
+        raw_ts=str(ev.get("strTimestamp") or "").strip()
+        if raw_ts:
+            try:
+                dt=pd.to_datetime(raw_ts, utc=True, errors="coerce")
+                if not pd.isna(dt):
+                    dt_br=dt.tz_convert(BRASILIA_TZ); br_date=dt_br.date(); br_time=dt_br.strftime("%H:%M")
+            except Exception: pass
+        if br_date != target_date: continue
+        if not br_time:
+            tm=str(ev.get("strTime") or "").strip()
+            if re.fullmatch(r"\d{1,2}:\d{2}(?::\d{2})?",tm): br_time=tm[:5].zfill(5)
+        out.append({"competition":comp,"home":home,"away":away,"time":br_time,"br_date":br_date,
+                    "source":"TheSportsDB","event_id":str(ev.get("idEvent") or "").strip(),
+                    "status":str(ev.get("strStatus") or "").strip()})
+    return out
+
+
+def _fixture_names_equivalent(a, b):
+    ka, kb = fixture_team_key(a), fixture_team_key(b)
+    if not ka or not kb: return False
+    if ka == kb: return True
+    # Fontes variam entre nome curto e oficial: Brighton vs Brighton & Hove Albion,
+    # Coventry vs Coventry City etc. Um nome inteiro contido no outro é suficiente
+    # quando a parte curta tem pelo menos 5 caracteres.
+    if min(len(ka), len(kb)) >= 5 and (ka in kb or kb in ka): return True
+    ta=set(ka.split("_")); tb=set(kb.split("_"))
+    if not ta or not tb: return False
+    inter=len(ta & tb)
+    return inter >= 1 and inter / min(len(ta), len(tb)) >= 0.67
+
+
+def _merge_fixture_unique(best_list, candidate):
+    """Mescla a mesma partida mesmo quando as fontes usam nomes diferentes."""
+    if not valid_daily_fixture(candidate): return
+    for i, old in enumerate(best_list):
+        if old.get("competition") != candidate.get("competition"): continue
+        if _fixture_names_equivalent(old.get("home"), candidate.get("home")) and _fixture_names_equivalent(old.get("away"), candidate.get("away")):
+            if _fixture_quality(candidate) > _fixture_quality(old): best_list[i] = candidate
+            return
+    best_list.append(candidate)
+
+
 def _espn_get_json(url, timeout=15):
     """Consulta ESPN sem o User-Agent de navegador usado pelas demais fontes.
 
@@ -8858,6 +8964,10 @@ def load_fixtures_for_date(target_date):
         fixtures.extend(load_espn_fixtures_for_date(today))
     except Exception:
         pass
+    try:
+        fixtures.extend(load_thesportsdb_fixtures_for_date(today))
+    except Exception:
+        pass
 
     # Fonte diária abrangente: consulta também o dia UTC seguinte para não perder jogos
     # que ainda pertencem ao dia de Brasília após a conversão de fuso.
@@ -8956,24 +9066,18 @@ def load_fixtures_for_date(target_date):
 
     # Remove duplicados mesmo quando as fontes usam nomes diferentes
     # (ex.: "Vitoria" x "EC Vitória"; "Gremio" x "Grêmio FBPA").
-    best = {}
-    order = []
+    best = []
     for f in fixtures:
         if not valid_daily_fixture(f) or not fixture_matches_selected_date(f, today):
             continue
         comp = f.get("competition")
+        ff = dict(f)
         if comp in STRICT_OFFICIAL_ROSTERS:
             roster = CURRENT_TEAM_ROSTERS.get(comp, [])
-            f = dict(f)
-            f["home"] = resolve_team_name(f.get("home"), roster)
-            f["away"] = resolve_team_name(f.get("away"), roster)
-        key = (f["competition"], fixture_team_key(f["home"]), fixture_team_key(f["away"]))
-        if key not in best:
-            best[key] = f
-            order.append(key)
-        elif _fixture_quality(f) > _fixture_quality(best[key]):
-            best[key] = f
-    return [best[k] for k in order if valid_daily_fixture(best[k])]
+            ff["home"] = resolve_team_name(ff.get("home"), roster) or ff.get("home")
+            ff["away"] = resolve_team_name(ff.get("away"), roster) or ff.get("away")
+        _merge_fixture_unique(best, ff)
+    return [x for x in best if valid_daily_fixture(x)]
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -9024,8 +9128,12 @@ def load_competition_fixtures_for_date(competition, target_date):
         fixtures.extend([f for f in load_sofascore_fixtures_for_date(target_date) if f.get("competition") == competition])
     except Exception:
         pass
+    try:
+        fixtures.extend([f for f in load_thesportsdb_fixtures_for_date(target_date) if f.get("competition") == competition])
+    except Exception:
+        pass
 
-    # v39: SEMPRE mescla as fontes anteriores. Antes, bastava uma fonte devolver
+    # v40: SEMPRE mescla as fontes anteriores. Antes, bastava uma fonte devolver
     # um único jogo para o fallback ser ignorado; isso podia ocultar partidas da
     # mesma rodada. Agora cada fonte complementa as demais e a deduplicação final
     # escolhe a melhor versão de cada confronto.
@@ -9034,7 +9142,7 @@ def load_competition_fixtures_for_date(competition, target_date):
     except Exception:
         pass
 
-    best = {}
+    best = []
     for f in fixtures:
         if (
             f.get("competition") != competition
@@ -9047,10 +9155,8 @@ def load_competition_fixtures_for_date(competition, target_date):
             roster = CURRENT_TEAM_ROSTERS.get(competition, [])
             ff["home"] = resolve_team_name(ff.get("home"), roster) or ff.get("home")
             ff["away"] = resolve_team_name(ff.get("away"), roster) or ff.get("away")
-        key = (fixture_team_key(ff.get("home")), fixture_team_key(ff.get("away")))
-        if key not in best or _fixture_quality(ff) > _fixture_quality(best[key]):
-            best[key] = ff
-    return sorted(best.values(), key=lambda f: str(f.get("time") or "99:99"))
+        _merge_fixture_unique(best, ff)
+    return sorted(best, key=lambda f: str(f.get("time") or "99:99"))
 
 
 def load_today_fixtures():
