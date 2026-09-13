@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-13-v47-conservative-daily-opportunities"
+GM_BUILD = "2026-09-13-v48-conclusive-whitelist-daily"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -11198,14 +11198,39 @@ def gm_daily_pick_source_payload(target_date_iso):
     return {"predictions": predictions if isinstance(predictions, list) else [], "odds": odds if isinstance(odds, list) else [], "error": None}
 
 
+def _gm_daily_prob_over_05_from_over15(prob_over15):
+    """Deriva P(mais de 0,5) de P(mais de 1,5) sob Poisson.
+
+    Não inventa uma odd: a odd continua vindo do bookmaker (campo o+0.5).
+    A derivação serve apenas para estimar a probabilidade do modelo quando o
+    provedor entrega prob_O_1, mas não uma probabilidade explícita para O0.5.
+    """
+    p = _gm_daily_num(prob_over15)
+    if p is None:
+        return None
+    q = max(0.0001, min(0.9999, float(p) / 100.0))
+    lo, hi = 0.0001, 12.0
+    for _ in range(70):
+        lam = (lo + hi) / 2.0
+        p_ge_2 = 1.0 - math.exp(-lam) * (1.0 + lam)
+        if p_ge_2 < q:
+            lo = lam
+        else:
+            hi = lam
+    lam = (lo + hi) / 2.0
+    return max(0.0, min(99.8, (1.0 - math.exp(-lam)) * 100.0))
+
+
 def _gm_daily_market_specs():
+    # Whitelist v48. Mercados sensíveis como BTTS, UNDER e linhas altas de gols
+    # ficam fora das oportunidades diárias. O0.5 usa odd REAL do bookmaker e
+    # probabilidade derivada de forma conservadora a partir de prob_O_1.
     return [
-        ("1", "Vitória casa", "prob_HW", "odd_1"), ("X", "Empate", "prob_D", "odd_x"), ("2", "Vitória fora", "prob_AW", "odd_2"),
-        ("1X", "Casa ou empate", "prob_HW_D", "odd_1x"), ("X2", "Fora ou empate", "prob_AW_D", "odd_x2"), ("12", "Sem empate", "prob_HW_AW", "odd_12"),
-        ("O1.5", "Mais de 1,5 gols", "prob_O_1", "o+1.5"), ("U1.5", "Menos de 1,5 gols", "prob_U_1", "u+1.5"),
-        ("O2.5", "Mais de 2,5 gols", "prob_O", "o+2.5"), ("U2.5", "Menos de 2,5 gols", "prob_U", "u+2.5"),
-        ("O3.5", "Mais de 3,5 gols", "prob_O_3", "o+3.5"), ("U3.5", "Menos de 3,5 gols", "prob_U_3", "u+3.5"),
-        ("BTTS_Y", "Ambas marcam — Sim", "prob_bts", "bts_yes"), ("BTTS_N", "Ambas marcam — Não", "prob_ots", "bts_no"),
+        ("1X", "Casa ou empate", "prob_HW_D", "odd_1x"),
+        ("X2", "Fora ou empate", "prob_AW_D", "odd_x2"),
+        ("12", "Sem empate", "prob_HW_AW", "odd_12"),
+        ("O0.5", "Mais de 0,5 gol", "__derived_o05__", "o+0.5"),
+        ("O1.5", "Mais de 1,5 gols", "prob_O_1", "o+1.5"),
     ]
 
 
@@ -11307,7 +11332,11 @@ def gm_daily_pick_candidates(target_date, cutoff_at=None):
             continue
         bookmaker = str(odd_row.get("odd_bookmakers") or odd_row.get("bookmaker") or "Mercado").strip()
         for code, label, pkey, okey in _gm_daily_market_specs():
-            p, odd = _gm_daily_num(pred.get(pkey)), _gm_daily_num(odd_row.get(okey))
+            if pkey == "__derived_o05__":
+                p = _gm_daily_prob_over_05_from_over15(pred.get("prob_O_1"))
+            else:
+                p = _gm_daily_num(pred.get(pkey))
+            odd = _gm_daily_num(odd_row.get(okey))
             if p is None or odd is None or odd <= 1.01 or p <= 0 or p >= 100:
                 continue
             implied = 100.0 / odd
@@ -11346,12 +11375,13 @@ def _gm_daily_distinct_matches(legs):
 
 
 def _gm_daily_high_margin_candidate(candidate, pick_kind):
-    """Filtro v47: oportunidades diárias somente em mercados estruturalmente mais robustos.
+    """Whitelist v48 focada em eventos simples e de alta recorrência.
 
-    A camada diária não tenta cobrir todos os mercados disponíveis. Para Matadeira,
-    Dica e Bingo evitamos mercados muito sensíveis a um único lance (BTTS, UNDER,
-    empate, sem empate e linhas altas de gols). A prioridade é combinar várias odds
-    baixas e fortes quando necessário, em vez de buscar uma perna agressiva.
+    Mercados permitidos na camada diária com odd real disponível: 1X, X2, 12,
+    Over 0.5 e Over 1.5. BTTS, UNDER, empate seco, vitórias simples e linhas
+    altas de gols ficam fora. Mercados avançados (1T/2T, escanteios, cartões,
+    impedimentos/finalizações) só podem virar perna quando houver odd real do
+    bookmaker e cobertura estatística suficiente; nunca fabricamos preço.
     """
     try:
         odd = float(candidate.get("odd") or 0.0)
@@ -11360,56 +11390,30 @@ def _gm_daily_high_margin_candidate(candidate, pick_kind):
     except Exception:
         return False
     code = str(candidate.get("market_code") or "").upper().strip()
-
-    # v47: mercados excluídos das três oportunidades do dia. Eles continuam
-    # disponíveis na análise individual do GM SCORE, mas não entram no produto
-    # diário conservador porque podem virar RED com um único evento de jogo.
-    blocked = {
-        "X", "12",
-        "U1.5", "U2.5", "U3.5",
-        "O2.5", "O3.5",
-        "BTTS_Y", "BTTS_N",
-    }
-    if code in blocked:
-        return False
-
-    # A camada conservadora trabalha somente com:
-    # - vitória simples de favorito (1/2), quando muito sustentada;
-    # - dupla chance 1X/X2, com probabilidade muito alta;
-    # - Mais de 1,5 gols, também com margem alta.
-    if code not in {"1", "2", "1X", "X2", "O1.5"}:
+    if code not in {"1X", "X2", "12", "O0.5", "O1.5"}:
         return False
 
     if pick_kind == "bingo":
-        # Bingo: pernas bem baixas. Se precisar, usa mais jogos para formar 3,50+.
-        if code in {"1X", "X2"}:
-            return prob >= 94.0 and 1.03 <= odd <= 1.28 and edge >= 0.20
-        if code == "O1.5":
-            return prob >= 92.0 and 1.03 <= odd <= 1.30 and edge >= 0.20
-        if code in {"1", "2"}:
-            return prob >= 90.0 and 1.03 <= odd <= 1.35 and edge >= 0.50
+        if code == "O0.5": return prob >= 96.0 and 1.02 <= odd <= 1.22 and edge >= 0.05
+        if code in {"1X", "X2"}: return prob >= 93.0 and 1.02 <= odd <= 1.26 and edge >= 0.05
+        if code == "12": return prob >= 91.0 and 1.02 <= odd <= 1.28 and edge >= 0.10
+        if code == "O1.5": return prob >= 92.0 and 1.02 <= odd <= 1.28 and edge >= 0.05
         return False
 
     if pick_kind == "matadeira":
-        # Matadeira: não força simples de 1,60/1,80. Prefere compor a odd com
-        # duas, três ou quatro pernas de preço menor e sustentação maior.
-        if code in {"1X", "X2"}:
-            return prob >= 92.0 and 1.04 <= odd <= 1.32 and edge >= 0.50
-        if code == "O1.5":
-            return prob >= 90.0 and 1.04 <= odd <= 1.34 and edge >= 0.50
-        if code in {"1", "2"}:
-            return prob >= 86.0 and 1.04 <= odd <= 1.45 and edge >= 1.00
+        if code == "O0.5": return prob >= 95.0 and 1.02 <= odd <= 1.28 and edge >= 0.05
+        if code in {"1X", "X2"}: return prob >= 91.0 and 1.03 <= odd <= 1.32 and edge >= 0.10
+        if code == "12": return prob >= 89.0 and 1.03 <= odd <= 1.34 and edge >= 0.20
+        if code == "O1.5": return prob >= 90.0 and 1.03 <= odd <= 1.34 and edge >= 0.10
         return False
 
-    # Dica do Dia: continua mirando 1,90–2,10, mas agora também é construída
-    # prioritariamente por pernas conservadoras. Não usa BTTS/UNDER/empate.
-    if code in {"1X", "X2"}:
-        return prob >= 90.0 and 1.05 <= odd <= 1.35 and edge >= 1.00
-    if code == "O1.5":
-        return prob >= 88.0 and 1.05 <= odd <= 1.40 and edge >= 1.00
-    if code in {"1", "2"}:
-        return prob >= 82.0 and 1.05 <= odd <= 1.55 and edge >= 1.50
+    # Dica do Dia: ligeiramente mais ampla, mas ainda exige alta recorrência.
+    if code == "O0.5": return prob >= 94.0 and 1.02 <= odd <= 1.30 and edge >= 0.05
+    if code in {"1X", "X2"}: return prob >= 89.0 and 1.03 <= odd <= 1.35 and edge >= 0.20
+    if code == "12": return prob >= 87.0 and 1.03 <= odd <= 1.38 and edge >= 0.30
+    if code == "O1.5": return prob >= 88.0 and 1.03 <= odd <= 1.38 and edge >= 0.20
     return False
+
 
 def gm_daily_pick_choose(candidates, pick_kind="dica"):
     """Escolhe oportunidades v47 priorizando robustez por perna antes da odd final."""
@@ -11422,14 +11426,14 @@ def gm_daily_pick_choose(candidates, pick_kind="dica"):
         code = str(c.get("market_code") or "")
         # Probabilidade domina. Odds acima de 1,30 recebem penalização. Dupla
         # chance e O1.5 ganham leve preferência sobre vitória simples equivalente.
-        stable_bonus = 1.5 if code in {"1X", "X2", "O1.5"} else 0.0
+        stable_bonus = 2.2 if code == "O0.5" else 1.5 if code in {"1X", "X2", "12", "O1.5"} else 0.0
         return prob + edge * 0.20 + stable_bonus - max(0.0, odd - 1.30) * 22.0
 
     def best_combo(base, sizes, min_odd, max_odd, kind, label_by_size):
         best = None
         base = sorted(base, key=leg_rank, reverse=True)
         # Limites mantêm o custo combinatório previsível no Streamlit.
-        caps = {2: 34, 3: 28, 4: 22}
+        caps = {2: 38, 3: 32, 4: 26, 5: 20, 6: 18}
         for size in sizes:
             pool = base[:caps.get(size, 20)]
             for legs in itertools.combinations(pool, size):
@@ -11461,11 +11465,11 @@ def gm_daily_pick_choose(candidates, pick_kind="dica"):
         # mesma faixa com maior margem individual.
         return best_combo(
             candidates,
-            sizes=(2, 3, 4),
+            sizes=(2, 3, 4, 5),
             min_odd=1.50,
             max_odd=1.89,
             kind="matadeira",
-            label_by_size={2: "double", 3: "triple", 4: "multiple"},
+            label_by_size={2: "double", 3: "triple", 4: "multiple", 5: "multiple"},
         )
 
     if pick_kind == "bingo":
@@ -11474,7 +11478,7 @@ def gm_daily_pick_choose(candidates, pick_kind="dica"):
             odd = float(c.get("odd") or 0.0)
             prob = float(c.get("probability") or 0.0)
             edge = float(c.get("edge") or 0.0)
-            if not (1.03 <= odd <= 1.35):
+            if not (1.02 <= odd <= 1.30):
                 continue
             item = dict(c)
             item["_bingo_leg_score"] = leg_rank(item)
@@ -11497,7 +11501,7 @@ def gm_daily_pick_choose(candidates, pick_kind="dica"):
         states = [([], 1.0, 1.0, 0.0, set())]
         best = None
         beam_width = 260
-        for _size in range(1, 11):
+        for _size in range(1, 13):
             expanded = []
             for legs, total_odd, model_prob, edge_sum, used_matches in states:
                 start_idx = 0
@@ -11531,7 +11535,7 @@ def gm_daily_pick_choose(candidates, pick_kind="dica"):
                         combo = _gm_daily_combo_payload(new_legs, "multiple", "bingo")
                         combo["score"] = round(rank, 3)
                         combo["model_meta_bingo"] = {
-                            "strategy": "conservative_whitelist_v47",
+                            "strategy": "conclusive_whitelist_v48",
                             "leg_count": len(new_legs),
                             "max_leg_odd": round(max(float(x["odd"]) for x in new_legs), 3),
                             "avg_leg_odd": round(avg_leg_odd, 3),
@@ -11549,11 +11553,11 @@ def gm_daily_pick_choose(candidates, pick_kind="dica"):
     # quantas pernas baixas forem necessárias (2–4) para chegar em 1,90–2,10.
     return best_combo(
         candidates,
-        sizes=(2, 3, 4),
+        sizes=(2, 3, 4, 5, 6),
         min_odd=1.90,
         max_odd=2.10,
         kind="dica",
-        label_by_size={2: "double", 3: "triple", 4: "multiple"},
+        label_by_size={2: "double", 3: "triple", 4: "multiple", 5: "multiple", 6: "multiple"},
     )
 
 
@@ -11601,6 +11605,7 @@ def _gm_daily_evaluate_leg(leg, ev):
     elif code=="1X": win=hs>=aas
     elif code=="X2": win=aas>=hs
     elif code=="12": win=hs!=aas
+    elif code=="O0.5": win=total>0.5
     elif code=="O1.5": win=total>1.5
     elif code=="U1.5": win=total<1.5
     elif code=="O2.5": win=total>2.5
@@ -11659,7 +11664,7 @@ def _gm_daily_pick_card(row, target_date, pick_kind):
 
 def gm_render_daily_pick_page():
     st.markdown("## ⭐ Oportunidades GM do Dia")
-    st.caption("Três leituras independentes para o dia. Só entram partidas com início pelo menos 10 minutos após a geração pelo administrador. Se uma faixa não atingir os filtros de qualidade, o GM SCORE marca como sem seleção em vez de forçar uma entrada.")
+    st.caption("Três leituras independentes para o dia. Prioridade para dupla chance, sem empate e gols em linhas baixas (0,5/1,5), sempre com odd real. Mercados de 1T/2T, escanteios, cartões, impedimentos e finalizações só entram quando houver cobertura estatística forte e preço real disponível. Se a grade não atingir os critérios, nenhuma seleção é forçada.")
     st.markdown('''<div class="gm-risk-rule"><span class="gm-risk-green">QUANTO MAIOR A ODD</span><span class="gm-risk-arrow">→</span><span class="gm-risk-red">MENORES AS CHANCES</span></div>''',unsafe_allow_html=True)
     try: profile=gm_auth_get_profile()
     except Exception: profile=None
