@@ -38,7 +38,35 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-13-v44-all-leagues-fixture-integrity"
+GM_BUILD = "2026-09-13-v45-agenda-constants-opportunities-ready"
+
+# IDs auditados das 21 competições.
+# v45: definidos no início do runtime porque a agenda pode ser executada antes
+# da seção de auditoria estatística onde este mapa ficava originalmente.
+GM_APIFOOTBALL_FIXED_LEAGUE_IDS = {
+    "Inglaterra - Premier League": "152",
+    "Espanha - La Liga": "302",
+    "Itália - Serie A": "207",
+    "Alemanha - Bundesliga": "175",
+    "França - Ligue 1": "168",
+    "Portugal - Liga Portugal": "266",
+    "Holanda - Eredivisie": "244",
+    "Escócia - Premiership": "279",
+    "Turquia - Süper Lig": "322",
+    "Brasil - Série A": "99",
+    "Brasil - Série B": "75",
+    "Arábia Saudita - Saudi Pro League": "328",
+    "Estados Unidos - MLS": "332",
+    "Argentina - Liga Profesional": "44",
+    "México - Liga MX": "235",
+    "Colômbia - Primera A": "120",
+    "CONMEBOL Libertadores": "18",
+    "CONMEBOL Sul-Americana": "385",
+    "UEFA Champions League": "3",
+    "UEFA Europa League": "4",
+    "UEFA Conference League": "683",
+}
+
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -10222,31 +10250,8 @@ GM_APIFOOTBALL_LEAGUE_TARGETS = {
     "UEFA Conference League": {"country": ["europe", "eurocups"], "league": ["conference league"]},
 }
 
-# IDs confirmados pela auditoria executada com a chave real do GM SCORE.
-# Manter um mapa fixo evita que uma liga homônima seja escolhida por similaridade.
-GM_APIFOOTBALL_FIXED_LEAGUE_IDS = {
-    "Inglaterra - Premier League": "152",
-    "Espanha - La Liga": "302",
-    "Itália - Serie A": "207",
-    "Alemanha - Bundesliga": "175",
-    "França - Ligue 1": "168",
-    "Portugal - Liga Portugal": "266",
-    "Holanda - Eredivisie": "244",
-    "Escócia - Premiership": "279",
-    "Turquia - Süper Lig": "322",
-    "Brasil - Série A": "99",
-    "Brasil - Série B": "75",
-    "Arábia Saudita - Saudi Pro League": "328",
-    "Estados Unidos - MLS": "332",
-    "Argentina - Liga Profesional": "44",
-    "México - Liga MX": "235",
-    "Colômbia - Primera A": "120",
-    "CONMEBOL Libertadores": "18",
-    "CONMEBOL Sul-Americana": "385",
-    "UEFA Champions League": "3",
-    "UEFA Europa League": "4",
-    "UEFA Conference League": "683",
-}
+# IDs fixos das 21 competições foram inicializados no topo do arquivo (v45).
+
 
 # Aliases confirmados visualmente na resposta real da API. O nome exibido ao
 # cliente continua sendo o do GM SCORE; isto só melhora a resolução interna.
