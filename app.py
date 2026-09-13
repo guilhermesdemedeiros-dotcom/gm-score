@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-13-v41-fixture-date-recovery"
+GM_BUILD = "2026-09-13-v42-prediction-fixture-recovery"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -8824,6 +8824,75 @@ def load_espn_fixtures_for_date(target_date):
     return fixtures
 
 
+@st.cache_data(ttl=600, show_spinner=False)
+def load_apifootball_prediction_fixtures_for_date(target_date, competition=None):
+    """Recupera a agenda futura pelo endpoint get_predictions.
+
+    O mesmo endpoint já alimenta as Oportunidades GM e costuma disponibilizar
+    partidas futuras mesmo quando ``get_events`` retorna uma grade parcial.
+    Aqui ele é usado SOMENTE para descobrir confrontos/horários; probabilidades
+    dele não entram na tela de agenda nem substituem o motor estatístico.
+    """
+    if isinstance(target_date, pd.Timestamp):
+        target_date = target_date.date()
+    if isinstance(target_date, datetime):
+        target_date = target_date.date()
+    if not isinstance(target_date, date):
+        try:
+            target_date = pd.to_datetime(target_date).date()
+        except Exception:
+            return []
+
+    league_filter = None
+    if competition is not None:
+        league_filter = str((GM_APIFOOTBALL_FIXED_LEAGUE_IDS or {}).get(competition) or "").strip()
+        if not league_filter:
+            return []
+
+    payload, err = gm_apifootball_request(
+        "get_predictions",
+        **{"from": target_date.isoformat(), "to": target_date.isoformat()},
+    )
+    if err or not isinstance(payload, list):
+        return []
+
+    reverse_ids = {str(v): k for k, v in (GM_APIFOOTBALL_FIXED_LEAGUE_IDS or {}).items()}
+    fixtures = []
+    for ev in payload:
+        if not isinstance(ev, dict):
+            continue
+        lid = str(ev.get("league_id") or "").strip()
+        if league_filter and lid != league_filter:
+            continue
+        comp = competition if competition is not None else reverse_ids.get(lid)
+        if not comp or comp not in COMPETITIONS:
+            continue
+        home = str(ev.get("match_hometeam_name") or "").strip()
+        away = str(ev.get("match_awayteam_name") or "").strip()
+        if not home or not away:
+            continue
+        raw_date = str(ev.get("match_date") or target_date.isoformat()).strip()
+        try:
+            event_date = pd.to_datetime(raw_date, errors="coerce")
+            br_date = target_date if pd.isna(event_date) else event_date.date()
+        except Exception:
+            br_date = target_date
+        if br_date != target_date:
+            continue
+        fixtures.append({
+            "competition": comp,
+            "home": home,
+            "away": away,
+            "time": str(ev.get("match_time") or "").strip(),
+            "br_date": target_date,
+            "match_id": str(ev.get("match_id") or "").strip(),
+            "league_id": lid,
+            "status": str(ev.get("match_status") or "").strip(),
+            "source": "APIfootball · predictions",
+        })
+    return fixtures
+
+
 @st.cache_data(ttl=900, show_spinner=False)
 def load_apifootball_fixtures_for_date(target_date):
     """Agenda oficial das 21 competições via APIfootball.
@@ -8959,6 +9028,14 @@ def load_fixtures_for_date(target_date):
     """Carrega somente jogos das competições suportadas para uma data de Brasília."""
     today = target_date
     fixtures = []
+
+    # v42: primeiro recupera confrontos pelo endpoint de previsões, que já é
+    # usado pelas Oportunidades e costuma trazer a grade futura completa mesmo
+    # quando get_events está parcial. Depois todas as outras fontes complementam.
+    try:
+        fixtures.extend(load_apifootball_prediction_fixtures_for_date(today))
+    except Exception:
+        pass
 
     # v35: APIfootball passa a ser a primeira fonte da agenda porque os 21
     # league_id já foram auditados no próprio GM SCORE. Isso evita depender de
@@ -9111,6 +9188,14 @@ def load_competition_fixtures_for_date(competition, target_date):
         target_date = target_date.date()
 
     fixtures = []
+
+    # v42: fonte de recuperação principal para partidas futuras. O endpoint
+    # get_predictions já abastece a seleção diária e retorna confrontos/horários
+    # mesmo quando o calendário get_events vem incompleto.
+    try:
+        fixtures.extend(load_apifootball_prediction_fixtures_for_date(target_date, competition))
+    except Exception:
+        pass
 
     # v39: consulta focada por league_id primeiro. Isso evita depender da resposta
     # global do provedor, que pode vir parcial em determinados momentos.
