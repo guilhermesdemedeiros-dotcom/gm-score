@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-13-v49-daily-opportunity-engine"
+GM_BUILD = "2026-09-13-v50-diversified-opportunity-engine"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -11222,10 +11222,15 @@ def _gm_daily_prob_over_05_from_over15(prob_over15):
 
 
 def _gm_daily_market_specs():
-    # Whitelist v48. Mercados sensíveis como BTTS, UNDER e linhas altas de gols
-    # ficam fora das oportunidades diárias. O0.5 usa odd REAL do bookmaker e
-    # probabilidade derivada de forma conservadora a partir de prob_O_1.
+    """Mercados com odd pré-jogo REAL disponível no provedor atual.
+
+    A diversidade oficial das oportunidades só usa mercados cujo preço vem do
+    bookmaker. Mercados estatísticos como escanteios/cartões/finalizações/1T/2T
+    podem reforçar a leitura, mas não recebem odd inventada.
+    """
     return [
+        ("1", "Vitória da casa", "prob_HW", "odd_1"),
+        ("2", "Vitória do visitante", "prob_AW", "odd_2"),
         ("1X", "Casa ou empate", "prob_HW_D", "odd_1x"),
         ("X2", "Fora ou empate", "prob_AW_D", "odd_x2"),
         ("12", "Sem empate", "prob_HW_AW", "odd_12"),
@@ -11233,6 +11238,24 @@ def _gm_daily_market_specs():
         ("O1.5", "Mais de 1,5 gols", "prob_O_1", "o+1.5"),
     ]
 
+
+def _gm_daily_market_family(code):
+    code = str(code or "").upper().strip()
+    if code in {"1", "2"}:
+        return "resultado"
+    if code in {"1X", "X2", "12"}:
+        return "dupla_chance"
+    if code in {"O0.5", "O1.5"}:
+        return "gols"
+    return "outro"
+
+
+def _gm_daily_confidence_band(prob):
+    p = float(prob or 0.0)
+    if p >= 90: return "Muito alta"
+    if p >= 82: return "Alta"
+    if p >= 75: return "Boa"
+    return "Moderada"
 
 def _gm_daily_pick_bookmaker_rows(odds):
     by_match = {}
@@ -11348,6 +11371,8 @@ def gm_daily_pick_candidates(target_date, cutoff_at=None):
                 "home": home, "away": away, "market_code": code, "market": label,
                 "probability": round(p, 2), "odd": round(odd, 3),
                 "implied_probability": round(implied, 2), "edge": round(edge, 2), "bookmaker": bookmaker,
+                "market_family": _gm_daily_market_family(code),
+                "confidence_band": _gm_daily_confidence_band(p),
             })
     return candidates, {
         "error": None, "predictions": len(payload.get("predictions") or []),
@@ -11374,179 +11399,153 @@ def _gm_daily_distinct_matches(legs):
     return len({str(x.get("match_id") or "") for x in legs}) == len(legs)
 
 
-def _gm_daily_high_margin_candidate(candidate, pick_kind):
-    """Filtro v49: alta recorrência primeiro, sem exigir preço artificialmente baixo.
-
-    A seleção diária trabalha apenas com mercados que possuem odd pré-jogo REAL no
-    payload do bookmaker. Mercados estatísticos sem preço disponível (escanteios,
-    cartões, finalizações, impedimentos e recortes 1T/2T) podem servir como camada
-    de confirmação do modelo, mas nunca recebem odd inventada.
-
-    O objetivo aqui não é caçar "valor" agressivo: é preservar alta probabilidade
-    estimada por perna e permitir pequenas diferenças negativas frente à probabilidade
-    implícita quando o mercado é muito seguro. Isso evita deixar Dica/Bingo vazios em
-    dias com boas odds baixas.
-    """
+def _gm_daily_high_margin_candidate(candidate, pick_kind, simple_mode=False):
+    """Filtro de qualidade v50: probabilidade domina, com preço real obrigatório."""
     try:
-        odd = float(candidate.get("odd") or 0.0)
         prob = float(candidate.get("probability") or 0.0)
-        edge = float(candidate.get("edge") or 0.0)
+        odd = float(candidate.get("odd") or 0.0)
+        edge = float(candidate.get("edge") or -999.0)
     except Exception:
         return False
     code = str(candidate.get("market_code") or "").upper().strip()
-    if code not in {"1X", "X2", "12", "O0.5", "O1.5"}:
+    if code not in {"1", "2", "1X", "X2", "12", "O0.5", "O1.5"}:
         return False
 
-    # Odds individuais altas perdem o propósito das combinações conservadoras.
-    max_odd = 1.36 if pick_kind == "bingo" else 1.46 if pick_kind == "dica" else 1.43
+    # Simples podem naturalmente ter preço mais alto; pernas de múltipla ficam
+    # limitadas para evitar que uma única seleção carregue todo o risco.
+    if simple_mode:
+        max_odd = 2.10 if pick_kind == "dica" else 1.89 if pick_kind == "matadeira" else 1.45
+    else:
+        max_odd = 1.40 if pick_kind == "bingo" else 1.55
     if not (1.015 <= odd <= max_odd):
         return False
 
-    # Em mercados de baixa odd, a casa frequentemente embute margem suficiente
-    # para deixar o edge levemente negativo mesmo com probabilidade muito alta.
-    # Aceitamos pequena diferença, mas ela é penalizada no ranking final.
-    if edge < -4.0:
+    # Não exige edge positivo em preços muito baixos, mas rejeita divergência grande.
+    if edge < (-5.0 if code in {"O0.5", "1X", "X2", "12"} else -3.0):
         return False
 
     thresholds = {
-        "matadeira": {"O0.5": 90.0, "1X": 86.0, "X2": 86.0, "12": 84.0, "O1.5": 84.0},
-        "dica":      {"O0.5": 88.0, "1X": 83.0, "X2": 83.0, "12": 81.0, "O1.5": 81.0},
-        "bingo":     {"O0.5": 91.0, "1X": 87.0, "X2": 87.0, "12": 85.0, "O1.5": 85.0},
+        "matadeira": {"O0.5": 88.0, "O1.5": 78.0, "1X": 82.0, "X2": 82.0, "12": 80.0, "1": 72.0, "2": 72.0},
+        "dica":      {"O0.5": 86.0, "O1.5": 76.0, "1X": 80.0, "X2": 80.0, "12": 78.0, "1": 68.0, "2": 68.0},
+        "bingo":     {"O0.5": 90.0, "O1.5": 80.0, "1X": 84.0, "X2": 84.0, "12": 82.0, "1": 76.0, "2": 76.0},
     }
     needed = thresholds.get(pick_kind, thresholds["dica"]).get(code, 101.0)
     return prob >= needed
 
 
-def gm_daily_pick_choose(candidates, pick_kind="dica"):
-    """Escolhe Matadeira, Dica e Bingo com diversidade e foco em recorrência.
+def gm_daily_pick_choose(candidates, pick_kind="dica", avoid_matches=None, avoid_legs=None):
+    """Escolhe as três oportunidades com diversidade controlada e qualidade.
 
-    v49:
-    - prioriza probabilidade individual (80–95%+) antes da odd final;
-    - aceita mais pernas para chegar às faixas desejadas;
-    - evita repetir dois mercados do mesmo jogo;
-    - prefere combinações com alguma diversidade de mercado quando a segurança é
-      semelhante, sem sacrificar a melhor combinação só para variar visualmente;
-    - não força seleção se a grade realmente não tiver pernas qualificadas.
+    v50:
+    - permite vitória simples de favorito quando o modelo sustenta a leitura;
+    - mistura famílias resultado / dupla chance / gols quando houver alternativas;
+    - usa sorteio determinístico mínimo apenas para desempatar opções quase iguais;
+    - evita repetir os mesmos jogos/mercados entre Matadeira, Dica e Bingo;
+    - tenta simples antes da múltipla quando ela já cai exatamente na faixa-alvo.
     """
-    candidates = [dict(c) for c in (candidates or []) if _gm_daily_high_margin_candidate(c, pick_kind)]
+    avoid_matches = set(str(x) for x in (avoid_matches or []) if str(x))
+    avoid_legs = set(tuple(x) if isinstance(x, (list, tuple)) else x for x in (avoid_legs or []))
+    raw = [dict(c) for c in (candidates or [])]
+
+    def leg_sig(c):
+        return (str(c.get("match_id") or ""), str(c.get("market_code") or ""))
+
+    def deterministic_jitter(c):
+        seed = f"{c.get('date')}|{c.get('match_id')}|{c.get('market_code')}|{pick_kind}".encode()
+        return (int(hashlib.sha256(seed).hexdigest()[:8], 16) % 1000) / 1000.0
+
+    def leg_rank(c):
+        odd = float(c.get("odd") or 0.0); prob = float(c.get("probability") or 0.0); edge = float(c.get("edge") or 0.0)
+        code = str(c.get("market_code") or "")
+        family = _gm_daily_market_family(code)
+        family_bonus = {"gols":2.4,"resultado":2.0,"dupla_chance":1.5}.get(family,0.0)
+        edge_component = max(-5.0, min(8.0, edge)) * 0.25
+        price_penalty = max(0.0, odd - 1.35) * 10.0
+        repeat_penalty = 3.5 if str(c.get("match_id") or "") in avoid_matches else 0.0
+        return prob + family_bonus + edge_component - price_penalty - repeat_penalty + deterministic_jitter(c) * 0.35
+
+    # 1) Primeiro tenta uma seleção simples excelente dentro da faixa final.
+    if pick_kind in {"matadeira", "dica"}:
+        lo, hi = ((1.50, 1.89) if pick_kind == "matadeira" else (1.90, 2.10))
+        simple_pool = [c for c in raw if _gm_daily_high_margin_candidate(c, pick_kind, simple_mode=True) and lo <= float(c.get("odd") or 0) <= hi and leg_sig(c) not in avoid_legs]
+        if simple_pool:
+            simple_pool.sort(key=leg_rank, reverse=True)
+            top = simple_pool[0]
+            # Para uma simples de odd maior, exige sustentação adicional.
+            min_simple_prob = 74.0 if pick_kind == "matadeira" else 69.0
+            if float(top.get("probability") or 0) >= min_simple_prob:
+                return _gm_daily_combo_payload([top], "simple", pick_kind)
+
+    candidates = [c for c in raw if _gm_daily_high_margin_candidate(c, pick_kind, simple_mode=False) and leg_sig(c) not in avoid_legs]
     if not candidates:
         return None
 
-    def leg_rank(c):
-        odd = float(c.get("odd") or 0.0)
-        prob = float(c.get("probability") or 0.0)
-        edge = float(c.get("edge") or 0.0)
-        code = str(c.get("market_code") or "")
-        # Probabilidade domina. Edge negativo pequeno é tolerado, mas reduz nota.
-        # O0.5/O1.5 e dupla chance recebem bônus de estabilidade operacional.
-        stable_bonus = 2.8 if code == "O0.5" else 2.2 if code == "O1.5" else 1.8 if code in {"1X", "X2"} else 1.2
-        edge_component = max(-4.0, min(8.0, edge)) * 0.28
-        price_penalty = max(0.0, odd - 1.32) * 18.0
-        return prob + stable_bonus + edge_component - price_penalty
-
-    # Mantém até DUAS alternativas fortes por jogo. A combinação final continua
-    # proibindo duas pernas do mesmo confronto, mas preservar a segunda opção
-    # permite variar entre gols/dupla chance quando a segurança é parecida.
-    by_match_options = {}
-    for c in sorted(candidates, key=leg_rank, reverse=True):
-        mid = str(c.get("match_id") or "")
-        if not mid:
-            continue
-        bucket = by_match_options.setdefault(mid, [])
-        if len(bucket) < 2:
-            bucket.append(c)
-    base = [c for bucket in by_match_options.values() for c in bucket]
+    # Primeira tentativa evita jogos já usados por outra oportunidade do dia.
+    primary = [c for c in candidates if str(c.get("match_id") or "") not in avoid_matches]
+    candidate_sets = [primary, candidates] if primary else [candidates]
 
     def combo_rank(legs, total_odd, kind):
-        probs = [float(x.get("probability") or 0.0) for x in legs]
-        odds = [float(x.get("odd") or 0.0) for x in legs]
-        edges = [float(x.get("edge") or 0.0) for x in legs]
-        model_prob = 1.0
-        for p in probs:
-            model_prob *= p / 100.0
-        worst_prob = min(probs)
-        avg_prob = sum(probs) / len(probs)
-        avg_odd = sum(odds) / len(odds)
-        codes = {str(x.get("market_code") or "") for x in legs}
-        diversity_bonus = min(len(codes) - 1, 2) * 0.55
-        negative_edge_penalty = sum(abs(e) for e in edges if e < 0) * 0.18
-        target = 1.72 if kind == "matadeira" else 2.00 if kind == "dica" else 3.80
-        distance_penalty = 0.0 if kind == "bingo" else abs(total_odd - target) * 4.0
-        huge_bingo_penalty = max(0.0, total_odd - 6.0) * 1.5 if kind == "bingo" else 0.0
-        return (
-            model_prob * 100.0
-            + worst_prob * 0.72
-            + avg_prob * 0.16
-            + sum(max(-2.0, min(6.0, e)) for e in edges) * 0.07
-            + diversity_bonus
-            - negative_edge_penalty
-            - max(0.0, avg_odd - 1.30) * 14.0
-            - distance_penalty
-            - huge_bingo_penalty
-        )
+        probs=[float(x.get("probability") or 0) for x in legs]; odds=[float(x.get("odd") or 0) for x in legs]; edges=[float(x.get("edge") or 0) for x in legs]
+        model_prob=1.0
+        for p in probs: model_prob*=p/100.0
+        families=[_gm_daily_market_family(x.get("market_code")) for x in legs]
+        fam_count=len(set(families)); codes={str(x.get("market_code") or "") for x in legs}
+        diversity_bonus=max(0,fam_count-1)*1.8 + max(0,len(codes)-1)*0.35
+        concentration_penalty=max(families.count(f)-2 for f in set(families))*2.6 if families else 0.0
+        target=1.72 if kind=="matadeira" else 2.00 if kind=="dica" else 3.80
+        distance=0.0 if kind=="bingo" else abs(total_odd-target)*4.0
+        return model_prob*100 + min(probs)*0.78 + sum(probs)/len(probs)*0.14 + sum(max(-2,min(6,e)) for e in edges)*0.06 + diversity_bonus - concentration_penalty - distance - max(0,total_odd-6.0)*(1.4 if kind=="bingo" else 0)
 
-    def beam_combo(min_legs, max_legs, min_odd, max_odd, kind):
-        pool = sorted(base, key=leg_rank, reverse=True)[:48]
-        if len(pool) < min_legs:
-            return None
-        # Estado: (legs, total_odd, used_ids, score_for_beam)
-        states = [([], 1.0, set(), 0.0)]
-        best = None
-        beam_width = 420
-        for size in range(1, max_legs + 1):
-            expanded = []
-            for legs, total_odd, used, _ in states:
-                last_idx = -1
-                if legs:
-                    last_mid = str(legs[-1].get("match_id") or "")
-                    for j, item in enumerate(pool):
-                        if str(item.get("match_id") or "") == last_mid:
-                            last_idx = j
-                            break
-                for j in range(last_idx + 1, len(pool)):
-                    c = pool[j]
-                    mid = str(c.get("match_id") or "")
-                    if not mid or mid in used:
-                        continue
-                    new_legs = legs + [c]
-                    new_odd = total_odd * float(c.get("odd") or 1.0)
-                    if max_odd is not None and new_odd > max_odd * 1.08:
-                        continue
-                    new_used = set(used); new_used.add(mid)
-                    rank = combo_rank(new_legs, new_odd, kind)
-                    expanded.append((new_legs, new_odd, new_used, rank))
-                    if size >= min_legs and new_odd >= min_odd and (max_odd is None or new_odd <= max_odd):
-                        combo = _gm_daily_combo_payload(new_legs, "double" if size == 2 else "triple" if size == 3 else "multiple", kind)
-                        combo["score"] = round(rank, 3)
-                        combo["model_meta_bingo"] = {
-                            "strategy": "probability_first_v49",
-                            "leg_count": len(new_legs),
-                            "max_leg_odd": round(max(float(x.get("odd") or 0.0) for x in new_legs), 3),
-                            "avg_leg_odd": round(sum(float(x.get("odd") or 0.0) for x in new_legs) / len(new_legs), 3),
-                            "min_leg_probability": round(min(float(x.get("probability") or 0.0) for x in new_legs), 2),
-                            "markets": sorted({str(x.get("market_code") or "") for x in new_legs}),
-                        }
-                        if best is None or combo["score"] > best["score"]:
-                            best = combo
-            if not expanded:
-                break
-            expanded.sort(key=lambda x: x[3], reverse=True)
-            states = expanded[:beam_width]
+    def valid_diversity(legs, kind):
+        families=[_gm_daily_market_family(x.get("market_code")) for x in legs]
+        if len(legs) >= 3 and len(set(families)) < 2:
+            return False
+        max_same = 2 if kind in {"matadeira","dica"} else max(3, (len(legs)+1)//2)
+        return all(families.count(f) <= max_same for f in set(families))
+
+    def beam_combo(base, min_legs, max_legs, min_odd, max_odd, kind):
+        if len(base) < min_legs: return None
+        # Até 3 alternativas por jogo para realmente permitir diversidade de mercado.
+        by_match={}
+        for c in sorted(base,key=leg_rank,reverse=True):
+            bucket=by_match.setdefault(str(c.get("match_id") or ""),[])
+            if len(bucket)<3: bucket.append(c)
+        pool=[c for b in by_match.values() for c in b][:72]
+        states=[([],1.0,set(),0.0)]; best=None; beam_width=650
+        for size in range(1,max_legs+1):
+            expanded=[]
+            for legs,total,used,_ in states:
+                for c in pool:
+                    mid=str(c.get("match_id") or "")
+                    if not mid or mid in used: continue
+                    if legs and leg_rank(c) > leg_rank(legs[-1]) + 20: continue
+                    nl=legs+[c]; no=total*float(c.get("odd") or 1.0)
+                    if max_odd is not None and no > max_odd*1.06: continue
+                    nu=set(used); nu.add(mid); rank=combo_rank(nl,no,kind)
+                    expanded.append((nl,no,nu,rank))
+                    if size>=min_legs and no>=min_odd and (max_odd is None or no<=max_odd) and valid_diversity(nl,kind):
+                        combo=_gm_daily_combo_payload(nl,"double" if size==2 else "triple" if size==3 else "multiple",kind)
+                        combo["score"]=round(rank,3)
+                        combo["model_meta_bingo"]={"strategy":"diversified_probability_first_v50","leg_count":len(nl),"markets":sorted({str(x.get('market_code') or '') for x in nl}),"families":sorted(set(_gm_daily_market_family(x.get('market_code')) for x in nl)),"min_leg_probability":round(min(float(x.get('probability') or 0) for x in nl),2),"max_leg_odd":round(max(float(x.get('odd') or 0) for x in nl),3)}
+                        if best is None or combo["score"]>best["score"]: best=combo
+            if not expanded: break
+            # dedup states by used match set + family profile
+            uniq={}
+            for state in expanded:
+                legs,total,used,rank=state; key=(tuple(sorted(used)),tuple(sorted(_gm_daily_market_family(x.get('market_code')) for x in legs)))
+                if key not in uniq or rank>uniq[key][3]: uniq[key]=state
+            states=sorted(uniq.values(),key=lambda x:x[3],reverse=True)[:beam_width]
         return best
 
-    if pick_kind == "matadeira":
-        # Pode usar até 6 jogos para construir 1,50–1,89 sem recorrer a uma perna alta.
-        return beam_combo(2, 6, 1.50, 1.89, "matadeira")
-
-    if pick_kind == "dica":
-        # Faixa 1,90–2,10; mais pernas disponíveis para dias em que as melhores
-        # oportunidades individuais estejam entre 1,08 e 1,25.
-        return beam_combo(2, 8, 1.90, 2.10, "dica")
-
-    # Bingo: não existe teto de odd final, mas a seleção mais segura que ultrapassa
-    # 3,50 tende a vencer o ranking; cada perna continua limitada pelo filtro acima.
-    return beam_combo(4, 12, 3.50, None, "bingo")
-
+    params = {
+        "matadeira": (2,6,1.50,1.89),
+        "dica": (2,8,1.90,2.10),
+        "bingo": (4,12,3.50,None),
+    }[pick_kind]
+    for base in candidate_sets:
+        result=beam_combo(base,*params,pick_kind)
+        if result is not None: return result
+    return None
 
 def gm_daily_pick_recent(limit=80):
     rows = gm_daily_pick_rpc("gm_daily_pick_recent_v2", {"p_limit": max(1, min(int(limit), 100))}) or []
@@ -11566,13 +11565,25 @@ def gm_daily_pick_publish_today(force_refresh=False):
     candidates, meta=gm_daily_pick_candidates(today, cutoff_at=cutoff_at)
     if meta.get("error"): return {"ok":False,"reason":"source_error","meta":meta}
     published=[]
+    used_matches=set(); used_legs=set()
+    # Também respeita oportunidades já existentes hoje para reduzir repetição.
+    for row in existing_rows:
+        for leg in (row.get("legs") or []):
+            mid=str((leg or {}).get("match_id") or "").strip(); code=str((leg or {}).get("market_code") or "").strip()
+            if mid: used_matches.add(mid)
+            if mid and code: used_legs.add((mid,code))
     for pick_kind in missing:
-        chosen=gm_daily_pick_choose(candidates,pick_kind)
+        chosen=gm_daily_pick_choose(candidates,pick_kind,avoid_matches=used_matches,avoid_legs=used_legs)
         if chosen is None:
             payload={"p_pick_date":today.isoformat(),"p_pick_kind":pick_kind,"p_status":"no_pick","p_bet_type":"none","p_total_odd":None,"p_bookmaker":None,"p_bookmaker_url":None,"p_legs":[],"p_model_meta":{**meta,"build":GM_BUILD,"pick_kind":pick_kind,"reason":"quality_filter"}}
         else:
             payload={"p_pick_date":today.isoformat(),"p_pick_kind":pick_kind,"p_status":"pending","p_bet_type":chosen["bet_type"],"p_total_odd":chosen["total_odd"],"p_bookmaker":chosen.get("bookmaker"),"p_bookmaker_url":None,"p_legs":chosen["legs"],"p_model_meta":{**meta,"build":GM_BUILD,"pick_kind":pick_kind,"model_probability":chosen["model_probability"],"score":chosen["score"],**(chosen.get("model_meta_bingo") or {})}}
         data=gm_daily_pick_rpc("gm_daily_pick_publish_v2",payload); published.append({"pick_kind":pick_kind,"chosen":chosen,"data":data})
+        if chosen:
+            for leg in chosen.get("legs") or []:
+                mid=str(leg.get("match_id") or "").strip(); code=str(leg.get("market_code") or "").strip()
+                if mid: used_matches.add(mid)
+                if mid and code: used_legs.add((mid,code))
     return {"ok":True,"reason":"published","published":published,"meta":meta}
 
 
@@ -11641,7 +11652,9 @@ def _gm_daily_pick_card(row, target_date, pick_kind):
     card=[f'<div class="gm-pick-card gm-kind-{pick_kind}"><div class="gm-pick-head"><div><div class="gm-pick-title">{html.escape(profile["label"])}</div><div class="gm-pick-muted">{target_date:%d/%m/%Y} • {html.escape(btype)} • {_gm_daily_status_badge(row.get("status"))}</div></div><div><div class="gm-pick-muted">ODD TOTAL</div><div class="gm-pick-odd">{total_odd:.2f}</div></div></div>']
     for leg in legs:
         game=f"{leg.get('home','')} × {leg.get('away','')}"; leg_odd=_gm_daily_num(leg.get("odd")) or 0.0; time_label=_gm_daily_time_label(leg.get("time"))
-        card.append(f'<div class="gm-pick-leg"><div class="gm-pick-market">{html.escape(str(leg.get("market") or ""))}<span style="float:right">{leg_odd:.2f}</span></div><div class="gm-pick-muted">🕒 {html.escape(time_label)} • {html.escape(game)} • {html.escape(str(leg.get("competition") or ""))}</div></div>')
+        prob=_gm_daily_num(leg.get("probability")); conf=str(leg.get("confidence_band") or (_gm_daily_confidence_band(prob) if prob is not None else ""))
+        prob_txt=(f" • prob. estimada {prob:.0f}% • {html.escape(conf)}" if prob is not None else "")
+        card.append(f'<div class="gm-pick-leg"><div class="gm-pick-market">{html.escape(str(leg.get("market") or ""))}<span style="float:right">{leg_odd:.2f}</span></div><div class="gm-pick-muted">🕒 {html.escape(time_label)} • {html.escape(game)} • {html.escape(str(leg.get("competition") or ""))}{prob_txt}</div></div>')
     card.append('</div>'); st.markdown("".join(card),unsafe_allow_html=True)
     if row.get("bookmaker"): st.caption(f"Odd registrada a partir de {row.get('bookmaker')}. As odds podem mudar depois da publicação.")
     direct_url=str(row.get("bookmaker_url") or "").strip()
@@ -11651,7 +11664,7 @@ def _gm_daily_pick_card(row, target_date, pick_kind):
 
 def gm_render_daily_pick_page():
     st.markdown("## ⭐ Oportunidades GM do Dia")
-    st.caption("Três leituras independentes para o dia. Prioridade para dupla chance, sem empate e gols em linhas baixas (0,5/1,5), sempre com odd real. Mercados de 1T/2T, escanteios, cartões, impedimentos e finalizações só entram quando houver cobertura estatística forte e preço real disponível. Se a grade não atingir os critérios, nenhuma seleção é forçada.")
+    st.caption("Três leituras independentes, com diversidade controlada entre resultado, dupla chance e gols em linhas baixas. O motor pode escolher simples, dupla, tripla ou múltipla, sempre com odd real e priorizando probabilidade estimada. Estatísticas de 1T/2T, escanteios, cartões, impedimentos e finalizações reforçam a leitura quando disponíveis, mas não recebem odd inventada.")
     st.markdown('''<div class="gm-risk-rule"><span class="gm-risk-green">QUANTO MAIOR A ODD</span><span class="gm-risk-arrow">→</span><span class="gm-risk-red">MENORES AS CHANCES</span></div>''',unsafe_allow_html=True)
     try: profile=gm_auth_get_profile()
     except Exception: profile=None
@@ -11726,7 +11739,7 @@ def gm_render_daily_pick_page():
             icon="🟢" if dr==0 and dg>0 else "🔴" if dg==0 and dr>0 else "🟡"; chips.append(f'<span class="gm-pick-dot">{icon} {html.escape(label)} · {dg}/{dg+dr}</span>')
         st.markdown('<div class="gm-pick-history">'+''.join(chips)+'</div>',unsafe_allow_html=True)
     with st.expander("ℹ️ Como funcionam as oportunidades"):
-        st.markdown("- **Matadeira:** odd entre **1,50 e 1,89**, podendo usar **2 a 6 jogos** de alta recorrência para evitar uma perna isolada arriscada.\n- **Dica do Dia:** odd alvo entre **1,90 e 2,10**, podendo usar **2 a 8 jogos** quando as melhores seleções do dia estiverem em odds baixas.\n- **Bingo:** múltipla de **4 a 12 jogos**, priorizando pernas de odd baixa até atingir **3,50+**.\n- Mercados diretamente elegíveis quando houver **odd real**: **Casa ou empate (1X), Fora ou empate (X2), Sem empate (12), Mais de 0,5 e Mais de 1,5 gols**.\n- Estatísticas de **1º/2º tempo, escanteios, cartões, impedimentos e finalizações** podem reforçar a leitura quando houver cobertura, mas o GM SCORE não inventa odd: só entram como perna quando existir preço pré-jogo real disponível.\n- A nota prioriza **probabilidade estimada por perna**, aceita pequenas diferenças de margem da casa em odds muito baixas e prefere alguma diversidade de mercados quando a segurança for equivalente.\n- Se uma faixa realmente não atingir os critérios, aparece **sem seleção**.\n- O aproveitamento oficial soma apenas Matadeira + Dica; o Bingo é exibido separadamente.")
+        st.markdown("- **Matadeira:** odd entre **1,50 e 1,89**, podendo usar **2 a 6 jogos** de alta recorrência para evitar uma perna isolada arriscada.\n- **Dica do Dia:** odd alvo entre **1,90 e 2,10**, podendo usar **2 a 8 jogos** quando as melhores seleções do dia estiverem em odds baixas.\n- **Bingo:** múltipla de **4 a 12 jogos**, priorizando pernas de odd baixa até atingir **3,50+**.\n- Mercados diretamente elegíveis com **odd real**: **vitória da casa/visitante, 1X, X2, 12, Mais de 0,5 e Mais de 1,5 gols**. O motor limita concentração em um único tipo de mercado para buscar diversidade sem reduzir o critério de qualidade.\n- Estatísticas de **1º/2º tempo, escanteios, cartões, impedimentos e finalizações** podem reforçar a leitura quando houver cobertura, mas o GM SCORE não inventa odd: só entram como perna quando existir preço pré-jogo real disponível.\n- A nota prioriza **probabilidade estimada por perna**, aceita pequenas diferenças de margem da casa em odds muito baixas e prefere alguma diversidade de mercados quando a segurança for equivalente.\n- Se uma faixa realmente não atingir os critérios, aparece **sem seleção**.\n- O aproveitamento oficial soma apenas Matadeira + Dica; o Bingo é exibido separadamente.")
         st.caption("Quanto maior a odd, menor tende a ser a probabilidade conjunta. Odds e probabilidades são condições/estimativas pré-jogo, não garantia de retorno. Aposte com responsabilidade.")
 
 
