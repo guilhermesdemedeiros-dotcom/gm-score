@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-13-v51-bingo-strong-slate"
+GM_BUILD = "2026-09-13-v52-bingo-balanced-odds"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -11123,7 +11123,7 @@ GM_DAILY_PICK_PROFILES = {
     "bingo": {
         "label": "🎰 Bingo", "short": "Bingo", "min": 3.50, "max": None,
         "preferred_min": 4.00, "preferred_max": None,
-        "description": "Múltipla acumulada com foco em pernas de odd baixa e mercados conservadores; pode usar várias partidas para atingir 3,50+ sem forçar uma seleção agressiva.",
+        "description": "Múltipla acumulada que intercala odds a partir de 1,15, priorizando estimativas altas de acerto e evitando tanto pernas excessivamente baixas quanto seleções altas sem sustentação.",
     },
 }
 
@@ -11411,25 +11411,52 @@ def _gm_daily_high_margin_candidate(candidate, pick_kind, simple_mode=False):
     if code not in {"1", "2", "1X", "X2", "12", "O0.5", "O1.5"}:
         return False
 
-    # Simples podem naturalmente ter preço mais alto; pernas de múltipla ficam
-    # limitadas para evitar que uma única seleção carregue todo o risco.
-    if simple_mode:
-        max_odd = 2.10 if pick_kind == "dica" else 1.89 if pick_kind == "matadeira" else 1.45
+    # Matadeira e Dica mantêm faixas conservadoras. No Bingo v52 não existe
+    # teto rígido de odd por perna: o preço mínimo é 1,15 e o risco é controlado
+    # pela probabilidade estimada + edge + penalização progressiva no ranking.
+    if pick_kind == "bingo":
+        if odd < 1.15:
+            return False
     else:
-        max_odd = 1.50 if pick_kind == "bingo" else 1.55
-    if not (1.015 <= odd <= max_odd):
-        return False
+        if simple_mode:
+            max_odd = 2.10 if pick_kind == "dica" else 1.89
+        else:
+            max_odd = 1.55
+        if not (1.015 <= odd <= max_odd):
+            return False
 
-    # Não exige edge positivo em preços muito baixos, mas rejeita divergência grande.
-    if edge < (-5.0 if code in {"O0.5", "1X", "X2", "12"} else -3.0):
+    # Não exige edge positivo nos mercados mais protegidos, mas evita aceitar uma
+    # perna em que o modelo esteja muito abaixo da probabilidade implícita da casa.
+    min_edge = -5.0 if code in {"O0.5", "1X", "X2", "12"} else -3.0
+    if pick_kind == "bingo" and odd >= 1.70:
+        min_edge = 0.0
+    if pick_kind == "bingo" and odd >= 2.00:
+        min_edge = 4.0
+    if edge < min_edge:
         return False
 
     thresholds = {
         "matadeira": {"O0.5": 88.0, "O1.5": 78.0, "1X": 82.0, "X2": 82.0, "12": 80.0, "1": 72.0, "2": 72.0},
         "dica":      {"O0.5": 86.0, "O1.5": 76.0, "1X": 80.0, "X2": 80.0, "12": 78.0, "1": 68.0, "2": 68.0},
-        "bingo":     {"O0.5": 86.0, "O1.5": 74.0, "1X": 79.0, "X2": 79.0, "12": 77.0, "1": 69.0, "2": 69.0},
+        "bingo":     {"O0.5": 84.0, "O1.5": 75.0, "1X": 80.0, "X2": 80.0, "12": 78.0, "1": 74.0, "2": 74.0},
     }
     needed = thresholds.get(pick_kind, thresholds["dica"]).get(code, 101.0)
+
+    # Curva de proteção do Bingo: odds médias podem entrar com ~75–80% de modelo;
+    # odds realmente altas só entram quando a sustentação também sobe. Não há teto
+    # fixo, mas quanto maior a odd, mais difícil ela passa a ser aceita.
+    if pick_kind == "bingo":
+        if odd >= 2.20:
+            needed = max(needed, 82.0)
+        elif odd >= 1.90:
+            needed = max(needed, 80.0)
+        elif odd >= 1.65:
+            needed = max(needed, 77.0)
+        elif odd >= 1.40:
+            needed = max(needed, 75.0)
+        elif odd < 1.25:
+            needed = max(needed, 82.0)
+
     return prob >= needed
 
 
@@ -11492,9 +11519,29 @@ def gm_daily_pick_choose(candidates, pick_kind="dica", avoid_matches=None, avoid
         fam_count=len(set(families)); codes={str(x.get("market_code") or "") for x in legs}
         diversity_bonus=max(0,fam_count-1)*1.8 + max(0,len(codes)-1)*0.35
         concentration_penalty=max(families.count(f)-2 for f in set(families))*2.6 if families else 0.0
-        target=1.72 if kind=="matadeira" else 2.00 if kind=="dica" else 3.80
+        target=1.72 if kind=="matadeira" else 2.00 if kind=="dica" else 4.50
         distance=0.0 if kind=="bingo" else abs(total_odd-target)*4.0
-        return model_prob*100 + min(probs)*0.78 + sum(probs)/len(probs)*0.14 + sum(max(-2,min(6,e)) for e in edges)*0.06 + diversity_bonus - concentration_penalty - distance - max(0,total_odd-6.0)*(1.4 if kind=="bingo" else 0)
+
+        # v52 Bingo: evita bilhete formado quase todo por 1,15–1,24 e premia mistura
+        # de preços. A ideia é intercalar pernas muito fortes com algumas odds médias,
+        # sem transformar uma perna alta em atalho para inflar o acumulado.
+        odd_mix_bonus = 0.0
+        odd_risk_penalty = 0.0
+        if kind == "bingo" and odds:
+            very_low = sum(1 for o in odds if o < 1.25)
+            mid = sum(1 for o in odds if 1.25 <= o < 1.60)
+            upper = sum(1 for o in odds if o >= 1.60)
+            if very_low and mid:
+                odd_mix_bonus += 2.2
+            if mid >= 2:
+                odd_mix_bonus += 1.8
+            if upper >= 1:
+                odd_mix_bonus += 1.0
+            if very_low > max(1, len(odds)//2):
+                odd_risk_penalty += (very_low - max(1, len(odds)//2)) * 2.8
+            odd_risk_penalty += sum(max(0.0, o-1.85) * 5.0 for o in odds)
+
+        return model_prob*100 + min(probs)*0.78 + sum(probs)/len(probs)*0.14 + sum(max(-2,min(6,e)) for e in edges)*0.06 + diversity_bonus + odd_mix_bonus - concentration_penalty - odd_risk_penalty - distance - max(0,total_odd-8.0)*(0.65 if kind=="bingo" else 0)
 
     def valid_diversity(legs, kind):
         families=[_gm_daily_market_family(x.get("market_code")) for x in legs]
@@ -11531,7 +11578,7 @@ def gm_daily_pick_choose(candidates, pick_kind="dica", avoid_matches=None, avoid
                     if size>=min_legs and no>=min_odd and (max_odd is None or no<=max_odd) and valid_diversity(nl,kind):
                         combo=_gm_daily_combo_payload(nl,"double" if size==2 else "triple" if size==3 else "multiple",kind)
                         combo["score"]=round(rank,3)
-                        combo["model_meta_bingo"]={"strategy":"strong_slate_bingo_v51","leg_count":len(nl),"markets":sorted({str(x.get('market_code') or '') for x in nl}),"families":sorted(set(_gm_daily_market_family(x.get('market_code')) for x in nl)),"min_leg_probability":round(min(float(x.get('probability') or 0) for x in nl),2),"max_leg_odd":round(max(float(x.get('odd') or 0) for x in nl),3)}
+                        combo["model_meta_bingo"]={"strategy":"balanced_odds_bingo_v52","leg_count":len(nl),"markets":sorted({str(x.get('market_code') or '') for x in nl}),"families":sorted(set(_gm_daily_market_family(x.get('market_code')) for x in nl)),"min_leg_probability":round(min(float(x.get('probability') or 0) for x in nl),2),"min_leg_odd":round(min(float(x.get('odd') or 0) for x in nl),3),"max_leg_odd":round(max(float(x.get('odd') or 0) for x in nl),3),"avg_leg_odd":round(sum(float(x.get('odd') or 0) for x in nl)/len(nl),3)}
                         if best is None or combo["score"]>best["score"]: best=combo
             if not expanded: break
             # dedup states by used match set + family profile
