@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-13-v42-prediction-fixture-recovery"
+GM_BUILD = "2026-09-13-v43-agenda-roster-decoupled"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -9778,27 +9778,74 @@ def render_analysis():
                 format_func=_agenda_date_label,
             )
             st.caption("🕒 Horário de Brasília · toque em **Analisar** para carregar o confronto")
+
+            # v43: a agenda NÃO depende mais do elenco estatístico carregado.
+            # O calendário e a base de estatísticas têm ciclos de atualização diferentes;
+            # usar o roster como barreira fazia jogos oficiais desaparecerem quando um
+            # promovido/renomeado ainda não estava resolvido na base estatística.
+            # A validação de profissional masculino continua em valid_daily_fixture().
+            if st.button("🔄 Atualizar agenda", use_container_width=True, key=f"refresh_fixture_{clean_col(league_name)}_{main_fixture_date}"):
+                try:
+                    load_competition_fixtures_for_date.clear()
+                except Exception:
+                    pass
+                for _fn in (
+                    load_apifootball_prediction_fixtures_for_date,
+                    load_apifootball_competition_fixtures_for_date,
+                    load_apifootball_fixtures_for_date,
+                    load_sofascore_fixtures_for_date,
+                    load_espn_fixtures_for_date,
+                    load_thesportsdb_fixtures_for_date,
+                    load_fixtures_for_date,
+                ):
+                    try:
+                        _fn.clear()
+                    except Exception:
+                        pass
+                st.rerun()
+
             try:
                 today_fixtures = load_competition_fixtures_for_date(league_name, main_fixture_date)
             except Exception:
                 today_fixtures = []
 
-            # Barreira final fora do cache: a agenda exibida deve conter somente
-            # equipes principais que também existam no elenco profissional carregado
-            # para a competição. Isso impede U21/U23/base/reservas.
+            # Filtro final apenas de integridade/data/status; não exige presença do clube
+            # na base estatística para que o jogo seja VISÍVEL na agenda.
             safe_fixtures = []
             for f in today_fixtures:
                 if not valid_daily_fixture(f) or not fixture_matches_selected_date(f, main_fixture_date):
                     continue
-                resolved_fixture_home = resolve_team_name(f.get("home"), teams)
-                resolved_fixture_away = resolve_team_name(f.get("away"), teams)
-                if not resolved_fixture_home or not resolved_fixture_away:
-                    continue
-                ff = dict(f)
-                ff["home"] = resolved_fixture_home
-                ff["away"] = resolved_fixture_away
-                safe_fixtures.append(ff)
-            today_fixtures = safe_fixtures
+                _merge_fixture_unique(safe_fixtures, dict(f))
+            today_fixtures = sorted(safe_fixtures, key=lambda f: str(f.get("time") or "99:99"))
+
+            # Diagnóstico compacto para administrador: mostra exatamente onde a agenda
+            # está sendo perdida sem expor chaves ou segredos.
+            try:
+                _diag_profile = gm_auth_get_profile()
+            except Exception:
+                _diag_profile = None
+            if (_diag_profile or {}).get("role") == "admin":
+                with st.expander("🧪 Diagnóstico da agenda (admin)", expanded=False):
+                    _diag_sources = []
+                    _checks = [
+                        ("APIfootball · predictions", lambda: load_apifootball_prediction_fixtures_for_date(main_fixture_date, league_name)),
+                        ("APIfootball · liga direta", lambda: load_apifootball_competition_fixtures_for_date(league_name, main_fixture_date)),
+                        ("APIfootball · global", lambda: [x for x in load_apifootball_fixtures_for_date(main_fixture_date) if x.get("competition") == league_name]),
+                        ("SofaScore", lambda: [x for x in load_sofascore_fixtures_for_date(main_fixture_date) if x.get("competition") == league_name]),
+                        ("ESPN", lambda: [x for x in load_espn_fixtures_for_date(main_fixture_date) if x.get("competition") == league_name]),
+                        ("TheSportsDB", lambda: [x for x in load_thesportsdb_fixtures_for_date(main_fixture_date) if x.get("competition") == league_name]),
+                    ]
+                    for _label, _call in _checks:
+                        try:
+                            _rows = _call() or []
+                            _diag_sources.append((_label, _rows, None))
+                        except Exception as _exc:
+                            _diag_sources.append((_label, [], type(_exc).__name__))
+                    for _label, _rows, _err in _diag_sources:
+                        st.markdown(f"**{_label}: {len(_rows)} jogo(s)**" + (f" · erro: {_err}" if _err else ""))
+                        for _r in _rows[:6]:
+                            st.caption(f"{_r.get('time') or '—'} · {_r.get('home')} × {_r.get('away')} · status={_r.get('status') or '—'} · data={_r.get('br_date') or '—'}")
+                    st.caption(f"Após filtros/deduplicação: {len(today_fixtures)} jogo(s).")
 
             if today_fixtures:
                 for i, f in enumerate(today_fixtures):
