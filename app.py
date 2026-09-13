@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-13-v40-complete-fixture-dedupe"
+GM_BUILD = "2026-09-13-v41-fixture-date-recovery"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -8290,24 +8290,39 @@ def _fixture_is_finished(f):
 
 
 def fixture_matches_selected_date(f, target_date):
-    """Validação final da agenda usando a data local de Brasília."""
+    """Validação final da agenda usando a data local de Brasília.
+
+    As fontes chamadas nesta etapa já são consultadas pela data selecionada.
+    Quando uma fonte entrega ``br_date`` usamos a data como validação forte.
+    Quando ela omite a data local, não descartamos o jogo apenas por isso — essa
+    era a causa de partidas válidas desaparecerem depois da mesclagem das fontes.
+    Partidas encerradas continuam bloqueadas da agenda pré-jogo.
+    """
     if isinstance(target_date, pd.Timestamp):
         target_date = target_date.date()
     if isinstance(target_date, datetime):
         target_date = target_date.date()
 
+    if _fixture_is_finished(f):
+        return False
+
     br_date = f.get("br_date")
+    if br_date in (None, ""):
+        return True
     if isinstance(br_date, pd.Timestamp):
         br_date = br_date.date()
     if isinstance(br_date, datetime):
         br_date = br_date.astimezone(BRASILIA_TZ).date() if br_date.tzinfo else br_date.date()
     if isinstance(br_date, str):
         try:
-            br_date = pd.to_datetime(br_date, errors="coerce").date()
+            parsed = pd.to_datetime(br_date, errors="coerce")
+            br_date = None if pd.isna(parsed) else parsed.date()
         except Exception:
             br_date = None
 
-    return br_date == target_date and not _fixture_is_finished(f)
+    # Se a fonte enviou uma data ilegível, como a chamada já foi feita para a
+    # data selecionada, preservamos o jogo em vez de produzir um falso negativo.
+    return True if br_date is None else br_date == target_date
 
 
 # Fonte principal complementar da agenda: calendário público do SofaScore.
