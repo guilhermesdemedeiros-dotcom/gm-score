@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-13-v50-diversified-opportunity-engine"
+GM_BUILD = "2026-09-13-v51-bingo-strong-slate"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -11416,7 +11416,7 @@ def _gm_daily_high_margin_candidate(candidate, pick_kind, simple_mode=False):
     if simple_mode:
         max_odd = 2.10 if pick_kind == "dica" else 1.89 if pick_kind == "matadeira" else 1.45
     else:
-        max_odd = 1.40 if pick_kind == "bingo" else 1.55
+        max_odd = 1.50 if pick_kind == "bingo" else 1.55
     if not (1.015 <= odd <= max_odd):
         return False
 
@@ -11427,7 +11427,7 @@ def _gm_daily_high_margin_candidate(candidate, pick_kind, simple_mode=False):
     thresholds = {
         "matadeira": {"O0.5": 88.0, "O1.5": 78.0, "1X": 82.0, "X2": 82.0, "12": 80.0, "1": 72.0, "2": 72.0},
         "dica":      {"O0.5": 86.0, "O1.5": 76.0, "1X": 80.0, "X2": 80.0, "12": 78.0, "1": 68.0, "2": 68.0},
-        "bingo":     {"O0.5": 90.0, "O1.5": 80.0, "1X": 84.0, "X2": 84.0, "12": 82.0, "1": 76.0, "2": 76.0},
+        "bingo":     {"O0.5": 86.0, "O1.5": 74.0, "1X": 79.0, "X2": 79.0, "12": 77.0, "1": 69.0, "2": 69.0},
     }
     needed = thresholds.get(pick_kind, thresholds["dica"]).get(code, 101.0)
     return prob >= needed
@@ -11498,9 +11498,14 @@ def gm_daily_pick_choose(candidates, pick_kind="dica", avoid_matches=None, avoid
 
     def valid_diversity(legs, kind):
         families=[_gm_daily_market_family(x.get("market_code")) for x in legs]
+        # Matadeira e Dica mantêm diversidade como regra dura. No Bingo ela vira
+        # preferência de score: em uma grade forte não deixamos a múltipla sumir
+        # apenas porque as melhores pernas do dia pertencem à mesma família.
+        if kind == "bingo":
+            return True
         if len(legs) >= 3 and len(set(families)) < 2:
             return False
-        max_same = 2 if kind in {"matadeira","dica"} else max(3, (len(legs)+1)//2)
+        max_same = 2
         return all(families.count(f) <= max_same for f in set(families))
 
     def beam_combo(base, min_legs, max_legs, min_odd, max_odd, kind):
@@ -11526,7 +11531,7 @@ def gm_daily_pick_choose(candidates, pick_kind="dica", avoid_matches=None, avoid
                     if size>=min_legs and no>=min_odd and (max_odd is None or no<=max_odd) and valid_diversity(nl,kind):
                         combo=_gm_daily_combo_payload(nl,"double" if size==2 else "triple" if size==3 else "multiple",kind)
                         combo["score"]=round(rank,3)
-                        combo["model_meta_bingo"]={"strategy":"diversified_probability_first_v50","leg_count":len(nl),"markets":sorted({str(x.get('market_code') or '') for x in nl}),"families":sorted(set(_gm_daily_market_family(x.get('market_code')) for x in nl)),"min_leg_probability":round(min(float(x.get('probability') or 0) for x in nl),2),"max_leg_odd":round(max(float(x.get('odd') or 0) for x in nl),3)}
+                        combo["model_meta_bingo"]={"strategy":"strong_slate_bingo_v51","leg_count":len(nl),"markets":sorted({str(x.get('market_code') or '') for x in nl}),"families":sorted(set(_gm_daily_market_family(x.get('market_code')) for x in nl)),"min_leg_probability":round(min(float(x.get('probability') or 0) for x in nl),2),"max_leg_odd":round(max(float(x.get('odd') or 0) for x in nl),3)}
                         if best is None or combo["score"]>best["score"]: best=combo
             if not expanded: break
             # dedup states by used match set + family profile
@@ -11739,7 +11744,7 @@ def gm_render_daily_pick_page():
             icon="🟢" if dr==0 and dg>0 else "🔴" if dg==0 and dr>0 else "🟡"; chips.append(f'<span class="gm-pick-dot">{icon} {html.escape(label)} · {dg}/{dg+dr}</span>')
         st.markdown('<div class="gm-pick-history">'+''.join(chips)+'</div>',unsafe_allow_html=True)
     with st.expander("ℹ️ Como funcionam as oportunidades"):
-        st.markdown("- **Matadeira:** odd entre **1,50 e 1,89**, podendo usar **2 a 6 jogos** de alta recorrência para evitar uma perna isolada arriscada.\n- **Dica do Dia:** odd alvo entre **1,90 e 2,10**, podendo usar **2 a 8 jogos** quando as melhores seleções do dia estiverem em odds baixas.\n- **Bingo:** múltipla de **4 a 12 jogos**, priorizando pernas de odd baixa até atingir **3,50+**.\n- Mercados diretamente elegíveis com **odd real**: **vitória da casa/visitante, 1X, X2, 12, Mais de 0,5 e Mais de 1,5 gols**. O motor limita concentração em um único tipo de mercado para buscar diversidade sem reduzir o critério de qualidade.\n- Estatísticas de **1º/2º tempo, escanteios, cartões, impedimentos e finalizações** podem reforçar a leitura quando houver cobertura, mas o GM SCORE não inventa odd: só entram como perna quando existir preço pré-jogo real disponível.\n- A nota prioriza **probabilidade estimada por perna**, aceita pequenas diferenças de margem da casa em odds muito baixas e prefere alguma diversidade de mercados quando a segurança for equivalente.\n- Se uma faixa realmente não atingir os critérios, aparece **sem seleção**.\n- O aproveitamento oficial soma apenas Matadeira + Dica; o Bingo é exibido separadamente.")
+        st.markdown("- **Matadeira:** odd entre **1,50 e 1,89**, podendo usar **2 a 6 jogos** de alta recorrência para evitar uma perna isolada arriscada.\n- **Dica do Dia:** odd alvo entre **1,90 e 2,10**, podendo usar **2 a 8 jogos** quando as melhores seleções do dia estiverem em odds baixas.\n- **Bingo:** múltipla de **4 a 12 jogos**, com odd mínima **3,50**. Em grades fortes o motor aceita um pouco mais de risco por perna (até odd 1,50) para evitar ficar sem Bingo, sempre priorizando as alternativas de maior probabilidade e diversidade quando houver.\n- Mercados diretamente elegíveis com **odd real**: **vitória da casa/visitante, 1X, X2, 12, Mais de 0,5 e Mais de 1,5 gols**. O motor limita concentração em um único tipo de mercado para buscar diversidade sem reduzir o critério de qualidade.\n- Estatísticas de **1º/2º tempo, escanteios, cartões, impedimentos e finalizações** podem reforçar a leitura quando houver cobertura, mas o GM SCORE não inventa odd: só entram como perna quando existir preço pré-jogo real disponível.\n- A nota prioriza **probabilidade estimada por perna**, aceita pequenas diferenças de margem da casa em odds muito baixas e prefere alguma diversidade de mercados quando a segurança for equivalente.\n- Se uma faixa realmente não atingir os critérios, aparece **sem seleção**.\n- O aproveitamento oficial soma apenas Matadeira + Dica; o Bingo é exibido separadamente.")
         st.caption("Quanto maior a odd, menor tende a ser a probabilidade conjunta. Odds e probabilidades são condições/estimativas pré-jogo, não garantia de retorno. Aposte com responsabilidade.")
 
 
