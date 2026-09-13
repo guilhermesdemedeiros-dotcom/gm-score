@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-13-v43-agenda-roster-decoupled"
+GM_BUILD = "2026-09-13-v44-all-leagues-fixture-integrity"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -8619,29 +8619,101 @@ def load_thesportsdb_fixtures_for_date(target_date):
     return out
 
 
+def _fixture_compare_tokens(name):
+    """Tokens canônicos SOMENTE para comparar nomes de clubes entre agendas.
+
+    Não altera nomes exibidos, estatísticas ou IDs. Expande abreviações muito
+    comuns que faziam o mesmo jogo entrar duas vezes (ex.: Utd x United).
+    """
+    key = fixture_team_key(name)
+    if not key:
+        return []
+    aliases = {
+        "utd": "united",
+        "intl": "internacional",
+        "internazionale": "inter",
+        "munchen": "muenchen",
+        "muenchen": "muenchen",
+    }
+    return [aliases.get(tok, tok) for tok in key.split("_") if tok]
+
+
 def _fixture_names_equivalent(a, b):
-    ka, kb = fixture_team_key(a), fixture_team_key(b)
-    if not ka or not kb: return False
-    if ka == kb: return True
-    # Fontes variam entre nome curto e oficial: Brighton vs Brighton & Hove Albion,
-    # Coventry vs Coventry City etc. Um nome inteiro contido no outro é suficiente
-    # quando a parte curta tem pelo menos 5 caracteres.
-    if min(len(ka), len(kb)) >= 5 and (ka in kb or kb in ka): return True
-    ta=set(ka.split("_")); tb=set(kb.split("_"))
-    if not ta or not tb: return False
-    inter=len(ta & tb)
+    ta_list, tb_list = _fixture_compare_tokens(a), _fixture_compare_tokens(b)
+    if not ta_list or not tb_list:
+        return False
+    ka, kb = "_".join(ta_list), "_".join(tb_list)
+    if ka == kb:
+        return True
+    # Nome curto x oficial (Coventry x Coventry City; Brighton x Brighton Hove Albion).
+    if min(len(ka), len(kb)) >= 5 and (ka in kb or kb in ka):
+        return True
+    ta, tb = set(ta_list), set(tb_list)
+    inter = len(ta & tb)
+    # Exige cobertura forte do nome menor. Depois da expansão Utd->United,
+    # Manchester Utd e Manchester United passam a ser o mesmo clube sem tornar
+    # Manchester City e Manchester United equivalentes.
     return inter >= 1 and inter / min(len(ta), len(tb)) >= 0.67
 
 
+def _fixture_source_priority(f):
+    """Prioridade de fonte para horário/status da agenda em TODAS as ligas."""
+    src = _gm_api_norm((f or {}).get("source"))
+    if "liga direta" in src:
+        return 90
+    if src == "apifootball" or ("apifootball" in src and "prediction" not in src):
+        return 85
+    if "espn" in src:
+        return 80
+    if "sofascore" in src:
+        return 75
+    if "thesportsdb" in src:
+        return 65
+    if "prediction" in src:
+        return 20
+    return 50
+
+
+def _fixture_merge_score(f):
+    tm = str((f or {}).get("time") or "").strip()
+    has_time = bool(re.fullmatch(r"\d{2}:\d{2}", tm))
+    return _fixture_source_priority(f) * 1000 + (100 if has_time else 0) + _fixture_quality(f)
+
+
 def _merge_fixture_unique(best_list, candidate):
-    """Mescla a mesma partida mesmo quando as fontes usam nomes diferentes."""
-    if not valid_daily_fixture(candidate): return
+    """Mescla a mesma partida entre fontes para qualquer competição suportada."""
+    if not valid_daily_fixture(candidate):
+        return
     for i, old in enumerate(best_list):
-        if old.get("competition") != candidate.get("competition"): continue
-        if _fixture_names_equivalent(old.get("home"), candidate.get("home")) and _fixture_names_equivalent(old.get("away"), candidate.get("away")):
-            if _fixture_quality(candidate) > _fixture_quality(old): best_list[i] = candidate
-            return
-    best_list.append(candidate)
+        if old.get("competition") != candidate.get("competition"):
+            continue
+        old_mid = str(old.get("match_id") or "").strip()
+        new_mid = str(candidate.get("match_id") or "").strip()
+        same_id = bool(old_mid and new_mid and old_mid == new_mid)
+        same_names = (
+            _fixture_names_equivalent(old.get("home"), candidate.get("home"))
+            and _fixture_names_equivalent(old.get("away"), candidate.get("away"))
+        )
+        if not (same_id or same_names):
+            continue
+
+        # Horário/status vêm da fonte mais confiável. Se a fonte escolhida usa
+        # nomes abreviados, preserva nomes mais completos da outra fonte.
+        if _fixture_merge_score(candidate) > _fixture_merge_score(old):
+            merged = dict(candidate)
+            if len(str(old.get("home") or "")) > len(str(merged.get("home") or "")):
+                merged["home"] = old.get("home")
+            if len(str(old.get("away") or "")) > len(str(merged.get("away") or "")):
+                merged["away"] = old.get("away")
+            best_list[i] = merged
+        else:
+            # Mesmo mantendo a fonte antiga, aproveita o nome oficial mais rico.
+            if len(str(candidate.get("home") or "")) > len(str(old.get("home") or "")):
+                best_list[i]["home"] = candidate.get("home")
+            if len(str(candidate.get("away") or "")) > len(str(old.get("away") or "")):
+                best_list[i]["away"] = candidate.get("away")
+        return
+    best_list.append(dict(candidate))
 
 
 def _espn_get_json(url, timeout=15):
@@ -8883,7 +8955,12 @@ def load_apifootball_prediction_fixtures_for_date(target_date, competition=None)
             "competition": comp,
             "home": home,
             "away": away,
-            "time": str(ev.get("match_time") or "").strip(),
+            # get_predictions é usado como RECUPERAÇÃO de confronto. O campo
+            # match_time desse endpoint pode vir em outro fuso; por segurança a
+            # agenda só recebe horário dele se outra fonte oficial não existir.
+            # Guardamos o valor bruto apenas para diagnóstico interno.
+            "time": "",
+            "prediction_time_raw": str(ev.get("match_time") or "").strip(),
             "br_date": target_date,
             "match_id": str(ev.get("match_id") or "").strip(),
             "league_id": lid,
@@ -9844,7 +9921,7 @@ def render_analysis():
                     for _label, _rows, _err in _diag_sources:
                         st.markdown(f"**{_label}: {len(_rows)} jogo(s)**" + (f" · erro: {_err}" if _err else ""))
                         for _r in _rows[:6]:
-                            st.caption(f"{_r.get('time') or '—'} · {_r.get('home')} × {_r.get('away')} · status={_r.get('status') or '—'} · data={_r.get('br_date') or '—'}")
+                            st.caption(f"{_r.get('time') or '—'} · {_r.get('home')} × {_r.get('away')} · status={_r.get('status') or '—'} · data={_r.get('br_date') or '—'}" + (f" · bruto={_r.get('prediction_time_raw')}" if _r.get('prediction_time_raw') else ""))
                     st.caption(f"Após filtros/deduplicação: {len(today_fixtures)} jogo(s).")
 
             if today_fixtures:
