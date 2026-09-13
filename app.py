@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-13-v52-bingo-balanced-odds"
+GM_BUILD = "2026-09-13-v53-rotating-market-diversity"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -11460,7 +11460,7 @@ def _gm_daily_high_margin_candidate(candidate, pick_kind, simple_mode=False):
     return prob >= needed
 
 
-def gm_daily_pick_choose(candidates, pick_kind="dica", avoid_matches=None, avoid_legs=None):
+def gm_daily_pick_choose(candidates, pick_kind="dica", avoid_matches=None, avoid_legs=None, history_market_counts=None, history_family_counts=None, history_kind_market_counts=None):
     """Escolhe as três oportunidades com diversidade controlada e qualidade.
 
     v50:
@@ -11472,6 +11472,9 @@ def gm_daily_pick_choose(candidates, pick_kind="dica", avoid_matches=None, avoid
     """
     avoid_matches = set(str(x) for x in (avoid_matches or []) if str(x))
     avoid_legs = set(tuple(x) if isinstance(x, (list, tuple)) else x for x in (avoid_legs or []))
+    history_market_counts = dict(history_market_counts or {})
+    history_family_counts = dict(history_family_counts or {})
+    history_kind_market_counts = dict(history_kind_market_counts or {})
     raw = [dict(c) for c in (candidates or [])]
 
     def leg_sig(c):
@@ -11489,7 +11492,14 @@ def gm_daily_pick_choose(candidates, pick_kind="dica", avoid_matches=None, avoid
         edge_component = max(-5.0, min(8.0, edge)) * 0.25
         price_penalty = max(0.0, odd - 1.35) * 10.0
         repeat_penalty = 3.5 if str(c.get("match_id") or "") in avoid_matches else 0.0
-        return prob + family_bonus + edge_component - price_penalty - repeat_penalty + deterministic_jitter(c) * 0.35
+        # v53: rotação histórica. Mercados muito usados nos últimos dias perdem
+        # prioridade, sobretudo quando foram repetidos na mesma categoria. Isso não
+        # torna um mercado ruim elegível: a penalização só ordena candidatos que já
+        # passaram pelos filtros de qualidade.
+        hist_market_penalty = min(8.0, float(history_market_counts.get(code, 0.0)) * 0.55)
+        hist_family_penalty = min(5.0, float(history_family_counts.get(family, 0.0)) * 0.28)
+        hist_kind_penalty = min(7.0, float(history_kind_market_counts.get((pick_kind, code), 0.0)) * 0.70)
+        return prob + family_bonus + edge_component - price_penalty - repeat_penalty - hist_market_penalty - hist_family_penalty - hist_kind_penalty + deterministic_jitter(c) * 0.35
 
     # 1) Primeiro tenta uma seleção simples excelente dentro da faixa final.
     if pick_kind in {"matadeira", "dica"}:
@@ -11517,8 +11527,11 @@ def gm_daily_pick_choose(candidates, pick_kind="dica", avoid_matches=None, avoid
         for p in probs: model_prob*=p/100.0
         families=[_gm_daily_market_family(x.get("market_code")) for x in legs]
         fam_count=len(set(families)); codes={str(x.get("market_code") or "") for x in legs}
-        diversity_bonus=max(0,fam_count-1)*1.8 + max(0,len(codes)-1)*0.35
-        concentration_penalty=max(families.count(f)-2 for f in set(families))*2.6 if families else 0.0
+        diversity_bonus=max(0,fam_count-1)*2.4 + max(0,len(codes)-1)*0.75
+        concentration_penalty=max(families.count(f)-2 for f in set(families))*3.4 if families else 0.0
+        code_counts={c:sum(1 for x in legs if str(x.get("market_code") or "")==c) for c in codes}
+        exact_repeat_penalty=sum(max(0,n-1)*1.8 for n in code_counts.values())
+        history_combo_penalty=sum(min(3.0,float(history_market_counts.get(str(x.get("market_code") or ""),0.0))*0.18) for x in legs)
         target=1.72 if kind=="matadeira" else 2.00 if kind=="dica" else 4.50
         distance=0.0 if kind=="bingo" else abs(total_odd-target)*4.0
 
@@ -11541,15 +11554,25 @@ def gm_daily_pick_choose(candidates, pick_kind="dica", avoid_matches=None, avoid
                 odd_risk_penalty += (very_low - max(1, len(odds)//2)) * 2.8
             odd_risk_penalty += sum(max(0.0, o-1.85) * 5.0 for o in odds)
 
-        return model_prob*100 + min(probs)*0.78 + sum(probs)/len(probs)*0.14 + sum(max(-2,min(6,e)) for e in edges)*0.06 + diversity_bonus + odd_mix_bonus - concentration_penalty - odd_risk_penalty - distance - max(0,total_odd-8.0)*(0.65 if kind=="bingo" else 0)
+        return model_prob*100 + min(probs)*0.78 + sum(probs)/len(probs)*0.14 + sum(max(-2,min(6,e)) for e in edges)*0.06 + diversity_bonus + odd_mix_bonus - concentration_penalty - exact_repeat_penalty - history_combo_penalty - odd_risk_penalty - distance - max(0,total_odd-8.0)*(0.65 if kind=="bingo" else 0)
 
     def valid_diversity(legs, kind):
         families=[_gm_daily_market_family(x.get("market_code")) for x in legs]
         # Matadeira e Dica mantêm diversidade como regra dura. No Bingo ela vira
         # preferência de score: em uma grade forte não deixamos a múltipla sumir
         # apenas porque as melhores pernas do dia pertencem à mesma família.
+        codes=[str(x.get("market_code") or "") for x in legs]
         if kind == "bingo":
-            return True
+            # Primeira escolha do Bingo também precisa variar. Em múltiplas com 5+
+            # pernas, nenhum código pode dominar mais da metade do bilhete, e uma
+            # família não deve ocupar mais de ~65%. Se a grade não permitir, o motor
+            # faz uma segunda passagem relaxada abaixo, sem inventar mercados.
+            if len(legs) >= 5:
+                max_code=max(codes.count(c) for c in set(codes)) if codes else 0
+                max_family=max(families.count(f) for f in set(families)) if families else 0
+                if max_code > max(2, (len(legs)+1)//2): return False
+                if max_family > max(3, int(len(legs)*0.65 + 0.999)): return False
+            return len(set(codes)) >= 2 if len(legs) >= 4 else True
         if len(legs) >= 3 and len(set(families)) < 2:
             return False
         max_same = 2
@@ -11604,10 +11627,36 @@ def gm_daily_pick_recent(limit=80):
     return [r for r in rows if isinstance(r, dict)]
 
 
+def _gm_daily_recent_market_rotation(rows, today):
+    """Conta uso recente de mercados com peso por recência para incentivar rotação."""
+    market_counts, family_counts, kind_market_counts = {}, {}, {}
+    for row in rows or []:
+        try:
+            d = datetime.fromisoformat(str(row.get("pick_date") or "")).date()
+        except Exception:
+            continue
+        age = (today - d).days
+        if age <= 0 or age > 10:
+            continue
+        weight = 4.0 if age == 1 else 3.0 if age == 2 else 2.0 if age <= 5 else 1.0
+        kind = str(row.get("pick_kind") or "dica")
+        for leg in (row.get("legs") or []):
+            code = str((leg or {}).get("market_code") or "").strip()
+            if not code:
+                continue
+            fam = _gm_daily_market_family(code)
+            market_counts[code] = market_counts.get(code, 0.0) + weight
+            family_counts[fam] = family_counts.get(fam, 0.0) + weight
+            key = (kind, code)
+            kind_market_counts[key] = kind_market_counts.get(key, 0.0) + weight
+    return market_counts, family_counts, kind_market_counts
+
+
 def gm_daily_pick_publish_today(force_refresh=False):
     profile = gm_auth_get_profile(force=True)
     if (profile or {}).get("role") != "admin": return {"ok": False, "reason": "admin_only"}
-    today = datetime.now(BRASILIA_TZ).date(); existing_rows=[r for r in gm_daily_pick_recent(20) if str(r.get("pick_date") or "") == today.isoformat()]
+    today = datetime.now(BRASILIA_TZ).date(); recent_rows = gm_daily_pick_recent(100); existing_rows=[r for r in recent_rows if str(r.get("pick_date") or "") == today.isoformat()]
+    history_market_counts, history_family_counts, history_kind_market_counts = _gm_daily_recent_market_rotation(recent_rows, today)
     existing_kinds={str(r.get("pick_kind") or "dica") for r in existing_rows}; missing=[k for k in ("matadeira","dica","bingo") if k not in existing_kinds]
     if not missing: return {"ok": True, "reason": "exists", "rows": existing_rows}
     if force_refresh:
@@ -11625,7 +11674,7 @@ def gm_daily_pick_publish_today(force_refresh=False):
             if mid: used_matches.add(mid)
             if mid and code: used_legs.add((mid,code))
     for pick_kind in missing:
-        chosen=gm_daily_pick_choose(candidates,pick_kind,avoid_matches=used_matches,avoid_legs=used_legs)
+        chosen=gm_daily_pick_choose(candidates,pick_kind,avoid_matches=used_matches,avoid_legs=used_legs,history_market_counts=history_market_counts,history_family_counts=history_family_counts,history_kind_market_counts=history_kind_market_counts)
         if chosen is None:
             payload={"p_pick_date":today.isoformat(),"p_pick_kind":pick_kind,"p_status":"no_pick","p_bet_type":"none","p_total_odd":None,"p_bookmaker":None,"p_bookmaker_url":None,"p_legs":[],"p_model_meta":{**meta,"build":GM_BUILD,"pick_kind":pick_kind,"reason":"quality_filter"}}
         else:
