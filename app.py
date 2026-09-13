@@ -9,6 +9,7 @@ import re
 import time
 import secrets
 import inspect
+import itertools
 import unicodedata
 from html.parser import HTMLParser
 from urllib.parse import quote
@@ -37,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-12-v30-structural-team-strength"
+GM_BUILD = "2026-09-13-v33-daily-selection-no-generic-links"
 st.set_page_config(
     page_title="GM SCORE",
     page_icon="⚽",
@@ -758,8 +759,52 @@ def gm_auth_sign_in(email, password):
     return user
 
 
+def _gm_auth_refresh_tokens_rest(refresh_token):
+    """Renova tokens diretamente no Auth REST sem depender do estado interno do supabase-py."""
+    url, key = gm_supabase_config()
+    token = str(refresh_token or "").strip()
+    if not url or not key or not token:
+        return None
+    try:
+        r = requests.post(
+            f"{url}/auth/v1/token?grant_type=refresh_token",
+            headers={"apikey": key, "Content-Type": "application/json"},
+            json={"refresh_token": token},
+            timeout=15,
+        )
+        payload = r.json() if r.content else {}
+        if r.status_code != 200 or not isinstance(payload, dict):
+            return None
+        access = str(payload.get("access_token") or "").strip()
+        refresh = str(payload.get("refresh_token") or token).strip()
+        user = payload.get("user") or {}
+        if not access:
+            return None
+        gm_auth_store_session(
+            access, refresh,
+            user.get("id") or st.session_state.get("gm_auth_user_id"),
+            user.get("email") or st.session_state.get("gm_auth_email"),
+        )
+        return access, refresh
+    except Exception:
+        return None
+
+
+def _gm_jwt_still_valid(access_token, leeway_seconds=30):
+    """Checagem local apenas para permitir usar um JWT ainda válido se o refresh falhar."""
+    try:
+        parts = str(access_token or "").split(".")
+        if len(parts) != 3:
+            return False
+        raw = parts[1] + "=" * (-len(parts[1]) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(raw.encode()).decode("utf-8"))
+        return int(payload.get("exp") or 0) > int(time.time()) + int(leeway_seconds)
+    except Exception:
+        return False
+
+
 def gm_auth_client_from_session():
-    """Restaura a sessão Supabase deste navegador em um cliente isolado."""
+    """Restaura a sessão Supabase com recuperação segura de token para ações VIP/admin."""
     access = st.session_state.get("gm_auth_access_token")
     refresh = st.session_state.get("gm_auth_refresh_token")
     if not access or not refresh:
@@ -767,7 +812,6 @@ def gm_auth_client_from_session():
     client = gm_new_supabase_client()
     try:
         result = client.auth.set_session(access, refresh)
-        # set_session pode renovar tokens expirados. Mantemos a cópia local atualizada.
         session = getattr(result, "session", None)
         if session is not None:
             st.session_state["gm_auth_access_token"] = session.access_token
@@ -775,6 +819,31 @@ def gm_auth_client_from_session():
             gm_auth_persist_current_session()
         return client
     except Exception:
+        # v31: uma falha transitória do set_session não deve destruir imediatamente
+        # a sessão administrativa. Primeiro tentamos renovar pelo endpoint oficial.
+        renewed = _gm_auth_refresh_tokens_rest(refresh)
+        if renewed:
+            access2, refresh2 = renewed
+            client2 = gm_new_supabase_client()
+            try:
+                result = client2.auth.set_session(access2, refresh2)
+                session = getattr(result, "session", None)
+                if session is not None:
+                    st.session_state["gm_auth_access_token"] = session.access_token
+                    st.session_state["gm_auth_refresh_token"] = session.refresh_token
+                    gm_auth_persist_current_session()
+                return client2
+            except Exception:
+                access = access2
+        # Se o JWT atual ainda é válido, PostgREST/RPC pode usá-lo diretamente.
+        # Isso mantém publicação de novidades/admin disponível durante falhas de refresh.
+        if _gm_jwt_still_valid(access):
+            try:
+                client3 = gm_new_supabase_client()
+                client3.postgrest.auth(str(access))
+                return client3
+            except Exception:
+                pass
         gm_auth_clear_local_session()
         return None
 
@@ -2738,6 +2807,17 @@ def gm_render_public_portal():
                             "a confirmação válida do pagamento pelo Mercado Pago."
                         )
 
+                st.markdown("### 🧭 Navegação")
+                nav1, nav2 = st.columns(2)
+                with nav1:
+                    if st.button("⚽ Análises", use_container_width=True, key="gm_sidebar_nav_analysis"):
+                        st.session_state["gm_main_view"] = "analysis"
+                        st.rerun()
+                with nav2:
+                    if st.button("⭐ Seleção", use_container_width=True, key="gm_sidebar_nav_daily_pick"):
+                        st.session_state["gm_main_view"] = "daily_pick"
+                        st.rerun()
+
                 if state == "vip":
                     if st.button("⭐ Avaliar GM SCORE", use_container_width=True, key="gm_sidebar_review"):
                         st.session_state["gm_reviews_open"] = True
@@ -2751,6 +2831,7 @@ def gm_render_public_portal():
                     st.session_state.pop("gm_admin_panel_open", None)
                     st.session_state.pop("gm_news_open", None)
                     st.session_state.pop("gm_reviews_open", None)
+                    st.session_state.pop("gm_main_view", None)
                     st.rerun()
                 st.markdown("---")
             return True
@@ -5861,6 +5942,36 @@ def gm_apifootball_pair_profiles(team_a, team_b, competition_name=None, limit_pe
         league = _gm_api_norm(ev.get("league_name"))
         return "friendly" not in league and "friendlies" not in league
 
+    def halftime_score_from_event(ev):
+        """Recupera o placar do intervalo; usa eventos de gol quando o campo HT veio vazio."""
+        hhs = to_num(ev.get("match_hometeam_halftime_score"))
+        has = to_num(ev.get("match_awayteam_halftime_score"))
+        if hhs is not None and has is not None:
+            return hhs, has
+        goals = ev.get("goalscorer") or []
+        if not isinstance(goals, list) or not goals:
+            return None, None
+        home_ht = away_ht = 0
+        found = False
+        for goal in goals:
+            if not isinstance(goal, dict):
+                continue
+            tm = str(goal.get("time") or goal.get("score_info_time") or "")
+            mt = re.search(r"(\d+)", tm)
+            if not mt:
+                continue
+            minute = int(mt.group(1))
+            # Acréscimos do 1T costumam vir como 45+N; o primeiro número basta.
+            if minute > 45:
+                continue
+            hs = str(goal.get("home_scorer") or "").strip()
+            aws = str(goal.get("away_scorer") or "").strip()
+            if hs:
+                home_ht += 1; found = True
+            if aws:
+                away_ht += 1; found = True
+        return (home_ht, away_ht) if found else (None, None)
+
     def profile(team_name, team_id):
         if not team_id:
             return None
@@ -5878,6 +5989,23 @@ def gm_apifootball_pair_profiles(team_a, team_b, competition_name=None, limit_pe
             events, ev_err = gm_apifootball_request("get_events", team_id=team_id, **date_params)
             if not ev_err and isinstance(events, list):
                 pooled.extend(events)
+
+        # v31: get_H2H também devolve os últimos resultados de cada equipe. Essa
+        # rota é especialmente útil no começo da temporada e para promovidos, quando
+        # o get_events da liga atual ainda possui poucas partidas. Não contamos
+        # duplicatas: match_id continua sendo a chave de deduplicação abaixo.
+        if len(league_finished) < int(limit_per_team):
+            nonlocal h2h_payload
+            if h2h_payload is None:
+                h2h_payload, _ = gm_apifootball_request(
+                    "get_H2H", firstTeam=team_a, secondTeam=team_b,
+                    timezone="America/Sao_Paulo",
+                )
+            if isinstance(h2h_payload, dict):
+                for hkey in ("firstTeam_lastResults", "secondTeam_lastResults", "firstTeam_VS_secondTeam"):
+                    extra = h2h_payload.get(hkey) or []
+                    if isinstance(extra, list):
+                        pooled.extend([x for x in extra if isinstance(x, dict)])
 
         seen, finished = set(), []
         for ev in pooled:
@@ -5941,8 +6069,7 @@ def gm_apifootball_pair_profiles(team_a, team_b, competition_name=None, limit_pe
             add_metric(acc, "Finalizações 1T", stat_value(half, stat_aliases["Finalizações"], side))
             add_metric(acc, "Chutes no alvo 1T", stat_value(half, stat_aliases["Chutes no alvo"], side))
 
-            hhs = to_num(ev.get("match_hometeam_halftime_score"))
-            has = to_num(ev.get("match_awayteam_halftime_score"))
+            hhs, has = halftime_score_from_event(ev)
             if hhs is not None and has is not None and hs is not None and aas is not None:
                 own_ht = hhs if side == "home" else has
                 own_ft = hs if side == "home" else aas
@@ -7176,7 +7303,9 @@ def expected_goals_by_half(team_a, team_b, matches, total_expected):
         samples.append((ht, ft))
         if len(samples) >= 30:
             break
-    if len(samples) < 6:
+    # v31: 3–7 jogos já são uma base real válida em Cautela segundo a regra
+    # oficial do GM SCORE; exigir 6 aqui criava Inconclusivo desnecessário.
+    if len(samples) < 3:
         return None
     ft_total = sum(ft for _, ft in samples)
     if ft_total <= 0:
@@ -10452,6 +10581,485 @@ def gm_render_calibration_dashboard():
         st.caption("Regra operacional: N < 30 continua em formação. Alertas de viés servem para investigação; nenhum peso do modelo é alterado automaticamente sem amostra suficiente.")
 
 
+
+# ============================================================
+# SELEÇÃO GM DO DIA — V32
+# ============================================================
+# Primeira versão operacional: cruza as 21 competições auditadas, probabilidades
+# pré-jogo da APIfootball e odds reais pré-jogo. A seleção diária somente é
+# persistida pelo administrador; clientes VIP têm acesso de leitura. Nenhum
+# mercado é forçado: se a faixa de odd/qualidade não for atingida, o dia fica
+# oficialmente "sem seleção".
+GM_DAILY_PICK_TARGET_MIN = 1.90
+GM_DAILY_PICK_TARGET_MAX = 2.10
+GM_DAILY_PICK_BETANO_URL = "https://www.betano.bet.br/"
+GM_DAILY_PICK_BET365_URL = "https://www.bet365.bet.br/"
+
+
+def gm_daily_pick_rpc(function_name, params=None):
+    client = gm_auth_client_from_session()
+    if client is None:
+        raise RuntimeError("Sessão autenticada indisponível.")
+    result = client.rpc(function_name, params or {}).execute()
+    return getattr(result, "data", None)
+
+
+def _gm_daily_num(value):
+    try:
+        if value is None or str(value).strip() == "":
+            return None
+        return float(str(value).replace(",", "."))
+    except Exception:
+        return None
+
+
+def _gm_daily_norm_bookmaker(value):
+    return re.sub(r"[^a-z0-9]+", "", _gm_api_norm(value))
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def gm_daily_pick_source_payload(target_date_iso):
+    # "from" é palavra reservada em Python, então esta chamada usa requests
+    # diretamente com a mesma chave segura já mantida em Streamlit Secrets.
+    key = gm_apifootball_api_key()
+    if not key:
+        return {"predictions": [], "odds": [], "error": "secret_missing"}
+    try:
+        pred_resp = requests.get(
+            APIFOOTBALL_BASE_URL,
+            params={"action": "get_predictions", "from": target_date_iso, "to": target_date_iso, "APIkey": key},
+            timeout=22,
+        )
+        pred_resp.raise_for_status()
+        predictions = pred_resp.json()
+    except Exception as exc:
+        return {"predictions": [], "odds": [], "error": f"predictions:{type(exc).__name__}"}
+    try:
+        odd_resp = requests.get(
+            APIFOOTBALL_BASE_URL,
+            params={"action": "get_odds", "from": target_date_iso, "to": target_date_iso, "APIkey": key},
+            timeout=22,
+        )
+        odd_resp.raise_for_status()
+        odds = odd_resp.json()
+    except Exception as exc:
+        return {"predictions": predictions if isinstance(predictions, list) else [], "odds": [], "error": f"odds:{type(exc).__name__}"}
+    return {
+        "predictions": predictions if isinstance(predictions, list) else [],
+        "odds": odds if isinstance(odds, list) else [],
+        "error": None,
+    }
+
+
+def _gm_daily_market_specs():
+    return [
+        ("1", "Vitória casa", "prob_HW", "odd_1"),
+        ("X", "Empate", "prob_D", "odd_x"),
+        ("2", "Vitória fora", "prob_AW", "odd_2"),
+        ("1X", "Casa ou empate", "prob_HW_D", "odd_1x"),
+        ("X2", "Fora ou empate", "prob_AW_D", "odd_x2"),
+        ("12", "Sem empate", "prob_HW_AW", "odd_12"),
+        ("O1.5", "Mais de 1,5 gols", "prob_O_1", "o+1.5"),
+        ("U1.5", "Menos de 1,5 gols", "prob_U_1", "u+1.5"),
+        ("O2.5", "Mais de 2,5 gols", "prob_O", "o+2.5"),
+        ("U2.5", "Menos de 2,5 gols", "prob_U", "u+2.5"),
+        ("O3.5", "Mais de 3,5 gols", "prob_O_3", "o+3.5"),
+        ("U3.5", "Menos de 3,5 gols", "prob_U_3", "u+3.5"),
+        ("BTTS_Y", "Ambas marcam — Sim", "prob_bts", "bts_yes"),
+        ("BTTS_N", "Ambas marcam — Não", "prob_ots", "bts_no"),
+    ]
+
+
+def _gm_daily_pick_bookmaker_rows(odds):
+    by_match = {}
+    for row in odds or []:
+        if not isinstance(row, dict):
+            continue
+        mid = str(row.get("match_id") or "").strip()
+        if not mid:
+            continue
+        by_match.setdefault(mid, []).append(row)
+    return by_match
+
+
+def _gm_daily_best_odd_row(rows):
+    if not rows:
+        return None
+    def rank(row):
+        b = _gm_daily_norm_bookmaker(row.get("odd_bookmakers") or row.get("bookmaker"))
+        if "betano" in b:
+            pref = 3
+        elif "bet365" in b:
+            pref = 2
+        else:
+            pref = 1
+        return (pref, str(row.get("odd_date") or row.get("updated") or ""))
+    return max(rows, key=rank)
+
+
+def gm_daily_pick_candidates(target_date):
+    target_iso = target_date.isoformat() if hasattr(target_date, "isoformat") else str(target_date)
+    payload = gm_daily_pick_source_payload(target_iso)
+    if payload.get("error"):
+        return [], {"error": payload.get("error"), "predictions": len(payload.get("predictions") or []), "odds": len(payload.get("odds") or [])}
+    allowed_ids = {str(v) for v in (GM_APIFOOTBALL_FIXED_LEAGUE_IDS or {}).values()}
+    odd_map = _gm_daily_pick_bookmaker_rows(payload.get("odds") or [])
+    candidates = []
+    for pred in payload.get("predictions") or []:
+        if not isinstance(pred, dict):
+            continue
+        if str(pred.get("league_id") or "") not in allowed_ids:
+            continue
+        home = str(pred.get("match_hometeam_name") or "").strip()
+        away = str(pred.get("match_awayteam_name") or "").strip()
+        if not home or not away or not valid_fixture_team(home) or not valid_fixture_team(away):
+            continue
+        mid = str(pred.get("match_id") or "").strip()
+        odd_row = _gm_daily_best_odd_row(odd_map.get(mid) or [])
+        if not odd_row:
+            continue
+        bookmaker = str(odd_row.get("odd_bookmakers") or odd_row.get("bookmaker") or "Mercado").strip()
+        for code, label, pkey, okey in _gm_daily_market_specs():
+            p = _gm_daily_num(pred.get(pkey))
+            odd = _gm_daily_num(odd_row.get(okey))
+            if p is None or odd is None or odd <= 1.01 or p <= 0 or p >= 100:
+                continue
+            implied = 100.0 / odd
+            edge = p - implied
+            candidates.append({
+                "match_id": mid,
+                "date": target_iso,
+                "time": str(pred.get("match_time") or ""),
+                "league_id": str(pred.get("league_id") or ""),
+                "competition": str(pred.get("league_name") or ""),
+                "home": home,
+                "away": away,
+                "market_code": code,
+                "market": label,
+                "probability": round(p, 2),
+                "odd": round(odd, 3),
+                "implied_probability": round(implied, 2),
+                "edge": round(edge, 2),
+                "bookmaker": bookmaker,
+            })
+    meta = {"error": None, "predictions": len(payload.get("predictions") or []), "odds": len(payload.get("odds") or []), "candidates": len(candidates)}
+    return candidates, meta
+
+
+def _gm_daily_combo_payload(legs, bet_type):
+    total_odd = 1.0
+    model_prob = 1.0
+    edge_sum = 0.0
+    for leg in legs:
+        total_odd *= float(leg["odd"])
+        model_prob *= float(leg["probability"]) / 100.0
+        edge_sum += float(leg["edge"])
+    score = model_prob * 100.0 + edge_sum * 0.65 - abs(total_odd - 2.0) * 12.0
+    return {
+        "bet_type": bet_type,
+        "legs": [dict(x) for x in legs],
+        "total_odd": round(total_odd, 3),
+        "model_probability": round(model_prob * 100.0, 2),
+        "score": round(score, 3),
+        "bookmaker": legs[0].get("bookmaker") if legs else "Mercado",
+    }
+
+
+def gm_daily_pick_choose(candidates):
+    simples = []
+    for c in candidates:
+        if GM_DAILY_PICK_TARGET_MIN <= c["odd"] <= GM_DAILY_PICK_TARGET_MAX and c["probability"] >= 56.0 and c["edge"] >= 4.0:
+            simples.append(_gm_daily_combo_payload([c], "simple"))
+    if simples:
+        return max(simples, key=lambda x: x["score"])
+
+    base_double = [c for c in candidates if 1.22 <= c["odd"] <= 1.70 and c["probability"] >= 72.0 and c["edge"] >= 2.5]
+    base_double = sorted(base_double, key=lambda c: (c["probability"] + c["edge"]), reverse=True)[:36]
+    doubles = []
+    for a, b in itertools.combinations(base_double, 2):
+        if a["match_id"] == b["match_id"]:
+            continue
+        combo = _gm_daily_combo_payload([a, b], "double")
+        if GM_DAILY_PICK_TARGET_MIN <= combo["total_odd"] <= GM_DAILY_PICK_TARGET_MAX:
+            doubles.append(combo)
+    if doubles:
+        return max(doubles, key=lambda x: x["score"])
+
+    base_triple = [c for c in candidates if 1.15 <= c["odd"] <= 1.48 and c["probability"] >= 80.0 and c["edge"] >= 1.5]
+    base_triple = sorted(base_triple, key=lambda c: (c["probability"] + c["edge"]), reverse=True)[:28]
+    triples = []
+    for legs in itertools.combinations(base_triple, 3):
+        if len({x["match_id"] for x in legs}) != 3:
+            continue
+        combo = _gm_daily_combo_payload(list(legs), "triple")
+        if GM_DAILY_PICK_TARGET_MIN <= combo["total_odd"] <= GM_DAILY_PICK_TARGET_MAX:
+            triples.append(combo)
+    if triples:
+        return max(triples, key=lambda x: x["score"])
+    return None
+
+
+def gm_daily_pick_recent(limit=20):
+    rows = gm_daily_pick_rpc("gm_daily_pick_recent", {"p_limit": max(1, min(int(limit), 50))}) or []
+    return [r for r in rows if isinstance(r, dict)]
+
+
+def gm_daily_pick_publish_today(force_refresh=False):
+    profile = gm_auth_get_profile(force=True)
+    if (profile or {}).get("role") != "admin":
+        return {"ok": False, "reason": "admin_only"}
+    today = datetime.now(BRASILIA_TZ).date()
+    existing = [r for r in gm_daily_pick_recent(5) if str(r.get("pick_date") or "") == today.isoformat()]
+    if existing:
+        return {"ok": True, "reason": "exists", "row": existing[0]}
+    if force_refresh:
+        try:
+            gm_daily_pick_source_payload.clear()
+        except Exception:
+            pass
+    candidates, meta = gm_daily_pick_candidates(today)
+    if meta.get("error"):
+        return {"ok": False, "reason": "source_error", "meta": meta}
+    chosen = gm_daily_pick_choose(candidates)
+    if chosen is None:
+        payload = {
+            "p_pick_date": today.isoformat(), "p_status": "no_pick", "p_bet_type": "none",
+            "p_total_odd": None, "p_bookmaker": None, "p_bookmaker_url": None,
+            "p_legs": [], "p_model_meta": {**meta, "build": GM_BUILD, "reason": "quality_filter"},
+        }
+    else:
+        payload = {
+            "p_pick_date": today.isoformat(), "p_status": "pending", "p_bet_type": chosen["bet_type"],
+            "p_total_odd": chosen["total_odd"], "p_bookmaker": chosen.get("bookmaker"),
+            "p_bookmaker_url": None,
+            "p_legs": chosen["legs"],
+            "p_model_meta": {**meta, "build": GM_BUILD, "model_probability": chosen["model_probability"], "score": chosen["score"]},
+        }
+    data = gm_daily_pick_rpc("gm_daily_pick_publish", payload)
+    return {"ok": True, "reason": "published", "data": data, "chosen": chosen, "meta": meta}
+
+
+def _gm_daily_event_finished(ev):
+    return _gm_api_norm((ev or {}).get("match_status")) in {"finished", "ft", "after et", "after pen"}
+
+
+def _gm_daily_event_void(ev):
+    status = _gm_api_norm((ev or {}).get("match_status"))
+    return status in {"cancelled", "canceled", "postponed", "abandoned", "awarded"}
+
+
+def _gm_daily_evaluate_leg(leg, ev):
+    if _gm_daily_event_void(ev):
+        return "void"
+    if not _gm_daily_event_finished(ev):
+        return "pending"
+    hs = _gm_daily_num(ev.get("match_hometeam_ft_score") or ev.get("match_hometeam_score"))
+    aas = _gm_daily_num(ev.get("match_awayteam_ft_score") or ev.get("match_awayteam_score"))
+    if hs is None or aas is None:
+        return "pending"
+    code = str(leg.get("market_code") or "")
+    total = hs + aas
+    if code == "1": win = hs > aas
+    elif code == "X": win = hs == aas
+    elif code == "2": win = aas > hs
+    elif code == "1X": win = hs >= aas
+    elif code == "X2": win = aas >= hs
+    elif code == "12": win = hs != aas
+    elif code == "O1.5": win = total > 1.5
+    elif code == "U1.5": win = total < 1.5
+    elif code == "O2.5": win = total > 2.5
+    elif code == "U2.5": win = total < 2.5
+    elif code == "O3.5": win = total > 3.5
+    elif code == "U3.5": win = total < 3.5
+    elif code == "BTTS_Y": win = hs > 0 and aas > 0
+    elif code == "BTTS_N": win = not (hs > 0 and aas > 0)
+    else: return "pending"
+    return "green" if win else "red"
+
+
+def gm_daily_pick_settle_pending(limit=12):
+    try:
+        profile = gm_auth_get_profile()
+    except Exception:
+        profile = None
+    if (profile or {}).get("role") != "admin":
+        return {"checked": 0, "settled": 0}
+    rows = gm_daily_pick_recent(limit)
+    pending = [r for r in rows if str(r.get("status") or "") == "pending"]
+    checked = settled = 0
+    for row in pending:
+        legs = row.get("legs") or []
+        if not isinstance(legs, list) or not legs:
+            continue
+        leg_results = []
+        detail = []
+        for leg in legs:
+            mid = str((leg or {}).get("match_id") or "").strip()
+            if not mid:
+                leg_results.append("pending"); continue
+            events, err = gm_apifootball_request("get_events", match_id=mid, timezone="America/Sao_Paulo")
+            ev = events[0] if not err and isinstance(events, list) and events else None
+            result = _gm_daily_evaluate_leg(leg, ev or {})
+            leg_results.append(result)
+            detail.append({"match_id": mid, "result": result, "score": None if not ev else f"{ev.get('match_hometeam_score','')}–{ev.get('match_awayteam_score','')}"})
+        checked += 1
+        if "red" in leg_results:
+            final = "red"
+        elif leg_results and all(x == "green" for x in leg_results):
+            final = "green"
+        elif "pending" in leg_results:
+            continue
+        elif "void" in leg_results:
+            final = "void"
+        else:
+            continue
+        gm_daily_pick_rpc("gm_daily_pick_settle", {
+            "p_pick_date": str(row.get("pick_date")),
+            "p_status": final,
+            "p_result_summary": {"legs": detail, "settled_by_build": GM_BUILD},
+        })
+        settled += 1
+    return {"checked": checked, "settled": settled}
+
+
+def _gm_daily_status_badge(status):
+    return {"green": "🟢 GREEN", "red": "🔴 RED", "void": "⚪ VOID", "pending": "🟡 PENDENTE", "no_pick": "⚫ SEM SELEÇÃO"}.get(str(status), "—")
+
+
+def _gm_daily_bet_type_label(value):
+    return {"simple": "Simples", "double": "Dupla", "triple": "Tripla", "none": "Sem seleção"}.get(str(value), str(value or "—").title())
+
+
+def gm_render_daily_pick_page():
+    st.markdown("## ⭐ Seleção GM do Dia")
+    st.caption("Uma seleção por dia, escolhida entre as 21 competições monitoradas. Faixa-alvo de odd total: 1,90–2,10. Se os critérios não forem atingidos, o GM SCORE não força uma aposta.")
+    try:
+        profile = gm_auth_get_profile()
+    except Exception:
+        profile = None
+    is_admin = (profile or {}).get("role") == "admin"
+
+    if is_admin:
+        try:
+            gm_daily_pick_settle_pending(limit=15)
+        except Exception:
+            pass
+        try:
+            rows_probe = gm_daily_pick_recent(3)
+            today_iso = datetime.now(BRASILIA_TZ).date().isoformat()
+            if not any(str(r.get("pick_date") or "") == today_iso for r in rows_probe):
+                with st.spinner("Selecionando as melhores oportunidades do dia..."):
+                    publish = gm_daily_pick_publish_today(force_refresh=False)
+                if not publish.get("ok") and publish.get("reason") == "source_error":
+                    st.warning("A fonte de odds/probabilidades não respondeu de forma completa. A seleção de hoje ainda não foi publicada.")
+        except Exception as exc:
+            st.info("A estrutura da Seleção GM do Dia ainda precisa ser ativada no Supabase.")
+            st.caption(f"Admin: {type(exc).__name__}")
+
+    try:
+        rows = gm_daily_pick_recent(20)
+    except Exception:
+        st.warning("A Seleção GM do Dia ainda não está ativa nesta instalação.")
+        if is_admin:
+            st.caption("Execute uma única vez o SQL v32 no Supabase e depois recarregue o app.")
+        return
+
+    today = datetime.now(BRASILIA_TZ).date()
+    yesterday = today - timedelta(days=1)
+    by_date = {str(r.get("pick_date")): r for r in rows}
+    today_row = by_date.get(today.isoformat())
+    yesterday_row = by_date.get(yesterday.isoformat())
+
+    if is_admin:
+        a1, a2 = st.columns(2)
+        if a1.button("🔄 Conferir resultados", use_container_width=True, key="gm_daily_pick_settle_now"):
+            try:
+                result = gm_daily_pick_settle_pending(limit=20)
+                st.success(f"Conferência concluída: {result['settled']} seleção(ões) atualizada(s).")
+                st.rerun()
+            except Exception as exc:
+                st.error("Não foi possível conferir os resultados agora.")
+                st.caption(type(exc).__name__)
+        if a2.button("🎯 Gerar seleção de hoje", use_container_width=True, key="gm_daily_pick_generate_now", disabled=bool(today_row)):
+            try:
+                with st.spinner("Analisando jogos, probabilidades e odds..."):
+                    res = gm_daily_pick_publish_today(force_refresh=True)
+                if res.get("ok"):
+                    st.success("Seleção do dia registrada.")
+                    st.rerun()
+                else:
+                    st.warning("Não foi possível registrar a seleção agora.")
+            except Exception as exc:
+                st.error("Falha ao gerar a seleção do dia.")
+                st.caption(type(exc).__name__)
+
+    st.markdown('''
+    <style>
+    .gm-pick-card{background:linear-gradient(145deg,#0d1718,#0b1118);border:1px solid rgba(34,197,94,.62);border-radius:18px;padding:16px;margin:.65rem 0 1rem;box-shadow:0 12px 30px rgba(0,0,0,.18)}
+    .gm-pick-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.gm-pick-title{font-weight:950;font-size:1.1rem;color:#34e681}.gm-pick-odd{font-size:1.6rem;font-weight:950;color:#34e681}.gm-pick-leg{background:#111b25;border:1px solid rgba(148,163,184,.12);border-radius:12px;padding:10px 12px;margin-top:8px}.gm-pick-muted{color:#94a3b8;font-size:.76rem}.gm-pick-market{color:#f8fafc;font-weight:850}.gm-pick-history{display:flex;gap:7px;flex-wrap:wrap;margin-top:8px}.gm-pick-dot{padding:7px 9px;border-radius:10px;background:#101923;border:1px solid rgba(148,163,184,.12);font-size:.75rem;font-weight:800}
+    </style>''', unsafe_allow_html=True)
+
+    st.markdown("### ⭐ Aposta de hoje")
+    if not today_row:
+        st.info("A seleção de hoje ainda está sendo preparada.")
+    elif str(today_row.get("status")) == "no_pick":
+        st.info("🔎 Hoje o GM SCORE não encontrou uma combinação que atingisse os critérios de qualidade e a faixa de odd. Nenhuma aposta foi forçada.")
+    else:
+        legs = today_row.get("legs") or []
+        total_odd = _gm_daily_num(today_row.get("total_odd"))
+        if total_odd is None:
+            total_odd = 0.0
+        card = [f'<div class="gm-pick-card"><div class="gm-pick-head"><div><div class="gm-pick-title">{html.escape(_gm_daily_bet_type_label(today_row.get("bet_type")))}</div><div class="gm-pick-muted">{today:%d/%m/%Y} • {_gm_daily_status_badge(today_row.get("status"))}</div></div><div><div class="gm-pick-muted">ODD TOTAL</div><div class="gm-pick-odd">{total_odd:.2f}</div></div></div>']
+        for leg in legs:
+            game = f"{leg.get('home','')} × {leg.get('away','')}"
+            leg_odd = _gm_daily_num(leg.get("odd")) or 0.0
+            card.append(f'<div class="gm-pick-leg"><div class="gm-pick-market">{html.escape(str(leg.get("market") or ""))} <span style="float:right">{leg_odd:.2f}</span></div><div class="gm-pick-muted">{html.escape(game)} • {html.escape(str(leg.get("competition") or ""))}</div></div>')
+        card.append('</div>')
+        st.markdown("".join(card), unsafe_allow_html=True)
+        st.caption(f"Odd registrada a partir de {today_row.get('bookmaker') or 'mercado pré-jogo'}. Odds podem mudar depois da publicação; confira antes de confirmar a aposta.")
+        direct_url = str(today_row.get("bookmaker_url") or "").strip()
+        if direct_url:
+            st.link_button("🎟️ Abrir aposta pronta", direct_url, use_container_width=True)
+            st.caption("Este botão só aparece quando existir um link direto para a seleção/bilhete. Links genéricos para a página inicial da casa não são exibidos.")
+        else:
+            st.caption("🔗 Sem link direto para a aposta. O GM SCORE não exibe atalhos genéricos para a página inicial da casa.")
+
+    st.markdown("### 📅 Aposta de ontem")
+    if not yesterday_row:
+        st.caption("Ainda não há seleção registrada para ontem.")
+    elif str(yesterday_row.get("status")) == "no_pick":
+        st.markdown("**⚫ Sem seleção**")
+        st.caption("O filtro de qualidade não encontrou entrada adequada nesse dia.")
+    else:
+        yodd = _gm_daily_num(yesterday_row.get("total_odd")) or 0.0
+        st.markdown(f"**{_gm_daily_status_badge(yesterday_row.get('status'))} · {_gm_daily_bet_type_label(yesterday_row.get('bet_type'))} · odd {yodd:.2f}**")
+        for leg in (yesterday_row.get("legs") or []):
+            lodd = _gm_daily_num(leg.get("odd")) or 0.0
+            st.caption(f"⚽ {leg.get('home')} × {leg.get('away')} — {leg.get('market')} @ {lodd:.2f}")
+
+    settled = [r for r in rows if str(r.get("status") or "") in {"green", "red"}][:10]
+    st.markdown("### 📊 Últimos 10 resultados")
+    if not settled:
+        st.caption("O histórico começa a aparecer conforme as primeiras seleções forem encerradas.")
+    else:
+        greens = sum(1 for r in settled if str(r.get("status")) == "green")
+        reds = sum(1 for r in settled if str(r.get("status")) == "red")
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Greens", greens); m2.metric("Reds", reds); m3.metric("Aproveitamento", f"{100*greens/max(1,greens+reds):.0f}%")
+        chips = []
+        for r in settled:
+            dt = str(r.get("pick_date") or "")
+            try: label = datetime.fromisoformat(dt).strftime("%d/%m")
+            except Exception: label = dt[-5:]
+            icon = "🟢" if str(r.get("status")) == "green" else "🔴"
+            chips.append(f'<span class="gm-pick-dot">{icon} {html.escape(label)}</span>')
+        st.markdown('<div class="gm-pick-history">'+''.join(chips)+'</div>', unsafe_allow_html=True)
+
+    with st.expander("ℹ️ Como a Seleção GM funciona"):
+        st.markdown("- Analisa somente competições já auditadas pelo GM SCORE.\n- Cruza probabilidade pré-jogo com odds reais e procura uma odd total entre **1,90 e 2,10**.\n- Prioriza simples; se não houver valor, tenta dupla e depois tripla com pernas mais fortes.\n- Se os critérios não forem atingidos, fica **sem seleção**.\n- O histórico é liquidado pelos resultados oficiais e não é alterado para melhorar retrospectivamente o desempenho.")
+        st.caption("Probabilidades e odds são estimativas/condições pré-jogo, não garantia de retorno. Aposte com responsabilidade.")
+
+
 # Sincronização leve e silenciosa. Em uso normal verifica no máximo 2 pendências
 # a cada 30 minutos por sessão; o administrador pode forçar uma sincronização maior.
 try:
@@ -10459,18 +11067,20 @@ try:
 except Exception:
     pass
 
-# As auditorias ficam disponíveis somente ao administrador autenticado.
-gm_render_apifootball_league_audit()
-gm_render_apifootball_stat_audit()
-gm_render_calibration_dashboard()
+_gm_main_view = str(st.session_state.get("gm_main_view") or "analysis")
 
-# A agenda da barra lateral é renderizada no início da interface.
-# Mantemos apenas o botão de suporte também no final da tela principal.
-
-render_analysis()
+if _gm_main_view == "daily_pick":
+    gm_render_daily_pick_page()
+else:
+    # As auditorias ficam disponíveis somente ao administrador autenticado e
+    # permanecem na tela de análises para não poluir a Seleção do Dia.
+    gm_render_apifootball_league_audit()
+    gm_render_apifootball_stat_audit()
+    gm_render_calibration_dashboard()
+    render_analysis()
 
 st.markdown("---")
 st.link_button("✈️ Suporte pelo Telegram", "https://t.me/suport_gm", use_container_width=True)
 
-st.caption("As chances são estimativas estatísticas da temporada vigente e não garantem resultado. Use como apoio à análise e aposte com responsabilidade.")
+st.caption("As chances são estimativas estatísticas e não garantem resultado. Use como apoio à análise e aposte com responsabilidade.")
 
