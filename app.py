@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-13-v45-agenda-constants-opportunities-ready"
+GM_BUILD = "2026-09-13-v46-fixture-team-resolution"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -8658,6 +8658,7 @@ def _fixture_compare_tokens(name):
         return []
     aliases = {
         "utd": "united",
+        "man": "manchester",
         "intl": "internacional",
         "internazionale": "inter",
         "munchen": "muenchen",
@@ -9547,6 +9548,13 @@ def load_current_season():
 
 
 def resolve_team_name(candidate, teams):
+    """Resolve o nome exibido na agenda para o nome existente na base de análise.
+
+    v46: usa a mesma equivalência canônica adotada pela agenda/deduplicação.
+    Isso impede que nomes oficiais e abreviados (ex.: Manchester United / Man Utd,
+    Coventry City / Coventry) sejam exibidos corretamente mas falhem ao tocar em
+    Analisar. A regra é global e vale para todas as competições suportadas.
+    """
     if candidate in teams:
         return candidate
     if not candidate:
@@ -9555,6 +9563,28 @@ def resolve_team_name(candidate, teams):
     exact = {clean_col(t): t for t in teams}
     if c in exact:
         return exact[c]
+
+    # Primeiro reaproveita a equivalência robusta usada na própria agenda.
+    # É propositalmente executada antes do matching por similaridade para evitar
+    # associações fracas entre clubes diferentes da mesma cidade.
+    if "_fixture_names_equivalent" in globals():
+        equivalent = [t for t in teams if _fixture_names_equivalent(candidate, t)]
+        if len(equivalent) == 1:
+            return equivalent[0]
+        if len(equivalent) > 1:
+            # Em caso de mais de uma possibilidade, escolhe a forma com maior
+            # sobreposição lexical; nunca escolhe apenas pelo primeiro resultado.
+            ck = set(_fixture_compare_tokens(candidate))
+            ranked = []
+            for t in equivalent:
+                tk = set(_fixture_compare_tokens(t))
+                union = ck | tk
+                score = (len(ck & tk) / len(union)) if union else 0.0
+                ranked.append((score, t))
+            ranked.sort(key=lambda x: x[0], reverse=True)
+            if ranked and (len(ranked) == 1 or ranked[0][0] > ranked[1][0]):
+                return ranked[0][1]
+
     c_tokens = set(c.split("_")) - {"fc","cf","ac","sc","ec","club","de","da","do"}
     best, best_score = None, 0.0
     for t in teams:
