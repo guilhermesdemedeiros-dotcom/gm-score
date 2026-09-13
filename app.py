@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-13-v54-bingo-quality-fallback"
+GM_BUILD = "2026-09-13-v55-signup-auth-recovery"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -1116,16 +1116,70 @@ def gm_accept_terms():
 
 
 def gm_auth_sign_up(nome, email, password):
-    """Cadastro com retorno público seguro após a confirmação do e-mail."""
-    client = gm_new_supabase_client()
-    return client.auth.sign_up({
-        "email": str(email).strip().lower(),
-        "password": str(password),
-        "options": {
-            "data": {"nome": str(nome).strip(), "terms_accepted": True},
-            "email_redirect_to": GM_EMAIL_CONFIRM_REDIRECT,
-        },
-    })
+    """Cria conta pelo Auth REST oficial e preserva confirmação por e-mail.
+
+    O retorno/erro é estruturado para a UI distinguir rate limit, cadastro
+    desabilitado, e-mail inválido, usuário existente e indisponibilidade.
+    Nenhuma credencial privilegiada é usada: somente a Publishable Key.
+    """
+    url, key = gm_supabase_config()
+    clean_name = str(nome).strip()
+    clean_email = str(email).strip().lower()
+    raw_password = str(password)
+    if not url or not key:
+        raise RuntimeError("GM_SIGNUP_CONFIG|supabase_not_configured|Configuração do Supabase ausente.")
+
+    try:
+        r = requests.post(
+            f"{url}/auth/v1/signup",
+            params={"redirect_to": GM_EMAIL_CONFIRM_REDIRECT},
+            headers={
+                "apikey": key,
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "email": clean_email,
+                "password": raw_password,
+                "data": {"nome": clean_name, "terms_accepted": True},
+            },
+            timeout=15,
+        )
+    except requests.Timeout as exc:
+        raise RuntimeError("GM_SIGNUP_NETWORK|timeout|Tempo esgotado ao conectar ao serviço de cadastro.") from exc
+    except requests.RequestException as exc:
+        raise RuntimeError(f"GM_SIGNUP_NETWORK|{type(exc).__name__}|Falha de conexão com o serviço de cadastro.") from exc
+
+    try:
+        payload = r.json() if r.content else {}
+    except Exception:
+        payload = {}
+
+    if r.status_code not in (200, 201):
+        code = str(payload.get("error_code") or payload.get("code") or payload.get("error") or "").strip()
+        message = str(
+            payload.get("msg")
+            or payload.get("message")
+            or payload.get("error_description")
+            or payload.get("error")
+            or ""
+        ).strip()
+        raise RuntimeError(f"GM_SIGNUP_HTTP_{r.status_code}|{code}|{message}")
+
+    user = payload.get("user") if isinstance(payload, dict) else None
+    if user is None and isinstance(payload, dict) and payload.get("id"):
+        user = payload
+    if not isinstance(user, dict) or not str(user.get("id") or "").strip():
+        raise RuntimeError("GM_SIGNUP_RESPONSE|invalid_response|O serviço não retornou um usuário válido.")
+
+    # Quando confirmação de e-mail está ativa, o Supabase pode devolver resposta
+    # ofuscada para um e-mail já existente. identities=[] é o sinal seguro para
+    # não anunciar falsamente que uma nova conta foi criada.
+    identities = user.get("identities")
+    if isinstance(identities, list) and len(identities) == 0:
+        raise RuntimeError("GM_SIGNUP_HTTP_422|user_already_exists|User already registered")
+
+    return payload
 
 
 def gm_admin_rpc(function_name, params=None):
@@ -2537,11 +2591,41 @@ def gm_render_signup_form():
             st.info("Após confirmar o e-mail, entre na conta para gerar o checkout individual. Pagamentos válidos serão processados automaticamente.")
             st.link_button("✈️ Falar com o suporte no Telegram", "https://t.me/suport_gm", use_container_width=True)
         except Exception as exc:
-            text = str(exc).lower()
-            if "already registered" in text or "user_already_exists" in text:
+            raw = str(exc)
+            text = raw.lower()
+            if "already registered" in text or "user_already_exists" in text or "email_exists" in text:
                 st.warning("Já existe uma conta com este e-mail. Use a opção Entrar.")
+            elif (
+                "over_email_send_rate_limit" in text
+                or "email_rate_limit" in text
+                or "rate limit" in text
+                or "too many requests" in text
+                or "gm_signup_http_429" in text
+            ):
+                st.warning(
+                    "O serviço de confirmação por e-mail atingiu o limite temporário de envios. "
+                    "Aguarde alguns minutos e tente novamente uma única vez."
+                )
+            elif "signup_disabled" in text or "signups not allowed" in text or "signup is disabled" in text:
+                st.error("O cadastro de novas contas está temporariamente desabilitado. Fale com o suporte.")
+            elif (
+                "email_address_invalid" in text
+                or "invalid email" in text
+                or "email is invalid" in text
+                or "unable to validate email address" in text
+            ):
+                st.warning("O e-mail informado não foi aceito. Confira o endereço e tente novamente.")
+            elif "email_address_not_authorized" in text or "email not authorized" in text:
+                st.warning("Este e-mail não está autorizado para cadastro. Use outro endereço ou fale com o suporte.")
+            elif "weak_password" in text or "password should be" in text or "password is too weak" in text:
+                st.warning("A senha não atende aos requisitos de segurança. Use uma senha mais forte.")
+            elif "gm_signup_network" in text or "timeout" in text or "connection" in text:
+                st.error("Não foi possível conectar ao serviço de cadastro agora. Tente novamente em instantes.")
+            elif "gm_signup_config" in text:
+                st.error("O cadastro está temporariamente indisponível por configuração do sistema. Fale com o suporte.")
             else:
-                st.error("Não foi possível criar a conta agora. Tente novamente ou fale com o suporte.")
+                # Mensagem pública continua segura: não expõe resposta bruta, tokens ou configuração.
+                st.error("Não foi possível criar a conta agora. Tente novamente em alguns minutos ou fale com o suporte.")
 
 
 def gm_render_terms_acceptance(profile):
