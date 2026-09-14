@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-13-v55-signup-auth-recovery"
+GM_BUILD = "2026-09-14-v58-fixture-roster-guard"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -2482,11 +2482,14 @@ def gm_render_match_hero(team_a, team_b, league_name, season_text, probs=None, u
         home = _display_1x2["home"]
         draw = _display_1x2["draw"]
         away = _display_1x2["away"]
+        fair_home = 100.0 / max(min(float(probs.get("home", 0.0)), 99.5), 0.5)
+        fair_draw = 100.0 / max(min(float(probs.get("draw", 0.0)), 99.5), 0.5)
+        fair_away = 100.0 / max(min(float(probs.get("away", 0.0)), 99.5), 0.5)
         probability_html = f"""
           <div class="gm-real-probgrid">
-            <div class="gm-real-probbox"><span>Vitória casa</span><b>{home}%</b></div>
-            <div class="gm-real-probbox"><span>Empate</span><b>{draw}%</b></div>
-            <div class="gm-real-probbox"><span>Vitória fora</span><b>{away}%</b></div>
+            <div class="gm-real-probbox"><span>Vitória casa</span><b>{home}%</b><small>Odd justa {fair_home:.2f}</small></div>
+            <div class="gm-real-probbox"><span>Empate</span><b>{draw}%</b><small>Odd justa {fair_draw:.2f}</small></div>
+            <div class="gm-real-probbox"><span>Vitória fora</span><b>{away}%</b><small>Odd justa {fair_away:.2f}</small></div>
           </div>
           <div class="gm-real-note">Probabilidades estimadas pelo modelo GM SCORE para a partida selecionada — não representam garantia de resultado.</div>
         """
@@ -2503,7 +2506,7 @@ def gm_render_match_hero(team_a, team_b, league_name, season_text, probs=None, u
         .gm-real-meta{{font-size:.76rem;color:#94a3b8;line-height:1.4}}
         .gm-real-probgrid{{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:15px}}
         .gm-real-probbox{{background:rgba(15,23,42,.76);border:1px solid rgba(148,163,184,.20);border-radius:14px;padding:11px;text-align:center}}
-        .gm-real-probbox span{{display:block;font-size:.67rem;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em}}.gm-real-probbox b{{display:block;font-size:1.32rem;margin-top:3px;color:#fff}}
+        .gm-real-probbox span{{display:block;font-size:.67rem;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em}}.gm-real-probbox b{{display:block;font-size:1.32rem;margin-top:3px;color:#fff}}.gm-real-probbox small{{display:block;font-size:.64rem;color:#94a3b8;margin-top:2px;font-weight:600}}
         .gm-real-note{{font-size:.72rem;color:#94a3b8;margin-top:10px;line-height:1.4}}
         @media(max-width:520px){{.gm-real-match{{padding:17px 14px}}.gm-real-probbox{{padding:9px 5px}}.gm-real-probbox b{{font-size:1.12rem}}}}
         </style>
@@ -7152,8 +7155,15 @@ def competition_learning_profile(competition_name, competition_df=None):
 
 
 def render_data_intelligence_status(competition_name, competition_df):
-    """Mostra transparência da base sem alterar o bloco visual de expectativa."""
+    """Calcula o perfil da base e exibe o diagnóstico somente para administrador."""
     profile = competition_learning_profile(competition_name, competition_df)
+    try:
+        _profile = gm_auth_get_profile()
+    except Exception:
+        _profile = None
+    if (_profile or {}).get("role") != "admin":
+        return profile
+
     icon = {"Alta": "🟢", "Média": "🟡", "Cautelosa": "🟠"}.get(profile["confidence"], "⚪")
     with st.expander("🧠 Qualidade e evolução da base GM SCORE", expanded=False):
         c1, c2, c3 = st.columns(3)
@@ -7692,6 +7702,11 @@ def render_core_markets_dashboard(a, b, team_a, team_b, df, probs=None, sample_g
         _gm_market_card("🤝 Ambas marcam", g_status, compact_rows=btts_rows,
                         note="Estimativa derivada das projeções individuais de gols." if g else None)
 
+        posse_a, posse_b = metric_value(a, "Posse (%)"), metric_value(b, "Posse (%)")
+        posse_n = _gm_pair_metric_sample(a, b, ["Posse (%)"], 0)
+        posse_rows = [(team_a, f"{posse_a:.1f}%"), (team_b, f"{posse_b:.1f}%")] if posse_a is not None and posse_b is not None else None
+        _gm_market_card("⚪ Posse de bola", _gm_market_status(sample_games, available=bool(posse_rows), specific_sample=posse_n), compact_rows=posse_rows)
+
     with tabs[1]:
         c = ex.get("Escanteios")
         c_status = _gm_market_status(sample_games, available=bool(c), specific_sample=corner_sample)
@@ -7756,6 +7771,11 @@ def render_core_markets_dashboard(a, b, team_a, team_b, df, probs=None, sample_g
         _gm_market_card("🟨 Ambas as equipes recebem 2+ cartões", c_status, compact_rows=r2,
                         note="Mercado mais exigente; não vira oportunidade apenas por ter média elevada." if c else None)
 
+        falta_a, falta_b = metric_value(a, "Faltas"), metric_value(b, "Faltas")
+        falta_n = _gm_pair_metric_sample(a, b, ["Faltas"], 0)
+        falta_rows = [(team_a, f"{falta_a:.2f}".replace('.', ',')), (team_b, f"{falta_b:.2f}".replace('.', ','))] if falta_a is not None and falta_b is not None else None
+        _gm_market_card("🚫 Faltas por equipe", _gm_market_status(sample_games, available=bool(falta_rows), specific_sample=falta_n), compact_rows=falta_rows)
+
     with tabs[3]:
         s = ex.get("Finalizações")
         s_status = _gm_market_status(sample_games, available=bool(s), specific_sample=shot_sample)
@@ -7795,17 +7815,11 @@ def render_core_markets_dashboard(a, b, team_a, team_b, df, probs=None, sample_g
                   ("Cobertura defensiva insuficiente para separar as equipes com segurança; mercado individual mantido Inconclusivo.")) if t else None,
         )
 
-    with st.expander("➕ Outros dados gerados", expanded=False):
-        extras=[]
-        for metric, emoji in [("Faltas","🚫"),("Posse (%)","⚪"),("Impedimentos","🚩")]:
-            av,bv=metric_value(a,metric),metric_value(b,metric)
-            if av is not None and bv is not None:
-                extras.append((emoji,metric,av,bv))
-        if extras:
-            for emoji,metric,av,bv in extras:
-                st.markdown(f"**{emoji} {metric}** — {team_a}: **{av:.2f}** · {team_b}: **{bv:.2f}**")
-        else:
-            st.caption("Nenhum dado adicional com cobertura suficiente nesta partida.")
+        off_a, off_b = metric_value(a, "Impedimentos"), metric_value(b, "Impedimentos")
+        off_n = _gm_pair_metric_sample(a, b, ["Impedimentos"], 0)
+        off_rows = [(team_a, f"{off_a:.2f}".replace('.', ',')), (team_b, f"{off_b:.2f}".replace('.', ','))] if off_a is not None and off_b is not None else None
+        _gm_market_card("🚩 Impedimentos por equipe", _gm_market_status(sample_games, available=bool(off_rows), specific_sample=off_n), compact_rows=off_rows)
+
     return ex
 
 
@@ -9083,6 +9097,69 @@ def load_apifootball_prediction_fixtures_for_date(target_date, competition=None)
     return fixtures
 
 
+GM_DOMESTIC_ROSTER_GUARD_COMPETITIONS = {
+    "Inglaterra - Premier League", "Espanha - La Liga", "Itália - Serie A",
+    "Alemanha - Bundesliga", "França - Ligue 1", "Portugal - Liga Portugal",
+    "Holanda - Eredivisie", "Escócia - Premiership", "Turquia - Süper Lig",
+    "Brasil - Série A", "Brasil - Série B", "Arábia Saudita - Saudi Pro League",
+    "Estados Unidos - MLS", "Argentina - Liga Profesional", "México - Liga MX",
+    "Colômbia - Primera A",
+}
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def gm_apifootball_current_roster_names(competition):
+    """Obtém o elenco atual da liga pelo league_id auditado; nunca inventa clubes."""
+    league_id = str((GM_APIFOOTBALL_FIXED_LEAGUE_IDS or {}).get(competition) or "").strip()
+    if not league_id:
+        return []
+    try:
+        teams, err = gm_apifootball_league_teams(league_id)
+    except Exception:
+        return []
+    if err or not isinstance(teams, list):
+        return []
+    names = []
+    for item in teams:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("team_name") or "").strip()
+        if name and is_main_senior_team_name(name):
+            names.append(name)
+    return names
+
+
+def gm_fixture_matches_official_league_roster(fixture):
+    """Bloqueia divisões erradas em fontes de fallback sem cortar a fonte oficial.
+
+    Partidas APIfootball já vinculadas ao league_id auditado são aceitas diretamente.
+    Nas demais fontes, validamos as duas equipes contra o elenco atual da mesma liga.
+    Se a API não devolver elenco suficiente, a função falha aberta para não ocultar
+    partidas legítimas por indisponibilidade temporária do provedor.
+    """
+    fixture = fixture or {}
+    competition = str(fixture.get("competition") or "")
+    if competition not in GM_DOMESTIC_ROSTER_GUARD_COMPETITIONS:
+        return True
+    league_id = str((GM_APIFOOTBALL_FIXED_LEAGUE_IDS or {}).get(competition) or "").strip()
+    source = str(fixture.get("source") or "")
+    fixture_league_id = str(fixture.get("league_id") or "").strip()
+    if source.startswith("APIfootball") and league_id and fixture_league_id == league_id:
+        return True
+    roster = gm_apifootball_current_roster_names(competition)
+    minimum = int((MIN_TEAMS or {}).get(competition) or 0)
+    # Exige cobertura razoável antes de usar o elenco como trava.
+    if not roster or (minimum and len(roster) < max(8, int(minimum * 0.70))):
+        return True
+    home = str(fixture.get("home") or "").strip()
+    away = str(fixture.get("away") or "").strip()
+    if not home or not away:
+        return False
+    home_ok = any(_gm_team_name_match(home, team) for team in roster)
+    away_ok = any(_gm_team_name_match(away, team) for team in roster)
+    return bool(home_ok and away_ok)
+
+
 @st.cache_data(ttl=900, show_spinner=False)
 def load_apifootball_fixtures_for_date(target_date):
     """Agenda oficial das 21 competições via APIfootball.
@@ -9352,6 +9429,8 @@ def load_fixtures_for_date(target_date):
     for f in fixtures:
         if not valid_daily_fixture(f) or not fixture_matches_selected_date(f, today):
             continue
+        if not gm_fixture_matches_official_league_roster(f):
+            continue
         comp = f.get("competition")
         ff = dict(f)
         if comp in STRICT_OFFICIAL_ROSTERS:
@@ -9439,6 +9518,8 @@ def load_competition_fixtures_for_date(competition, target_date):
             or not valid_daily_fixture(f)
             or not fixture_matches_selected_date(f, target_date)
         ):
+            continue
+        if not gm_fixture_matches_official_league_roster(f):
             continue
         ff = dict(f)
         if competition in STRICT_OFFICIAL_ROSTERS:
@@ -10214,7 +10295,8 @@ def render_analysis():
     data_learning = render_data_intelligence_status(league_name, df)
 
     if probs:
-        # O 1X2 principal já está no cabeçalho da partida; evitamos repetir os mesmos números.
+        # O 1X2 principal e as odds justas já estão no cabeçalho da partida.
+        # A dupla chance aparece de forma compacta dentro de Mercados Essenciais.
         eval_bits = ["força atual", "potencial ofensivo/defensivo", "forma recente", "nível da liga"]
         if analysis_context and analysis_context.get("h2h_games", 0):
             eval_bits.append("confronto direto histórico verificado")
@@ -10222,33 +10304,10 @@ def render_analysis():
             eval_bits.append("mercado público como validação externa")
         st.caption("📌 Leitura GM SCORE considera " + ", ".join(eval_bits) + ". O favoritismo é uma estimativa do cruzamento dos dados, não uma garantia de resultado.")
 
-        p_1x = max(0.0, min(100.0, float(probs['home']) + float(probs['draw'])))
-        p_x2 = max(0.0, min(100.0, float(probs['draw']) + float(probs['away'])))
-        p_12 = max(0.0, min(100.0, float(probs['home']) + float(probs['away'])))
-        with st.expander("🛡️ Dupla chance — ver cenários"):
-            st.caption("Os cenários abaixo se sobrepõem e, por isso, não devem ser somados entre si.")
-            dc1, dc2, dc3 = st.columns(3)
-            dc1.metric(f"{team_a} ou empate", f"{p_1x:.0f}%")
-            dc2.metric(f"Empate ou {team_b}", f"{p_x2:.0f}%")
-            dc3.metric("Sem empate (12)", f"{p_12:.0f}%")
-
-    if probs:
-        # A odd justa é propriedade do modelo e deve aparecer mesmo quando a
-        # cotação pública não estiver disponível/validada. Mercado é opcional.
+        # Quando existe cotação pública validada, mantemos apenas a leitura de
+        # mercado/edge. A odd justa em si não é repetida em um bloco separado.
         if moneyline:
             render_market_value_panel(team_a, team_b, probs, moneyline)
-        else:
-            with st.expander("🎯 Odds justas GM SCORE"):
-                st.caption("Derivadas das probabilidades finais do modelo (odd justa = 1 ÷ probabilidade). Não representam cotação disponível em casa de apostas.")
-                fair_labels = [("home", f"🏠 {team_a}"), ("draw", "🤝 Empate"), ("away", f"✈️ {team_b}")]
-                fair_cols = st.columns(3)
-                for col, (key, label) in zip(fair_cols, fair_labels):
-                    p_final = max(min(float(probs.get(key, 0.0)), 99.5), 0.5)
-                    fair_odd = 100.0 / p_final
-                    with col:
-                        st.markdown(f"**{label}**")
-                        st.markdown(f"{p_final:.1f}% • **{fair_odd:.2f}**")
-                st.caption("Mercado público 1X2 não confirmado para o evento exato; valor/edge só é calculado quando houver cotação validada.")
 
     expectations = render_match_probability_dashboard(a, b, team_a, team_b, df, probs=probs, sample_games=comp_sample)
 
@@ -10321,15 +10380,20 @@ def render_analysis():
     st.markdown("### 📲 Compartilhar")
     render_share_button(team_a, team_b, league_name, probs, opportunities, expectations, a, b)
 
-    with st.expander("📊 Ver médias usadas na análise"):
-        metric_emojis = {"Gols pró":"⚽","Gols contra":"🥅","Escanteios":"⛳","Amarelos":"🟨","Vermelhos":"🟥","Faltas":"🚫","Finalizações":"🎯","Chutes no alvo":"🥅","Posse (%)":"⚪","Impedimentos":"🚩"}
-        rows=[]
-        for metric in DISPLAY_METRICS:
-            if metric == "Jogos" or metric not in a.index or metric not in b.index: continue
-            av,bv=a[metric],b[metric]
-            if pd.isna(av) and pd.isna(bv): continue
-            rows.append({"Dado":f"{metric_emojis.get(metric,'📌')} {metric}",team_a:"N/D" if pd.isna(av) else round(float(av),2),team_b:"N/D" if pd.isna(bv) else round(float(bv),2)})
-        if rows: st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
+    try:
+        _avg_profile = gm_auth_get_profile()
+    except Exception:
+        _avg_profile = None
+    if (_avg_profile or {}).get("role") == "admin":
+        with st.expander("📊 Ver médias usadas na análise"):
+            metric_emojis = {"Gols pró":"⚽","Gols contra":"🥅","Escanteios":"⛳","Amarelos":"🟨","Vermelhos":"🟥","Faltas":"🚫","Finalizações":"🎯","Chutes no alvo":"🥅","Posse (%)":"⚪","Impedimentos":"🚩"}
+            rows=[]
+            for metric in DISPLAY_METRICS:
+                if metric == "Jogos" or metric not in a.index or metric not in b.index: continue
+                av,bv=a[metric],b[metric]
+                if pd.isna(av) and pd.isna(bv): continue
+                rows.append({"Dado":f"{metric_emojis.get(metric,'📌')} {metric}",team_a:"N/D" if pd.isna(av) else round(float(av),2),team_b:"N/D" if pd.isna(bv) else round(float(bv),2)})
+            if rows: st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
 
 
 
@@ -11185,7 +11249,7 @@ def gm_render_calibration_dashboard():
 
 
 # ============================================================
-# OPORTUNIDADES GM DO DIA — V34
+# OPORTUNIDADES GM DO DIA — V57
 # ============================================================
 # Três faixas independentes, todas construídas com dados/odds pré-jogo reais:
 # 1) Matadeira: faixa mais conservadora, alvo preferencial 1,60–1,85.
@@ -11694,12 +11758,114 @@ def gm_daily_pick_choose(candidates, pick_kind="dica", avoid_matches=None, avoid
     params = {
         "matadeira": (2,6,1.50,1.89),
         "dica": (2,8,1.90,2.10),
-        "bingo": (3,12,3.50,None),
+        "bingo": (4,10,3.50,None),
     }[pick_kind]
     for base in candidate_sets:
         result=beam_combo(base,*params,pick_kind)
         if result is not None: return result
     return None
+
+def gm_daily_pick_candidate_options(candidates, pick_kind="dica", limit=5, history_market_counts=None, history_family_counts=None, history_kind_market_counts=None):
+    """Gera várias opções privadas para avaliação do ADM, sem publicação automática."""
+    base = [dict(c) for c in (candidates or []) if float(c.get("probability") or 0.0) >= 75.0]
+    options = []
+    used_legs = set()
+    seen = set()
+    for _ in range(max(1, min(int(limit), 8))):
+        chosen = gm_daily_pick_choose(
+            base,
+            pick_kind,
+            avoid_matches=set(),
+            avoid_legs=used_legs,
+            history_market_counts=history_market_counts,
+            history_family_counts=history_family_counts,
+            history_kind_market_counts=history_kind_market_counts,
+        )
+        if not chosen:
+            break
+        sig = tuple(sorted((str(x.get("match_id") or ""), str(x.get("market_code") or "")) for x in chosen.get("legs") or []))
+        if not sig or sig in seen:
+            break
+        seen.add(sig)
+        options.append(chosen)
+        used_legs.update(sig)
+    return options
+
+
+def gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=5):
+    """Prepara opções do dia para o ADM sem gravar candidatos em gm_daily_picks."""
+    profile = gm_auth_get_profile(force=True)
+    if (profile or {}).get("role") != "admin":
+        return {"ok": False, "reason": "admin_only"}
+    today = datetime.now(BRASILIA_TZ).date()
+    recent_rows = gm_daily_pick_recent(100)
+    existing_rows = [r for r in recent_rows if str(r.get("pick_date") or "") == today.isoformat()]
+    existing_kinds = {str(r.get("pick_kind") or "dica") for r in existing_rows}
+    missing = [k for k in ("matadeira", "dica", "bingo") if k not in existing_kinds]
+    if not missing:
+        return {"ok": True, "reason": "all_published", "options": {}, "rows": existing_rows}
+    if force_refresh:
+        try:
+            gm_daily_pick_source_payload.clear()
+        except Exception:
+            pass
+    cutoff_at = datetime.now(BRASILIA_TZ) + timedelta(minutes=10)
+    candidates, meta = gm_daily_pick_candidates(today, cutoff_at=cutoff_at)
+    if meta.get("error"):
+        return {"ok": False, "reason": "source_error", "meta": meta}
+    history_market_counts, history_family_counts, history_kind_market_counts = _gm_daily_recent_market_rotation(recent_rows, today)
+    options = {}
+    for kind in missing:
+        options[kind] = gm_daily_pick_candidate_options(
+            candidates,
+            kind,
+            limit=per_kind,
+            history_market_counts=history_market_counts,
+            history_family_counts=history_family_counts,
+            history_kind_market_counts=history_kind_market_counts,
+        )
+    return {"ok": True, "reason": "prepared", "options": options, "meta": meta, "rows": existing_rows}
+
+
+def gm_daily_pick_publish_selected(choice):
+    """Publica somente uma alternativa explicitamente aprovada pelo administrador."""
+    profile = gm_auth_get_profile(force=True)
+    if (profile or {}).get("role") != "admin":
+        return {"ok": False, "reason": "admin_only"}
+    if not isinstance(choice, dict):
+        return {"ok": False, "reason": "invalid_choice"}
+    today = datetime.now(BRASILIA_TZ).date()
+    pick_kind = str(choice.get("pick_kind") or "").strip()
+    if pick_kind not in {"matadeira", "dica", "bingo"}:
+        return {"ok": False, "reason": "invalid_kind"}
+    legs = [dict(x) for x in (choice.get("legs") or []) if isinstance(x, dict)]
+    if not legs or any(float(x.get("probability") or 0.0) < 75.0 for x in legs):
+        return {"ok": False, "reason": "probability_floor"}
+    for row in gm_daily_pick_recent(20):
+        if str(row.get("pick_date") or "") == today.isoformat() and str(row.get("pick_kind") or "dica") == pick_kind:
+            return {"ok": False, "reason": "already_published", "row": row}
+    payload = {
+        "p_pick_date": today.isoformat(),
+        "p_pick_kind": pick_kind,
+        "p_status": "pending",
+        "p_bet_type": str(choice.get("bet_type") or "none"),
+        "p_total_odd": choice.get("total_odd"),
+        "p_bookmaker": choice.get("bookmaker"),
+        "p_bookmaker_url": None,
+        "p_legs": legs,
+        "p_model_meta": {
+            "build": GM_BUILD,
+            "pick_kind": pick_kind,
+            "approval_flow": "admin_manual_v57",
+            "approved_at": datetime.now(BRASILIA_TZ).isoformat(),
+            "model_probability": choice.get("model_probability"),
+            "score": choice.get("score"),
+            **(choice.get("model_meta_bingo") or {}),
+        },
+    }
+    data = gm_daily_pick_rpc("gm_daily_pick_publish_v2", payload)
+    return {"ok": True, "reason": "published", "data": data}
+
 
 def gm_daily_pick_recent(limit=80):
     rows = gm_daily_pick_rpc("gm_daily_pick_recent_v2", {"p_limit": max(1, min(int(limit), 100))}) or []
@@ -11844,52 +12010,114 @@ def _gm_daily_pick_card(row, target_date, pick_kind):
 
 def gm_render_daily_pick_page():
     st.markdown("## ⭐ Oportunidades GM do Dia")
-    st.caption("Três leituras independentes, com diversidade controlada entre resultado, dupla chance e gols em linhas baixas. O motor pode escolher simples, dupla, tripla ou múltipla, sempre com odd real e priorizando probabilidade estimada. Estatísticas de 1T/2T, escanteios, cartões, impedimentos e finalizações reforçam a leitura quando disponíveis, mas não recebem odd inventada.")
+    st.caption("As oportunidades exibidas aos clientes são publicadas somente após aprovação do administrador. O motor prepara várias alternativas com probabilidade estimada mínima de 75% por perna; candidatos não aprovados não entram em resultado, histórico ou aproveitamento.")
     st.markdown('''<div class="gm-risk-rule"><span class="gm-risk-green">QUANTO MAIOR A ODD</span><span class="gm-risk-arrow">→</span><span class="gm-risk-red">MENORES AS CHANCES</span></div>''',unsafe_allow_html=True)
-    try: profile=gm_auth_get_profile()
-    except Exception: profile=None
+    try:
+        profile=gm_auth_get_profile()
+    except Exception:
+        profile=None
     is_admin=(profile or {}).get("role")=="admin"
+
     if is_admin:
-        try: gm_daily_pick_settle_pending(limit=40)
-        except Exception: pass
         try:
-            today_iso=datetime.now(BRASILIA_TZ).date().isoformat(); rows_probe=gm_daily_pick_recent(12); kinds_today={str(r.get("pick_kind") or "dica") for r in rows_probe if str(r.get("pick_date") or "")==today_iso}
-            if kinds_today != {"matadeira","dica","bingo"}:
-                with st.spinner("Selecionando as oportunidades do dia..."): publish=gm_daily_pick_publish_today(force_refresh=False)
-                if not publish.get("ok") and publish.get("reason")=="source_error": st.warning("A fonte de odds/probabilidades não respondeu de forma completa. As oportunidades de hoje ainda não foram fechadas.")
-        except Exception as exc:
-            st.info("A estrutura das Oportunidades GM ainda precisa receber a atualização v34 no Supabase."); st.caption(f"Admin: {type(exc).__name__}")
-    try: rows=gm_daily_pick_recent(100)
+            gm_daily_pick_settle_pending(limit=40)
+        except Exception:
+            pass
+
+    try:
+        rows=gm_daily_pick_recent(100)
     except Exception:
         st.warning("As Oportunidades GM ainda não estão ativas nesta instalação.")
-        if is_admin: st.caption("Execute uma única vez o SQL v34 no Supabase e depois recarregue o app.")
+        if is_admin:
+            st.caption("Confirme que as RPCs v2 das Oportunidades do Dia estão ativas no Supabase.")
         return
+
     today=datetime.now(BRASILIA_TZ).date(); yesterday=today-timedelta(days=1)
     def lookup(day,kind):
         for r in rows:
-            if str(r.get("pick_date") or "")==day.isoformat() and str(r.get("pick_kind") or "dica")==kind: return r
+            if str(r.get("pick_date") or "")==day.isoformat() and str(r.get("pick_kind") or "dica")==kind:
+                return r
         return None
+
     if is_admin:
-        a1,a2=st.columns(2)
-        if a1.button("🔄 Conferir resultados",use_container_width=True,key="gm_daily_pick_settle_now"):
-            try: result=gm_daily_pick_settle_pending(limit=60); st.success(f"Conferência concluída: {result['settled']} seleção(ões) atualizada(s)."); st.rerun()
-            except Exception as exc: st.error("Não foi possível conferir os resultados agora."); st.caption(type(exc).__name__)
-        has_all_today=all(lookup(today,k) is not None for k in ("matadeira","dica","bingo"))
-        if a2.button("🎯 Gerar oportunidades de hoje",use_container_width=True,key="gm_daily_pick_generate_now",disabled=has_all_today):
+        st.markdown("### 🧑‍💼 Aprovação do administrador")
+        st.caption("Estas opções são privadas. Nada abaixo fica visível aos clientes até você tocar em **Aprovar e publicar**.")
+        cache_key=f"gm_daily_admin_options_{today.isoformat()}"
+        if cache_key not in st.session_state:
             try:
-                with st.spinner("Analisando jogos, probabilidades e odds..."): res=gm_daily_pick_publish_today(force_refresh=True)
-                if res.get("ok"): st.success("Oportunidades do dia registradas."); st.rerun()
-                else: st.warning("Não foi possível registrar as oportunidades agora.")
-            except Exception as exc: st.error("Falha ao gerar as oportunidades do dia."); st.caption(type(exc).__name__)
+                with st.spinner("Preparando opções para avaliação do ADM..."):
+                    st.session_state[cache_key]=gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=5)
+            except Exception as exc:
+                st.session_state[cache_key]={"ok":False,"reason":type(exc).__name__}
+
+        a1,a2=st.columns(2)
+        if a1.button("🔄 Atualizar opções para aprovação",use_container_width=True,key="gm_daily_pick_refresh_candidates"):
+            try:
+                with st.spinner("Atualizando odds e probabilidades..."):
+                    st.session_state[cache_key]=gm_daily_pick_prepare_admin_options(force_refresh=True, per_kind=5)
+                st.rerun()
+            except Exception as exc:
+                st.error("Não foi possível atualizar as opções agora."); st.caption(type(exc).__name__)
+        if a2.button("✅ Conferir resultados publicados",use_container_width=True,key="gm_daily_pick_settle_now"):
+            try:
+                result=gm_daily_pick_settle_pending(limit=60)
+                st.success(f"Conferência concluída: {result['settled']} seleção(ões) atualizada(s).")
+                st.rerun()
+            except Exception as exc:
+                st.error("Não foi possível conferir os resultados agora."); st.caption(type(exc).__name__)
+
+        prepared=st.session_state.get(cache_key) or {}
+        if not prepared.get("ok"):
+            if prepared.get("reason")=="source_error":
+                st.warning("A fonte de odds/probabilidades não respondeu de forma completa. Tente atualizar novamente.")
+            else:
+                st.info("As opções privadas ainda não puderam ser preparadas.")
+        else:
+            option_map=prepared.get("options") or {}
+            for kind in ("matadeira","dica","bingo"):
+                if lookup(today,kind) is not None:
+                    st.success(f"{GM_DAILY_PICK_PROFILES[kind]['label']} já aprovada e publicada hoje.")
+                    continue
+                opts=option_map.get(kind) or []
+                with st.expander(f"{GM_DAILY_PICK_PROFILES[kind]['label']} — {len(opts)} opção(ões) para avaliar",expanded=(kind=="matadeira")):
+                    if not opts:
+                        st.caption("Nenhuma alternativa atingiu os filtros mínimos nesta atualização.")
+                    for idx,opt in enumerate(opts,1):
+                        legs=_gm_daily_sort_legs(opt.get("legs") or [])
+                        total_odd=_gm_daily_num(opt.get("total_odd")) or 0.0
+                        model_prob=_gm_daily_num(opt.get("model_probability")) or 0.0
+                        st.markdown(f"**Opção {idx} · {_gm_daily_bet_type_label(opt.get('bet_type'),len(legs))} · odd {total_odd:.2f}**")
+                        st.caption(f"Probabilidade combinada estimada: {model_prob:.1f}% · todas as pernas ≥ 75%")
+                        for leg in legs:
+                            st.markdown(f"- **{leg.get('market')}** @ {(_gm_daily_num(leg.get('odd')) or 0):.2f} · {(_gm_daily_num(leg.get('probability')) or 0):.0f}% · {leg.get('home')} × {leg.get('away')} · {_gm_daily_time_label(leg.get('time'))}")
+                        if st.button("✅ Aprovar e publicar",use_container_width=True,type="primary",key=f"gm_approve_{kind}_{idx}"):
+                            try:
+                                result=gm_daily_pick_publish_selected(opt)
+                                if result.get("ok"):
+                                    st.session_state.pop(cache_key,None)
+                                    st.success("Oportunidade aprovada e publicada para os clientes.")
+                                    st.rerun()
+                                elif result.get("reason")=="already_published":
+                                    st.warning("Já existe uma oportunidade oficial publicada para esta categoria hoje.")
+                                else:
+                                    st.warning("Esta alternativa não pôde ser publicada pelos critérios de segurança.")
+                            except Exception as exc:
+                                st.error("Falha ao publicar a oportunidade aprovada."); st.caption(type(exc).__name__)
+                        if idx < len(opts):
+                            st.divider()
+
     st.markdown('''
     <style>
     .gm-risk-rule{display:flex;justify-content:center;align-items:center;gap:12px;flex-wrap:wrap;background:#0e151d;border:1px solid rgba(148,163,184,.20);border-radius:14px;padding:12px 14px;margin:.55rem 0 1rem;font-weight:950;letter-spacing:.02em;text-align:center}.gm-risk-green{color:#34e681}.gm-risk-red{color:#fb7185}.gm-risk-arrow{color:#94a3b8}
     .gm-pick-card{background:linear-gradient(145deg,#0d1718,#0b1118);border:1px solid rgba(34,197,94,.62);border-radius:18px;padding:16px;margin:.65rem 0 1rem;box-shadow:0 12px 30px rgba(0,0,0,.18)}.gm-kind-matadeira{border-color:rgba(52,230,129,.72)}.gm-kind-dica{border-color:rgba(250,204,21,.55)}.gm-kind-bingo{border-color:rgba(251,113,133,.58)}
     .gm-pick-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.gm-pick-title{font-weight:950;font-size:1.1rem;color:#34e681}.gm-pick-odd{font-size:1.6rem;font-weight:950;color:#34e681}.gm-pick-leg{background:#111b25;border:1px solid rgba(148,163,184,.12);border-radius:12px;padding:10px 12px;margin-top:8px}.gm-pick-muted{color:#94a3b8;font-size:.76rem}.gm-pick-market{color:#f8fafc;font-weight:850}.gm-pick-history{display:flex;gap:7px;flex-wrap:wrap;margin-top:8px}.gm-pick-dot{padding:7px 9px;border-radius:10px;background:#101923;border:1px solid rgba(148,163,184,.12);font-size:.75rem;font-weight:800}
     </style>''',unsafe_allow_html=True)
-    st.markdown("### 📅 Hoje")
+
+    st.markdown("### 📅 Hoje — publicado para clientes")
     for kind in ("matadeira","dica","bingo"):
-        _gm_daily_pick_card(lookup(today,kind),today,kind); st.caption(GM_DAILY_PICK_PROFILES[kind]["description"])
+        _gm_daily_pick_card(lookup(today,kind),today,kind)
+        st.caption(GM_DAILY_PICK_PROFILES[kind]["description"])
+
     with st.expander("📆 Ontem — seleções e resultados",expanded=False):
         found=False
         for kind in ("matadeira","dica","bingo"):
@@ -11900,6 +12128,7 @@ def gm_render_daily_pick_page():
             odd=_gm_daily_num(row.get("total_odd")) or 0.0; st.markdown(f"**{label} · {_gm_daily_status_badge(row.get('status'))} · odd {odd:.2f}**")
             for leg in _gm_daily_sort_legs(row.get("legs") or []): st.caption(f"🕒 {_gm_daily_time_label(leg.get('time'))} • ⚽ {leg.get('home')} × {leg.get('away')} — {leg.get('market')} @ {(_gm_daily_num(leg.get('odd')) or 0.0):.2f}")
         if not found: st.caption("Ainda não há oportunidades registradas para ontem.")
+
     standard=[r for r in rows if str(r.get("pick_kind") or "dica") in {"matadeira","dica"} and str(r.get("status") or "") in {"green","red"}]
     unique_dates=[]
     for r in standard:
@@ -11907,8 +12136,10 @@ def gm_render_daily_pick_page():
         if d and d not in unique_dates: unique_dates.append(d)
         if len(unique_dates)>=10: break
     perf=[r for r in standard if str(r.get("pick_date") or "") in set(unique_dates)]
-    st.markdown("### 📊 Aproveitamento — últimos 10 dias"); st.caption("Calculado somente com **Matadeira + Dica do Dia**. O **Bingo não entra** nesta porcentagem.")
-    if not perf: st.caption("O histórico começa a aparecer conforme Matadeira e Dica forem encerradas.")
+    st.markdown("### 📊 Aproveitamento — últimos 10 dias")
+    st.caption("Calculado somente com **Matadeira + Dica do Dia oficialmente aprovadas e publicadas**. O **Bingo não entra** nesta porcentagem.")
+    if not perf:
+        st.caption("O histórico começa a aparecer conforme Matadeira e Dica publicadas forem encerradas.")
     else:
         greens=sum(1 for r in perf if str(r.get("status"))=="green"); reds=sum(1 for r in perf if str(r.get("status"))=="red"); m1,m2,m3=st.columns(3); m1.metric("Greens",greens); m2.metric("Reds",reds); m3.metric("Aproveitamento",f"{100*greens/max(1,greens+reds):.0f}%")
         chips=[]
@@ -11918,9 +12149,10 @@ def gm_render_daily_pick_page():
             except Exception: label=d[-5:]
             icon="🟢" if dr==0 and dg>0 else "🔴" if dg==0 and dr>0 else "🟡"; chips.append(f'<span class="gm-pick-dot">{icon} {html.escape(label)} · {dg}/{dg+dr}</span>')
         st.markdown('<div class="gm-pick-history">'+''.join(chips)+'</div>',unsafe_allow_html=True)
+
     with st.expander("ℹ️ Como funcionam as oportunidades"):
-        st.markdown("- **Matadeira:** odd entre **1,50 e 1,89**, podendo usar **2 a 6 jogos** de alta recorrência para evitar uma perna isolada arriscada.\n- **Dica do Dia:** odd alvo entre **1,90 e 2,10**, podendo usar **2 a 8 jogos** quando as melhores seleções do dia estiverem em odds baixas.\n- **Bingo:** múltipla de **3 a 12 jogos**, com odd mínima **3,50**. Cada perna parte de odd **1,15** e não há teto rígido; quanto maior a odd, maior a exigência de probabilidade. Em grades fortes o motor aceita risco moderado para evitar ficar sem Bingo, mantendo diversidade como preferência forte sem transformá-la em trava.\n- Mercados diretamente elegíveis com **odd real**: **vitória da casa/visitante, 1X, X2, 12, Mais de 0,5 e Mais de 1,5 gols**. O motor limita concentração em um único tipo de mercado para buscar diversidade sem reduzir o critério de qualidade.\n- Estatísticas de **1º/2º tempo, escanteios, cartões, impedimentos e finalizações** podem reforçar a leitura quando houver cobertura, mas o GM SCORE não inventa odd: só entram como perna quando existir preço pré-jogo real disponível.\n- A nota prioriza **probabilidade estimada por perna**, aceita pequenas diferenças de margem da casa em odds muito baixas e prefere alguma diversidade de mercados quando a segurança for equivalente.\n- Se uma faixa realmente não atingir os critérios, aparece **sem seleção**.\n- O aproveitamento oficial soma apenas Matadeira + Dica; o Bingo é exibido separadamente.")
-        st.caption("Quanto maior a odd, menor tende a ser a probabilidade conjunta. Odds e probabilidades são condições/estimativas pré-jogo, não garantia de retorno. Aposte com responsabilidade.")
+        st.markdown("- O motor prepara várias alternativas privadas para o **ADM** e exige **75%+ em cada perna** da vitrine.\n- **Só a alternativa aprovada** é gravada em `gm_daily_picks` e mostrada aos clientes.\n- **Matadeira:** odd oficial entre **1,50 e 1,89**.\n- **Dica do Dia:** odd oficial entre **1,90 e 2,10**.\n- **Bingo:** múltipla de **4 a 10 jogos**, odd mínima **3,50**.\n- Mercados elegíveis continuam exigindo **odd pré-jogo real**; o GM SCORE não inventa cotação.\n- O aproveitamento oficial usa apenas Matadeira + Dica publicadas; o Bingo permanece separado.")
+        st.caption("Quanto maior a odd, menor tende a ser a probabilidade conjunta. Odds e probabilidades são estimativas pré-jogo, não garantia de retorno. Aposte com responsabilidade.")
 
 
 def gm_render_main_shortcuts():
