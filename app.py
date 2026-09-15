@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-15-v85-games-analysis-top-visible-return"
+GM_BUILD = "2026-09-15-v86-games-fixed-return-context"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -13054,7 +13054,9 @@ def gm_render_games_return_button():
         label = str(st.session_state.get("gm_games_return_label") or _agenda_date_label(return_date))
     except Exception:
         label = "data consultada"
-    if st.button(f"← Voltar aos jogos · {label}", use_container_width=True, key="gm_back_to_games_context"):
+    # V86: botão contextual pequeno e fixo. Só existe enquanto a análise atual
+    # tiver sido aberta pela agenda Jogos do Dia.
+    if st.button(f"‹ Jogos · {label}", use_container_width=False, key="gm_back_to_games_context"):
         st.session_state["gm_games_page_date"] = return_date
         st.session_state["gm_games_restore_index"] = st.session_state.get("gm_games_return_index")
         st.session_state["gm_main_view"] = "games"
@@ -13095,10 +13097,14 @@ button[kind="secondary"]:has(+ div),button[kind="primary"]:has(+ div){}
 .gm-mobile-nav-icon{display:block!important;font-size:1.08rem!important;line-height:1.05!important;height:1.18rem!important}.gm-mobile-nav-label{display:block!important;font-size:.62rem!important;font-weight:800!important;line-height:1!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important;max-width:100%!important}
 .gm-game-card{padding:11px 12px;border-radius:14px;margin-bottom:.18rem}.gm-game-time{min-width:48px}.gm-game-teams{font-size:.94rem}
 .gm-account-vip-meta{display:flex;align-items:center;justify-content:space-between;gap:.6rem;flex-wrap:wrap;margin:.15rem 0 .75rem}.gm-account-days{display:inline-flex;align-items:center;padding:.38rem .7rem;border-radius:999px;border:1px solid rgba(52,230,129,.38);background:rgba(52,230,129,.10);color:#34e681;font-size:.78rem;font-weight:850}.gm-account-expiry{color:#9aa7b6;font-size:.76rem}
+/* V86: retorno persistente da análise para a agenda que a originou. */
+div[class*="st-key-gm_back_to_games_context"]{position:fixed!important;left:.72rem!important;top:4.15rem!important;z-index:100001!important;width:auto!important;margin:0!important}
+div[class*="st-key-gm_back_to_games_context"] [data-testid="stButton"]{width:auto!important;margin:0!important}
+div[class*="st-key-gm_back_to_games_context"] button{width:auto!important;min-height:2.15rem!important;padding:.28rem .68rem!important;border-radius:999px!important;border:1px solid rgba(52,230,129,.46)!important;background:rgba(7,16,15,.94)!important;color:#eafbf2!important;font-size:.74rem!important;font-weight:850!important;box-shadow:0 5px 16px rgba(0,0,0,.28)!important;backdrop-filter:blur(8px)!important}
 div[class*="st-key-gm_games_analyze_"] [data-testid="stButton"]{display:flex!important;justify-content:flex-end!important;margin:0 0 .72rem!important}
 div[class*="st-key-gm_games_analyze_"] button{width:auto!important;min-width:7.8rem!important;min-height:2.35rem!important;padding:.3rem .85rem!important;border-radius:10px!important;border:1px solid rgba(52,230,129,.48)!important;background:rgba(52,230,129,.10)!important;color:#34e681!important;font-size:.82rem!important;font-weight:850!important}
 }
-@media (min-width:769px){div[class*="st-key-gm_games_analyze_"] [data-testid="stButton"]{display:flex;justify-content:flex-end;margin-bottom:.65rem}div[class*="st-key-gm_games_analyze_"] button{width:auto!important;min-width:8.5rem}}
+@media (min-width:769px){div[class*="st-key-gm_games_analyze_"] [data-testid="stButton"]{display:flex;justify-content:flex-end;margin-bottom:.65rem}div[class*="st-key-gm_games_analyze_"] button{width:auto!important;min-width:8.5rem}div[class*="st-key-gm_back_to_games_context"]{position:fixed!important;left:1rem!important;top:4.4rem!important;z-index:100001!important;width:auto!important}div[class*="st-key-gm_back_to_games_context"] button{width:auto!important;min-height:2.2rem!important;padding:.3rem .72rem!important;border-radius:999px!important;border:1px solid rgba(52,230,129,.46)!important;background:rgba(7,16,15,.94)!important;color:#eafbf2!important;font-size:.76rem!important;font-weight:850!important;box-shadow:0 5px 16px rgba(0,0,0,.28)!important}}
 </style>
 """, unsafe_allow_html=True)
 
@@ -13123,6 +13129,13 @@ _gm_requested_view = str(st.query_params.get("gm_view", "") or "").strip()
 if _gm_requested_view in {"analysis", "games", "daily_pick", "news", "account"}:
     st.session_state["gm_main_view"] = _gm_requested_view
 _gm_main_view = str(st.session_state.get("gm_main_view") or "analysis")
+# V86: o retorno contextual pertence somente ao fluxo Jogos → Análise. Ao navegar
+# deliberadamente para outra área, encerra a sessão de retorno e o botão desaparece.
+if _gm_main_view not in {"analysis", "games"}:
+    st.session_state.pop("gm_analysis_origin", None)
+    st.session_state.pop("gm_games_return_date", None)
+    st.session_state.pop("gm_games_return_label", None)
+    st.session_state.pop("gm_games_return_index", None)
 gm_render_app_navigation(_gm_profile_after_gate)
 
 if _gm_main_view == "daily_pick":
