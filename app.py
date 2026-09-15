@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-15-v66-app-layout-admin-dashboard"
+GM_BUILD = "2026-09-15-v67-mobile-nav-compact-actions"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -12482,7 +12482,7 @@ def gm_render_games_page():
         comp = str(f.get("competition") or ""); home = str(f.get("home") or ""); away = str(f.get("away") or ""); tm = str(f.get("time") or "—")
         card_html = '<div class="gm-game-card"><div class="gm-game-time">{}</div><div class="gm-game-body"><div class="gm-game-league">{}</div><div class="gm-game-teams">{} <span>×</span> {}</div></div></div>'.format(html.escape(tm), html.escape(competition_display_name(comp)), html.escape(home), html.escape(away))
         st.markdown(card_html, unsafe_allow_html=True)
-        if st.button("📊 Analisar", use_container_width=True, key=f"gm_games_analyze_{target_date}_{i}_{clean_col(comp)}"):
+        if st.button("📊 Analisar", use_container_width=False, key=f"gm_games_analyze_{target_date}_{i}_{clean_col(comp)}"):
             st.session_state["_goto_comp"] = comp; st.session_state["_goto_home"] = home; st.session_state["_goto_away"] = away; st.session_state["gm_main_view"] = "analysis"; st.rerun()
 
 
@@ -12572,7 +12572,23 @@ st.markdown(r"""
 <style>
 .gm-game-card{display:flex;align-items:center;gap:14px;background:linear-gradient(145deg,#0d1718,#0b1118);border:1px solid rgba(52,230,129,.22);border-radius:16px;padding:13px 14px;margin:.55rem 0 .28rem}.gm-game-time{font-weight:950;color:#34e681;min-width:54px;font-size:1rem}.gm-game-body{min-width:0;flex:1}.gm-game-league{color:#94a3b8;font-size:.76rem;font-weight:750}.gm-game-teams{color:#f8fafc;font-size:1rem;font-weight:900;margin-top:2px}.gm-game-teams span{color:#34e681;padding:0 4px}
 .st-key-gm_mobile_bottom_nav{display:none}
-@media (max-width:768px){[data-testid="stSidebar"]{display:none!important}[data-testid="collapsedControl"]{display:none!important}[data-testid="stAppViewContainer"] .main .block-container{padding-bottom:6.8rem!important}.st-key-gm_mobile_bottom_nav{display:block!important;position:fixed!important;left:0;right:0;bottom:0;z-index:99999;background:rgba(7,16,15,.97);border-top:1px solid rgba(52,230,129,.24);padding:.42rem .3rem calc(.42rem + env(safe-area-inset-bottom));box-shadow:0 -12px 30px rgba(0,0,0,.34)}.st-key-gm_mobile_bottom_nav [data-testid="stHorizontalBlock"]{gap:.18rem!important}.st-key-gm_mobile_bottom_nav [data-testid="column"]{min-width:0!important;width:20%!important;flex:1 1 20%!important}.st-key-gm_mobile_bottom_nav button{min-height:3.35rem!important;padding:.3rem .12rem!important;border-radius:12px!important;font-size:.69rem!important;line-height:1.05!important;white-space:normal!important}.gm-game-card{padding:11px 12px;border-radius:14px}.gm-game-time{min-width:48px}.gm-game-teams{font-size:.94rem}}
+button[kind="secondary"]:has(+ div),button[kind="primary"]:has(+ div){}
+@media (max-width:768px){
+[data-testid="stSidebar"]{display:none!important}
+[data-testid="collapsedControl"]{display:none!important}
+[data-testid="stAppViewContainer"] .main .block-container{padding-bottom:5.4rem!important}
+.st-key-gm_mobile_bottom_nav{display:block!important;position:fixed!important;left:0!important;right:0!important;bottom:0!important;z-index:99999!important;background:rgba(7,16,15,.985)!important;border-top:1px solid rgba(52,230,129,.22)!important;padding:.34rem .28rem calc(.34rem + env(safe-area-inset-bottom))!important;box-shadow:0 -8px 24px rgba(0,0,0,.38)!important}
+.st-key-gm_mobile_bottom_nav [data-testid="stHorizontalBlock"]{display:flex!important;flex-direction:row!important;flex-wrap:nowrap!important;align-items:stretch!important;gap:.12rem!important;width:100%!important}
+.st-key-gm_mobile_bottom_nav [data-testid="column"]{display:block!important;min-width:0!important;width:20%!important;max-width:20%!important;flex:0 0 20%!important;padding:0!important}
+.st-key-gm_mobile_bottom_nav [data-testid="stButton"]{width:100%!important;margin:0!important}
+.st-key-gm_mobile_bottom_nav button{width:100%!important;min-width:0!important;min-height:3.55rem!important;height:3.55rem!important;padding:.22rem .04rem!important;border:0!important;border-radius:10px!important;background:transparent!important;box-shadow:none!important;font-size:.66rem!important;font-weight:750!important;line-height:1.05!important;white-space:normal!important;color:#aab6c4!important}
+.st-key-gm_mobile_bottom_nav button[kind="primary"]{background:rgba(52,230,129,.10)!important;color:#34e681!important}
+.st-key-gm_mobile_bottom_nav button:hover{background:rgba(52,230,129,.08)!important;color:#eafbf2!important}
+.gm-game-card{padding:11px 12px;border-radius:14px;margin-bottom:.18rem}.gm-game-time{min-width:48px}.gm-game-teams{font-size:.94rem}
+div[class*="st-key-gm_games_analyze_"] [data-testid="stButton"]{display:flex!important;justify-content:flex-end!important;margin:0 0 .72rem!important}
+div[class*="st-key-gm_games_analyze_"] button{width:auto!important;min-width:7.8rem!important;min-height:2.35rem!important;padding:.3rem .85rem!important;border-radius:10px!important;border:1px solid rgba(52,230,129,.48)!important;background:rgba(52,230,129,.10)!important;color:#34e681!important;font-size:.82rem!important;font-weight:850!important}
+}
+@media (min-width:769px){div[class*="st-key-gm_games_analyze_"] [data-testid="stButton"]{display:flex;justify-content:flex-end;margin-bottom:.65rem}div[class*="st-key-gm_games_analyze_"] button{width:auto!important;min-width:8.5rem}}
 </style>
 """, unsafe_allow_html=True)
 
