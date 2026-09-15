@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-15-v78-admin-vip-mirror-central"
+GM_BUILD = "2026-09-15-v79-news-order-unread-badge"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -12601,6 +12601,19 @@ def gm_render_news_page():
         return
     hidden = set(st.session_state.get("gm_news_hidden_session", []))
     rows = [r for r in rows if str((r or {}).get("id") or "") not in hidden]
+
+    # V79: ordem visual sempre da publicação mais recente para a mais antiga,
+    # independentemente da ordenação devolvida pela RPC gm_list_news.
+    def _gm_news_sort_key(row):
+        try:
+            ts = pd.to_datetime((row or {}).get("published_at"), utc=True, errors="coerce")
+            if pd.isna(ts):
+                return float("-inf")
+            return float(ts.timestamp())
+        except Exception:
+            return float("-inf")
+
+    rows = sorted(rows, key=_gm_news_sort_key, reverse=True)
     if not rows:
         st.info("Nenhuma novidade publicada no momento.")
         return
@@ -12702,6 +12715,12 @@ def gm_render_app_navigation(profile):
         ("news", "📰", "Novidades"),
         ("account", "👤", "Conta"),
     ]
+    # V79: contador de novidades não lidas no próprio item da navegação,
+    # no padrão de badge usado por apps de mensagens/e-mail.
+    try:
+        news_unread = gm_unread_news_count()
+    except Exception:
+        news_unread = 0
     try:
         base_params = dict(st.query_params)
     except Exception:
@@ -12712,9 +12731,13 @@ def gm_render_app_navigation(profile):
         params["gm_view"] = view
         href = "?" + urlencode(params, doseq=True)
         active = " gm-mobile-nav-active" if current == view else ""
+        badge_html = ""
+        if view == "news" and news_unread > 0:
+            badge_text = "99+" if news_unread > 99 else str(news_unread)
+            badge_html = f'<span class="gm-mobile-nav-badge">{badge_text}</span>'
         links.append(
             f'<a class="gm-mobile-nav-item{active}" href="{html.escape(href, quote=True)}" target="_self" '
-            f'aria-label="{html.escape(label)}"><span class="gm-mobile-nav-icon">{icon}</span>'
+            f'aria-label="{html.escape(label)}"><span class="gm-mobile-nav-icon-wrap"><span class="gm-mobile-nav-icon">{icon}</span>{badge_html}</span>'
             f'<span class="gm-mobile-nav-label">{html.escape(label)}</span></a>'
         )
     st.markdown('<nav class="gm-mobile-nav-shell">' + "".join(links) + '</nav>', unsafe_allow_html=True)
@@ -12744,6 +12767,8 @@ button[kind="secondary"]:has(+ div),button[kind="primary"]:has(+ div){}
 .gm-mobile-nav-item:visited{color:#9aa7b6!important}.gm-mobile-nav-item:hover{color:#eafbf2!important;background:rgba(52,230,129,.06)!important;text-decoration:none!important}
 .gm-mobile-nav-item.gm-mobile-nav-active{color:#34e681!important;background:rgba(52,230,129,.10)!important}
 .gm-mobile-nav-item.gm-mobile-nav-active:visited{color:#34e681!important}
+.gm-mobile-nav-icon-wrap{position:relative;display:inline-flex;align-items:center;justify-content:center}
+.gm-mobile-nav-badge{position:absolute;top:-7px;right:-12px;min-width:18px;height:18px;padding:0 4px;border-radius:999px;background:#ff3b4d;color:#fff;font-size:.60rem;font-weight:950;line-height:18px;text-align:center;box-shadow:0 0 0 2px rgba(6,16,13,.96);z-index:2}
 .gm-mobile-nav-icon{display:block!important;font-size:1.08rem!important;line-height:1.05!important;height:1.18rem!important}.gm-mobile-nav-label{display:block!important;font-size:.62rem!important;font-weight:800!important;line-height:1!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important;max-width:100%!important}
 .gm-game-card{padding:11px 12px;border-radius:14px;margin-bottom:.18rem}.gm-game-time{min-width:48px}.gm-game-teams{font-size:.94rem}
 .gm-account-vip-meta{display:flex;align-items:center;justify-content:space-between;gap:.6rem;flex-wrap:wrap;margin:.15rem 0 .75rem}.gm-account-days{display:inline-flex;align-items:center;padding:.38rem .7rem;border-radius:999px;border:1px solid rgba(52,230,129,.38);background:rgba(52,230,129,.10);color:#34e681;font-size:.78rem;font-weight:850}.gm-account-expiry{color:#9aa7b6;font-size:.76rem}
