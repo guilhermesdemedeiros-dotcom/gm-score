@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-15-v74-daily-pick-bet-links"
+GM_BUILD = "2026-09-15-v75-admin-central-isolation-fix"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -3239,13 +3239,8 @@ if _gm_profile_after_gate and st.session_state.get("gm_news_open"):
 if _gm_profile_after_gate and st.session_state.get("gm_reviews_open"):
     gm_render_review_dialog(_gm_profile_after_gate)
 
-if (
-    _gm_profile_after_gate
-    and _gm_profile_after_gate.get("role") == "admin"
-    and st.session_state.get("gm_admin_panel_open")
-):
-    gm_render_admin_panel(_gm_profile_after_gate)
-    st.stop()
+# V75: a Central Administrativa é renderizada somente após todas as funções e constantes do app estarem definidas.
+# Isso evita dependências prematuras (ex.: BRASILIA_TZ e funções das Dicas do Dia).
 
 if _gm_profile_after_gate and _gm_profile_after_gate.get("role") == "admin":
     gm_render_auth_test_console()
@@ -12408,9 +12403,9 @@ def gm_render_daily_pick_page():
         profile=gm_auth_get_profile()
     except Exception:
         profile=None
-    is_admin=(profile or {}).get("role")=="admin"
-    if is_admin:
-        st.caption("Área de aprovação: o motor prepara alternativas privadas com probabilidade estimada mínima de 75% por perna. Só as aprovadas são publicadas e entram no histórico oficial.")
+    # V75: esta aba é sempre a experiência do cliente, inclusive quando acessada pelo ADM.
+    # Toda função administrativa fica isolada na Central Administrativa, aberta pela aba Conta.
+    is_admin=False
     st.markdown('''<div class="gm-risk-rule"><span class="gm-risk-green">QUANTO MAIOR A ODD</span><span class="gm-risk-arrow">→</span><span class="gm-risk-red">MENORES AS CHANCES</span></div>''',unsafe_allow_html=True)
 
     if is_admin:
@@ -12783,6 +12778,16 @@ try:
     gm_calibration_auto_settle(limit=2, force=False)
 except Exception:
     pass
+
+# V75: Central Administrativa isolada. O ADM navega pelo mesmo app dos clientes e
+# entra nesta central exclusivamente por Minha Conta → Abrir Central Administrativa.
+if (
+    _gm_profile_after_gate
+    and _gm_profile_after_gate.get("role") == "admin"
+    and st.session_state.get("gm_admin_panel_open")
+):
+    gm_render_admin_panel(_gm_profile_after_gate)
+    st.stop()
 
 _gm_requested_view = str(st.query_params.get("gm_view", "") or "").strip()
 if _gm_requested_view in {"analysis", "games", "daily_pick", "news", "account"}:
