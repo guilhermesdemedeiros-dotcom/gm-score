@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-15-v80-news-unread-priority"
+GM_BUILD = "2026-09-15-v81-games-return-context"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -9876,6 +9876,20 @@ if "_goto_comp" in st.session_state:
     st.session_state.league_widget = st.session_state.selected_competition
     st.session_state.main_league_widget = st.session_state.selected_competition
 
+    # V81: quando a análise veio da agenda geral de Jogos, preserva também a data.
+    # Isso mantém o contexto completo Data → Competição → Partida e permite voltar
+    # exatamente para o mesmo dia sem uma nova navegação manual.
+    _goto_date = st.session_state.pop("_goto_date", None)
+    if _goto_date is not None:
+        try:
+            if isinstance(_goto_date, str):
+                _goto_date = datetime.fromisoformat(_goto_date).date()
+            _goto_comp_key = clean_col(str(st.session_state.selected_competition))
+            st.session_state[f"main_fixture_date_{_goto_comp_key}"] = _goto_date
+            st.session_state[f"main_match_choice_{_goto_comp_key}"] = "📅 Jogos da data"
+        except Exception:
+            pass
+
 if "selected_competition" not in st.session_state:
     st.session_state.selected_competition = list(COMPETITIONS.keys())[0]
 if "selected_home" not in st.session_state:
@@ -12587,7 +12601,21 @@ def gm_render_games_page():
         card_html = '<div class="gm-game-card"><div class="gm-game-time">{}</div><div class="gm-game-body"><div class="gm-game-league">{}</div><div class="gm-game-teams">{} <span>×</span> {}</div></div></div>'.format(html.escape(tm), html.escape(competition_display_name(comp)), html.escape(home), html.escape(away))
         st.markdown(card_html, unsafe_allow_html=True)
         if st.button("📊 Analisar", use_container_width=False, key=f"gm_games_analyze_{target_date}_{i}_{clean_col(comp)}"):
-            st.session_state["_goto_comp"] = comp; st.session_state["_goto_home"] = home; st.session_state["_goto_away"] = away; st.session_state["gm_main_view"] = "analysis"; st.rerun()
+            # V81: transporta o contexto completo do jogo e neutraliza o gm_view=games
+            # que pode permanecer na URL da navegação mobile. Sem isso, o query param
+            # poderia devolver o usuário imediatamente à agenda após o rerun.
+            st.session_state["_goto_comp"] = comp
+            st.session_state["_goto_home"] = home
+            st.session_state["_goto_away"] = away
+            st.session_state["_goto_date"] = target_date
+            st.session_state["gm_games_return_date"] = target_date
+            st.session_state["gm_games_return_label"] = _agenda_date_label(target_date)
+            st.session_state["gm_main_view"] = "analysis"
+            try:
+                st.query_params["gm_view"] = "analysis"
+            except Exception:
+                pass
+            st.rerun()
 
 
 def gm_render_news_page():
@@ -12743,6 +12771,25 @@ def gm_render_app_navigation(profile):
     st.markdown('<nav class="gm-mobile-nav-shell">' + "".join(links) + '</nav>', unsafe_allow_html=True)
 
 
+def gm_render_games_return_button():
+    """Retorno rápido à mesma data da agenda após abrir uma análise pela aba Jogos."""
+    return_date = st.session_state.get("gm_games_return_date")
+    if return_date is None:
+        return
+    try:
+        label = str(st.session_state.get("gm_games_return_label") or _agenda_date_label(return_date))
+    except Exception:
+        label = "data consultada"
+    if st.button(f"← Voltar aos jogos · {label}", use_container_width=True, key="gm_back_to_games_context"):
+        st.session_state["gm_games_page_date"] = return_date
+        st.session_state["gm_main_view"] = "games"
+        try:
+            st.query_params["gm_view"] = "games"
+        except Exception:
+            pass
+        st.rerun()
+
+
 def gm_render_main_shortcuts():
     st.markdown("### 🚀 Acesso rápido")
     c1,c2=st.columns(2)
@@ -12812,6 +12859,8 @@ elif _gm_main_view == "account":
     gm_render_account_page(_gm_profile_after_gate)
 else:
     # Início preserva integralmente o seletor Data → Liga → Partida/equipes e o motor atual.
+    # Se a análise foi aberta pela agenda geral, oferece retorno imediato ao mesmo dia.
+    gm_render_games_return_button()
     gm_render_main_shortcuts()
     gm_render_apifootball_league_audit()
     gm_render_apifootball_stat_audit()
