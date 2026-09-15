@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-15-v87-team-badges"
+GM_BUILD = "2026-09-15-v88-share-highlights-team-badges"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -10445,224 +10445,105 @@ def gm_share_market_sections(team_a, team_b, probs, expectations, a, b, df, samp
     return sections
 
 
+def _gm_share_highlights(team_a, team_b, probs, opportunities, expectations):
+    """V88: resumo visual, sem alterar probabilidades do motor. Somente 80%–95%."""
+    items = []
+
+    def add(label, chance, base=""):
+        try:
+            pct = float(chance)
+        except Exception:
+            return
+        if 80.0 <= pct <= 95.0:
+            items.append({"label": str(label), "chance": pct, "base": str(base or "")})
+
+    # Oportunidades já aprovadas pelo próprio motor/evidência.
+    for x in (opportunities or []):
+        add(x.get("Mercado"), x.get("Chance"), x.get("Base"))
+
+    # Resultado e dupla chance usam as probabilidades finais já calculadas.
+    if probs:
+        ph, pd, pa = float(probs.get("home", 0)), float(probs.get("draw", 0)), float(probs.get("away", 0))
+        add(f"Vitória {team_a}", ph, "Resultado")
+        add("Empate", pd, "Resultado")
+        add(f"Vitória {team_b}", pa, "Resultado")
+        add(f"{team_a} ou empate (1X)", ph + pd, "Dupla chance")
+        add(f"Empate ou {team_b} (X2)", pd + pa, "Dupla chance")
+        add("Sem empate (12)", ph + pa, "Dupla chance")
+
+    # Linhas derivadas das mesmas projeções exibidas no painel.
+    ex = expectations or {}
+    for key, emoji, lines in (
+        ("Gols", "⚽", [0.5, 1.5, 2.5, 3.5, 4.5]),
+        ("Escanteios", "⛳", [6.5, 7.5, 8.5, 9.5, 10.5]),
+        ("Cartões", "🟨", [2.5, 3.5, 4.5, 5.5, 6.5]),
+    ):
+        item = ex.get(key)
+        if not item:
+            continue
+        for line, pct in _gm_pct_lines(float(item.get("total") or 0), lines):
+            add(f"{emoji} Mais de {str(line).replace('.', ',')} {key.lower()}", pct, key)
+
+    # Remove duplicatas textuais, mantém a maior chance e limita a cinco destaques.
+    unique = {}
+    for item in items:
+        k = _gm_api_norm(item["label"])
+        if not k:
+            continue
+        if k not in unique or item["chance"] > unique[k]["chance"]:
+            unique[k] = item
+    return sorted(unique.values(), key=lambda x: (-x["chance"], x["label"]))[:5]
+
+
 def render_share_button(team_a, team_b, league_name, probs, opportunities, expectations, a, b, df=None, sample_games=0):
-    """Gera uma arte HD no tema escuro do GM SCORE com os mesmos dados exibidos na análise."""
+    """V88: arte compacta com brasões e até 5 probabilidades entre 80% e 95%."""
     import json as _json
 
-    result_lines = []
-    if probs:
-        _display_1x2 = _gm_display_1x2_percentages(probs)
-        result_lines = [
-            [f"Vitória {team_a}", f"{_display_1x2['home']}%", float(probs['home'])],
-            ["Empate", f"{_display_1x2['draw']}%", float(probs['draw'])],
-            [f"Vitória {team_b}", f"{_display_1x2['away']}%", float(probs['away'])],
-        ]
+    highlights = _gm_share_highlights(team_a, team_b, probs, opportunities, expectations)
+    home_visual = gm_team_visual(team_a, league_name)
+    away_visual = gm_team_visual(team_b, league_name)
+    data = _json.dumps({
+        "title": f"{team_a} × {team_b}",
+        "league": competition_display_name(league_name),
+        "home": team_a,
+        "away": team_b,
+        "home_logo": str(home_visual.get("badge") or ""),
+        "away_logo": str(away_visual.get("badge") or ""),
+        "highlights": highlights,
+    }, ensure_ascii=False)
 
-    exp_lines = []
-    for key, label in [
-        ("Gols", "Gols esperados"),
-        ("Escanteios", "Escanteios esperados"),
-        ("Cartões", "Cartões esperados"),
-        ("Finalizações", "Finalizações esperadas"),
-        ("Chutes no alvo", "Chutes no alvo"),
-    ]:
-        item = (expectations or {}).get(key)
-        if item:
-            exp_lines.append([label, f"{item['total']:.1f}"])
-
-    opp_lines = [
-        [x["Mercado"], f"{x['Chance']:.0f}%", float(x["Chance"]), x["Base"]]
-        for x in (opportunities or [])
-    ]
-
-
-    competition = competition_display_name(league_name)
-    data = _json.dumps(
-        {
-            "title": f"{team_a} × {team_b}",
-            "league": competition,
-            "results": result_lines,
-            "expectations": exp_lines,
-            "opportunities": opp_lines,
-            "market_sections": gm_share_market_sections(team_a, team_b, probs, expectations, a, b, df, sample_games),
-            "home": team_a,
-            "away": team_b,
-        },
-        ensure_ascii=False,
-    )
-
+    st.caption("A imagem compartilhada resume até 5 destaques com probabilidade estimada entre 80% e 95%.")
     html = f"""
     <div style='font-family:Inter,Arial,sans-serif'>
-      <button id='shareBtn' style='width:100%;padding:12px 16px;border:1px solid #1fe387;border-radius:12px;background:linear-gradient(90deg,#08783f,#10b865);color:white;font-size:16px;font-weight:800;cursor:pointer'>📲 Compartilhar análise em HD</button>
+      <button id='shareBtn' style='width:100%;padding:12px 16px;border:1px solid #1fe387;border-radius:12px;background:linear-gradient(90deg,#08783f,#10b865);color:white;font-size:16px;font-weight:800;cursor:pointer'>📲 Compartilhar resumo GM SCORE</button>
       <div id='msg' style='font-size:12px;color:#94a3b8;margin-top:6px'></div>
     </div>
     <script>
     const D = {data};
-    const C = {{
-      bg:'#07100f', panel:'#0b1716', panel2:'#101a23', border:'#176e4b',
-      green:'#24e58b', green2:'#10b981', text:'#f8fafc', muted:'#a8b4c2',
-      soft:'#263845', line:'#1d3132', white:'#ffffff'
-    }};
-
-    function rr(ctx,x,y,w,h,r,fill,stroke=null,lw=1) {{
-      const q=Math.min(r,w/2,h/2); ctx.beginPath();
-      ctx.moveTo(x+q,y);ctx.arcTo(x+w,y,x+w,y+h,q);ctx.arcTo(x+w,y+h,x,y+h,q);
-      ctx.arcTo(x,y+h,x,y,q);ctx.arcTo(x,y,x+w,y,q);ctx.closePath();
-      if(fill){{ctx.fillStyle=fill;ctx.fill();}} if(stroke){{ctx.lineWidth=lw;ctx.strokeStyle=stroke;ctx.stroke();}}
-    }}
-    function text(ctx,value,x,y,size=30,weight='400',color=C.text,align='left') {{
-      ctx.save(); ctx.fillStyle=color; ctx.font=`${{weight}} ${{size}}px Arial`; ctx.textAlign=align; ctx.textBaseline='alphabetic'; ctx.fillText(String(value),x,y); ctx.restore();
-    }}
-    function outlinedText(ctx,value,x,y,size=30,weight='900',fill='#ffffff',align='left',stroke='#05070a',strokeWidth=8) {{
-      ctx.save(); ctx.font=`${{weight}} ${{size}}px Arial`; ctx.textAlign=align; ctx.textBaseline='alphabetic';
-      ctx.lineJoin='round'; ctx.miterLimit=2; ctx.lineWidth=strokeWidth; ctx.strokeStyle=stroke; ctx.strokeText(String(value),x,y);
-      ctx.fillStyle=fill; ctx.fillText(String(value),x,y); ctx.restore();
-    }}
-    function wrap(ctx,value,x,y,maxWidth,lineHeight,size=24,weight='400',color=C.muted) {{
-      ctx.save(); ctx.fillStyle=color; ctx.font=`${{weight}} ${{size}}px Arial`; ctx.textAlign='left';
-      const words=String(value).split(' '); let line='', yy=y;
-      for(const w of words) {{ const t=line+w+' '; if(ctx.measureText(t).width>maxWidth && line) {{ctx.fillText(line.trim(),x,yy); yy+=lineHeight; line=w+' ';}} else line=t; }}
-      if(line) ctx.fillText(line.trim(),x,yy); ctx.restore(); return yy;
-    }}
-    function watermark(ctx,w,h) {{
-      ctx.save(); ctx.globalAlpha=.055; ctx.fillStyle='#9ef8ca'; ctx.font='700 34px Arial'; ctx.translate(w/2,h/2); ctx.rotate(-Math.PI/7);
-      for(let yy=-h;yy<h;yy+=150) for(let xx=-w;xx<w;xx+=300) ctx.fillText('GM SCORE',xx,yy);
-      ctx.restore();
-    }}
-    function sectionTitle(ctx,label,y) {{
-      text(ctx,label,70,y,30,'800',C.text); return y+34;
-    }}
-    function bar(ctx,x,y,w,h,pct,color=C.green) {{
-      rr(ctx,x,y,w,h,h/2,C.soft); rr(ctx,x,y,Math.max(h,Math.min(w,w*pct/100)),h,h/2,color);
-    }}
-
-    document.getElementById('shareBtn').onclick = async () => {{
-      const oppH = D.opportunities.length*88;
-      const marketH = (D.market_sections||[]).reduce((sum,s)=>sum + 78 + s.rows.length*34, 0);
-      const expRows = Math.ceil(D.expectations.length/5);
-      const logicalW=1080;
-      const logicalH=Math.max(1850, 1300 + oppH + marketH + expRows*120);
-      const scale=2; // arquivo final com 2160 px de largura para preservar alta resolução
-      const canvas=document.createElement('canvas');
-      canvas.width=logicalW*scale; canvas.height=logicalH*scale;
-      const ctx=canvas.getContext('2d'); ctx.scale(scale,scale);
-      ctx.fillStyle=C.bg; ctx.fillRect(0,0,logicalW,logicalH); watermark(ctx,logicalW,logicalH);
-
-      let y=74;
-
-      // Cabeçalho: mede a largura real de "GM " antes de desenhar "SCORE".
-      ctx.save();
-      ctx.font='900 50px Arial';
-      const gmWidth=ctx.measureText('GM ').width;
-      ctx.restore();
-
-      outlinedText(ctx,'GM ',70,y,50,'900','#ffffff','left','#05070a',10);
-      outlinedText(ctx,'SCORE',70+gmWidth,y,50,'900',C.green,'left','#05070a',10);
-
-      text(ctx,'DADOS QUE',1015,y-22,16,'800',C.text,'right');
-      text(ctx,'TRANSFORMAM',1015,y-2,16,'800',C.text,'right');
-      text(ctx,'DADOS EM',1015,y+18,16,'800',C.text,'right');
-      text(ctx,'DECISÕES',1015,y+38,16,'800',C.green,'right');
-
-      y+=38;
-      text(ctx,'ANÁLISE • ESTATÍSTICAS • PROBABILIDADES',70,y,19,'700','#93e9bc');
-      y+=64;
-
-      rr(ctx,60,y,960,190,22,'rgba(8,35,30,.94)',C.border,2);
-      text(ctx,D.league.toUpperCase(),88,y+40,22,'800',C.text);
-      text(ctx,D.title,992,y+40,18,'700',C.muted,'right');
-      text(ctx,D.home,235,y+112,32,'800',C.text,'center');
-      text(ctx,'VS',540,y+108,40,'900',C.green,'center');
-      text(ctx,D.away,845,y+112,32,'800',C.text,'center');
-      text(ctx,'PARTIDA ANALISADA',540,y+150,17,'700',C.muted,'center');
-      y+=220;
-
-      if(D.results.length) {{
-        rr(ctx,60,y,960,185,20,C.panel,C.border,2);
-        sectionTitle(ctx,'🏆 Chance de resultado',y+40);
-        const bw=270, gap=25, sx=88;
-        D.results.forEach((r,i)=>{{
-          const x=sx+i*(bw+gap); text(ctx,r[1],x+bw/2,y+92,34,'900',C.text,'center');
-          bar(ctx,x,y+111,bw,15,r[2],i===1?'#dce6eb':C.green);
-          text(ctx,r[0],x+bw/2,y+155,18,'600',C.muted,'center');
-        }});
-        y+=210;
-      }}
-
-      if(D.expectations.length) {{
-        rr(ctx,60,y,960,170,20,C.panel,C.border,2);
-        sectionTitle(ctx,'📈 Expectativa da partida',y+40);
-        const n=D.expectations.length, gap=12, w=(900-(n-1)*gap)/n;
-        D.expectations.forEach((r,i)=>{{
-          const x=90+i*(w+gap); rr(ctx,x,y+62,w,82,14,C.panel2,'#274039',1);
-          text(ctx,r[1],x+w/2,y+99,30,'900',C.text,'center');
-          wrap(ctx,r[0],x+12,y+127,w-24,18,15,'600',C.muted);
-        }});
-        y+=195;
-      }}
-
-      if((D.market_sections||[]).length) {{
-        sectionTitle(ctx,'🧭 Mercados essenciais GM SCORE',y+34); y+=58;
-        D.market_sections.forEach((sec)=>{{
-          const h=58 + sec.rows.length*34;
-          rr(ctx,60,y,960,h,18,C.panel,C.border,1);
-          text(ctx,sec.title,88,y+34,22,'800',C.text);
-          let sy=y+64;
-          sec.rows.forEach((r)=>{{
-            text(ctx,r[0],92,sy,17,'500',C.muted);
-            text(ctx,r[1],988,sy,18,'800',C.text,'right');
-            sy+=34;
-          }});
-          y+=h+14;
-        }});
-        y+=8;
-      }}
-
-      if(D.opportunities.length) {{
-        const h=76 + D.opportunities.length*86;
-        rr(ctx,60,y,960,h,20,C.panel,C.border,2);
-        sectionTitle(ctx,'⭐ Melhores linhas para observar',y+40);
-        let oy=y+72;
-        D.opportunities.forEach((r)=>{{
-          text(ctx,r[0],88,oy+24,22,'800',C.text);
-          wrap(ctx,r[3],88,oy+49,500,20,15,'400',C.muted);
-          bar(ctx,610,oy+16,265,14,r[2],C.green);
-          text(ctx,r[1],960,oy+30,25,'900',C.green,'right');
-          oy+=86;
-        }});
-        y+=h+25;
-      }}
-
-
-      text(ctx,'Estimativas estatísticas; não garantem resultado.',65,logicalH-66,17,'400',C.muted);
-
-      ctx.save();
-      ctx.font='900 23px Arial';
-      const scoreW=ctx.measureText('SCORE').width;
-      ctx.restore();
-      outlinedText(ctx,'SCORE',1015,logicalH-66,23,'900',C.green,'right','#05070a',5);
-      outlinedText(ctx,'GM ',1015-scoreW,logicalH-66,23,'900','#ffffff','right','#05070a',5);
-
-      canvas.toBlob(async blob=>{{
-        const safe=(D.home+'-x-'+D.away).replace(/[^a-z0-9áàãâéêíóôõúç_-]+/gi,'-').replace(/-+/g,'-');
-        const file=new File([blob],`GM-SCORE-${{safe}}-HD.jpg`,{{type:'image/jpeg'}});
-        const shareText=`GM SCORE — ${{D.league}} — ${{D.title}}`;
-        try {{
-          if(navigator.share && (!navigator.canShare || navigator.canShare({{files:[file]}}))) {{
-            await navigator.share({{title:`${{D.league}} — ${{D.title}}`,text:shareText,files:[file]}});
-            document.getElementById('msg').innerText='Imagem HD criada. Escolha o WhatsApp para compartilhar.';
-          }} else {{
-            const dl=document.createElement('a'); dl.href=URL.createObjectURL(blob); dl.download=file.name; dl.click();
-            document.getElementById('msg').innerText='Imagem HD salva para compartilhamento.';
-          }}
-        }} catch(e) {{
-          if(e.name!=='AbortError') document.getElementById('msg').innerText='Não foi possível abrir o compartilhamento neste navegador.';
-        }}
-      }},'image/jpeg',0.98);
+    const C={{bg:'#07100f',panel:'#0b1716',border:'#176e4b',green:'#24e58b',text:'#f8fafc',muted:'#a8b4c2',soft:'#263845'}};
+    function rr(c,x,y,w,h,r,fill,stroke=null,lw=1){{const q=Math.min(r,w/2,h/2);c.beginPath();c.moveTo(x+q,y);c.arcTo(x+w,y,x+w,y+h,q);c.arcTo(x+w,y+h,x,y+h,q);c.arcTo(x,y+h,x,y,q);c.arcTo(x,y,x+w,y,q);c.closePath();if(fill){{c.fillStyle=fill;c.fill();}}if(stroke){{c.lineWidth=lw;c.strokeStyle=stroke;c.stroke();}}}}
+    function tx(c,v,x,y,size=28,weight='400',color=C.text,align='left'){{c.save();c.fillStyle=color;c.font=`${{weight}} ${{size}}px Arial`;c.textAlign=align;c.textBaseline='alphabetic';c.fillText(String(v),x,y);c.restore();}}
+    function wrap(c,v,x,y,maxW,lineH,size=22,weight='700',color=C.text){{c.save();c.fillStyle=color;c.font=`${{weight}} ${{size}}px Arial`;let line='',yy=y;for(const w of String(v).split(' ')){{const t=line+w+' ';if(c.measureText(t).width>maxW&&line){{c.fillText(line.trim(),x,yy);yy+=lineH;line=w+' ';}}else line=t;}}if(line)c.fillText(line.trim(),x,yy);c.restore();return yy;}}
+    function loadImg(src){{return new Promise(resolve=>{{if(!src)return resolve(null);const i=new Image();i.crossOrigin='anonymous';i.onload=()=>resolve(i);i.onerror=()=>resolve(null);i.src=src;}});}}
+    document.getElementById('shareBtn').onclick=async()=>{{
+      const W=1080,H=1180+Math.max(0,D.highlights.length-3)*95,scale=2;
+      const canvas=document.createElement('canvas');canvas.width=W*scale;canvas.height=H*scale;const c=canvas.getContext('2d');c.scale(scale,scale);c.fillStyle=C.bg;c.fillRect(0,0,W,H);
+      tx(c,'GM',70,82,50,'900','#fff');tx(c,'SCORE',165,82,50,'900',C.green);tx(c,'ANÁLISE • ESTATÍSTICAS • PROBABILIDADES',70,118,18,'700','#93e9bc');
+      rr(c,60,160,960,260,22,C.panel,C.border,2);tx(c,D.league.toUpperCase(),540,205,20,'800',C.muted,'center');
+      const [hi,ai]=await Promise.all([loadImg(D.home_logo),loadImg(D.away_logo)]);
+      if(hi)c.drawImage(hi,175,238,92,92);else tx(c,'⚽',220,305,58,'700',C.muted,'center');
+      if(ai)c.drawImage(ai,813,238,92,92);else tx(c,'⚽',858,305,58,'700',C.muted,'center');
+      tx(c,D.home,300,365,27,'800',C.text,'center');tx(c,'×',540,315,40,'900',C.green,'center');tx(c,D.away,780,365,27,'800',C.text,'center');
+      let y=475;tx(c,'DESTAQUES DA ANÁLISE',70,y,29,'900',C.text);tx(c,'80%–95%',1010,y,22,'900',C.green,'right');y+=35;
+      if(!D.highlights.length){{rr(c,60,y,960,150,18,C.panel,C.border,1);tx(c,'Nenhum mercado ficou na faixa de 80% a 95%.',540,y+72,24,'700',C.muted,'center');tx(c,'A análise completa continua disponível no GM SCORE.',540,y+108,18,'500',C.muted,'center');y+=180;}}
+      else{{D.highlights.forEach((r,idx)=>{{rr(c,60,y,960,112,18,C.panel,C.border,1);wrap(c,r.label,88,y+42,690,28,23,'800',C.text);if(r.base)tx(c,r.base,88,y+84,16,'600',C.muted);tx(c,`${{Math.round(r.chance)}}%`,980,y+66,34,'900',C.green,'right');y+=128;}});}}
+      tx(c,'Probabilidades estatísticas. Não representam garantia de resultado.',70,H-78,17,'500',C.muted);tx(c,'GM SCORE',1010,H-78,22,'900',C.green,'right');
+      canvas.toBlob(async blob=>{{const safe=(D.home+'-x-'+D.away).replace(/[^a-z0-9áàãâéêíóôõúç_-]+/gi,'-').replace(/-+/g,'-');const file=new File([blob],`GM-SCORE-${{safe}}.jpg`,{{type:'image/jpeg'}});try{{if(navigator.share&&(!navigator.canShare||navigator.canShare({{files:[file]}}))){{await navigator.share({{title:`GM SCORE — ${{D.title}}`,text:`GM SCORE — ${{D.league}} — ${{D.title}}`,files:[file]}});document.getElementById('msg').innerText='Resumo criado. Escolha onde compartilhar.';}}else{{const dl=document.createElement('a');dl.href=URL.createObjectURL(blob);dl.download=file.name;dl.click();document.getElementById('msg').innerText='Resumo criado e salvo.';}}}}catch(e){{document.getElementById('msg').innerText='Compartilhamento cancelado.';}}}},'image/jpeg',.94);
     }};
     </script>
     """
-    components.html(html, height=82)
+    components.html(html, height=74)
+
 
 def render_analysis():
     global period
@@ -12681,10 +12562,8 @@ def _gm_daily_pick_card(row, target_date, pick_kind, is_admin=False):
         prob=_gm_daily_num(leg.get("probability")); conf=str(leg.get("confidence_band") or (_gm_daily_confidence_band(prob) if prob is not None else ""))
         prob_txt=(f" • prob. estimada {prob:.0f}% • {html.escape(conf)}" if prob is not None else "")
         leg_comp = str(leg.get("competition") or "")
-        home_visual = gm_team_badge_html(str(leg.get("home") or ""), leg_comp, leg.get("home_team_id"), size=19)
-        away_visual = gm_team_badge_html(str(leg.get("away") or ""), leg_comp, leg.get("away_team_id"), size=19)
-        game_html = f'<span style="display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap">{home_visual}<span style="opacity:.45">×</span>{away_visual}</span>'
-        card.append(f'<div class="gm-pick-leg"><div class="gm-pick-market">{html.escape(str(leg.get("market") or ""))}<span style="float:right">{leg_odd:.2f}</span></div><div class="gm-pick-muted" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">🕒 {html.escape(time_label)} • {game_html} • {html.escape(leg_comp)}{prob_txt}</div></div>')
+        game_text = f"{str(leg.get('home') or '')} × {str(leg.get('away') or '')}"
+        card.append(f'<div class="gm-pick-leg"><div class="gm-pick-market">{html.escape(str(leg.get("market") or ""))}<span style="float:right">{leg_odd:.2f}</span></div><div class="gm-pick-muted">🕒 {html.escape(time_label)} • ⚽ {html.escape(game_text)} • {html.escape(leg_comp)}{prob_txt}</div></div>')
     card.append('</div>'); st.markdown("".join(card),unsafe_allow_html=True)
     direct_url = _gm_daily_row_direct_bet_url(row)
     if direct_url:
@@ -12873,9 +12752,7 @@ def gm_render_games_page():
     st.markdown(f"### {len(safe)} jogo(s) · {_agenda_date_label(target_date)}")
     for i, f in enumerate(safe):
         comp = str(f.get("competition") or ""); home = str(f.get("home") or ""); away = str(f.get("away") or ""); tm = str(f.get("time") or "—")
-        home_visual = gm_team_badge_html(home, comp, f.get("home_team_id"), size=25)
-        away_visual = gm_team_badge_html(away, comp, f.get("away_team_id"), size=25)
-        card_html = '<div id="gm-game-{}" class="gm-game-card"><div class="gm-game-time">{}</div><div class="gm-game-body"><div class="gm-game-league">{}</div><div class="gm-game-teams" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">{} <span style="opacity:.45">×</span> {}</div></div></div>'.format(i, html.escape(tm), html.escape(competition_display_name(comp)), home_visual, away_visual)
+        card_html = '<div id="gm-game-{}" class="gm-game-card"><div class="gm-game-time">{}</div><div class="gm-game-body"><div class="gm-game-league">{}</div><div class="gm-game-teams">{} × {}</div></div></div>'.format(i, html.escape(tm), html.escape(competition_display_name(comp)), html.escape(home), html.escape(away))
         st.markdown(card_html, unsafe_allow_html=True)
         if st.button("📊 Analisar", use_container_width=False, key=f"gm_games_analyze_{target_date}_{i}_{clean_col(comp)}"):
             # V81: transporta o contexto completo do jogo e neutraliza o gm_view=games
