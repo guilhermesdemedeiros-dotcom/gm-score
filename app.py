@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-14-v58-fixture-roster-guard"
+GM_BUILD = "2026-09-14-v59-daily-tips-ui"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -7649,7 +7649,7 @@ def render_core_markets_dashboard(a, b, team_a, team_b, df, probs=None, sample_g
     shot_sample = _gm_pair_metric_sample(a, b, ["Finalizações"], sample_games)
     sot_sample = _gm_pair_metric_sample(a, b, ["Chutes no alvo"], sample_games)
 
-    tabs = st.tabs(["⚽ Resultado e gols", "⛳ Escanteios", "🟨 Cartões", "🎯 Finalizações"])
+    tabs = st.tabs(["⚽ Resultado e gols", "⛳ Escanteios", "🟨 Cartões", "🎯 Finalizações", "📊 Outros dados"])
 
     with tabs[0]:
         status_result = _gm_market_status(sample_games, available=bool(probs), specific_sample=goal_sample)
@@ -7701,11 +7701,6 @@ def render_core_markets_dashboard(a, b, team_a, team_b, df, probs=None, sample_g
             btts_rows=None
         _gm_market_card("🤝 Ambas marcam", g_status, compact_rows=btts_rows,
                         note="Estimativa derivada das projeções individuais de gols." if g else None)
-
-        posse_a, posse_b = metric_value(a, "Posse (%)"), metric_value(b, "Posse (%)")
-        posse_n = _gm_pair_metric_sample(a, b, ["Posse (%)"], 0)
-        posse_rows = [(team_a, f"{posse_a:.1f}%"), (team_b, f"{posse_b:.1f}%")] if posse_a is not None and posse_b is not None else None
-        _gm_market_card("⚪ Posse de bola", _gm_market_status(sample_games, available=bool(posse_rows), specific_sample=posse_n), compact_rows=posse_rows)
 
     with tabs[1]:
         c = ex.get("Escanteios")
@@ -7771,11 +7766,6 @@ def render_core_markets_dashboard(a, b, team_a, team_b, df, probs=None, sample_g
         _gm_market_card("🟨 Ambas as equipes recebem 2+ cartões", c_status, compact_rows=r2,
                         note="Mercado mais exigente; não vira oportunidade apenas por ter média elevada." if c else None)
 
-        falta_a, falta_b = metric_value(a, "Faltas"), metric_value(b, "Faltas")
-        falta_n = _gm_pair_metric_sample(a, b, ["Faltas"], 0)
-        falta_rows = [(team_a, f"{falta_a:.2f}".replace('.', ',')), (team_b, f"{falta_b:.2f}".replace('.', ','))] if falta_a is not None and falta_b is not None else None
-        _gm_market_card("🚫 Faltas por equipe", _gm_market_status(sample_games, available=bool(falta_rows), specific_sample=falta_n), compact_rows=falta_rows)
-
     with tabs[3]:
         s = ex.get("Finalizações")
         s_status = _gm_market_status(sample_games, available=bool(s), specific_sample=shot_sample)
@@ -7814,6 +7804,18 @@ def render_core_markets_dashboard(a, b, team_a, team_b, df, probs=None, sample_g
                   if individual_sot_ok else
                   ("Cobertura defensiva insuficiente para separar as equipes com segurança; mercado individual mantido Inconclusivo.")) if t else None,
         )
+
+
+    with tabs[4]:
+        posse_a, posse_b = metric_value(a, "Posse (%)"), metric_value(b, "Posse (%)")
+        posse_n = _gm_pair_metric_sample(a, b, ["Posse (%)"], 0)
+        posse_rows = [(team_a, f"{posse_a:.1f}%"), (team_b, f"{posse_b:.1f}%")] if posse_a is not None and posse_b is not None else None
+        _gm_market_card("⚪ Posse de bola", _gm_market_status(sample_games, available=bool(posse_rows), specific_sample=posse_n), compact_rows=posse_rows)
+
+        falta_a, falta_b = metric_value(a, "Faltas"), metric_value(b, "Faltas")
+        falta_n = _gm_pair_metric_sample(a, b, ["Faltas"], 0)
+        falta_rows = [(team_a, f"{falta_a:.2f}".replace('.', ',')), (team_b, f"{falta_b:.2f}".replace('.', ','))] if falta_a is not None and falta_b is not None else None
+        _gm_market_card("🚫 Faltas por equipe", _gm_market_status(sample_games, available=bool(falta_rows), specific_sample=falta_n), compact_rows=falta_rows)
 
         off_a, off_b = metric_value(a, "Impedimentos"), metric_value(b, "Impedimentos")
         off_n = _gm_pair_metric_sample(a, b, ["Impedimentos"], 0)
@@ -11261,17 +11263,17 @@ GM_DAILY_PICK_PROFILES = {
     "matadeira": {
         "label": "🛡️ Matadeira", "short": "Matadeira", "min": 1.50, "max": 1.89,
         "preferred_min": 1.60, "preferred_max": 1.85,
-        "description": "Faixa mais conservadora do dia, formada preferencialmente por duas ou mais seleções de odd baixa e alta sustentação.",
+        "description": "Mais conservadora",
     },
     "dica": {
         "label": "⭐ Dica do Dia", "short": "Dica", "min": 1.90, "max": 2.10,
         "preferred_min": 1.90, "preferred_max": 2.10,
-        "description": "Seleção intermediária construída com mercados mais robustos e, quando necessário, várias odds menores para atingir a faixa alvo.",
+        "description": "Risco intermediário",
     },
     "bingo": {
         "label": "🎰 Bingo", "short": "Bingo", "min": 3.50, "max": None,
         "preferred_min": 4.00, "preferred_max": None,
-        "description": "Múltipla acumulada que intercala odds a partir de 1,15, priorizando estimativas altas de acerto e evitando tanto pernas excessivamente baixas quanto seleções altas sem sustentação.",
+        "description": "Mais arriscada",
     },
 }
 
@@ -11995,28 +11997,31 @@ def _gm_daily_pick_card(row, target_date, pick_kind):
     if not row: st.info(f"{profile['label']}: ainda não preparada para este dia."); return
     if str(row.get("status"))=="no_pick": st.info(f"{profile['label']}: hoje não houve combinação que atingisse os critérios de qualidade. Nenhuma aposta foi forçada."); return
     legs=_gm_daily_sort_legs(row.get("legs") or []); total_odd=_gm_daily_num(row.get("total_odd")) or 0.0; btype=_gm_daily_bet_type_label(row.get("bet_type"),len(legs))
-    card=[f'<div class="gm-pick-card gm-kind-{pick_kind}"><div class="gm-pick-head"><div><div class="gm-pick-title">{html.escape(profile["label"])}</div><div class="gm-pick-muted">{target_date:%d/%m/%Y} • {html.escape(btype)} • {_gm_daily_status_badge(row.get("status"))}</div></div><div><div class="gm-pick-muted">ODD TOTAL</div><div class="gm-pick-odd">{total_odd:.2f}</div></div></div>']
+    bookmaker=str(row.get("bookmaker") or "").strip()
+    title_meta=" • ".join(x for x in (bookmaker, profile.get("description")) if x)
+    title_suffix=f'<span class="gm-pick-muted" style="font-weight:600;margin-left:.45rem">{html.escape(title_meta)}</span>' if title_meta else ""
+    card=[f'<div class="gm-pick-card gm-kind-{pick_kind}"><div class="gm-pick-head"><div><div class="gm-pick-title">{html.escape(profile["label"])}{title_suffix}</div><div class="gm-pick-muted">{target_date:%d/%m/%Y} • {html.escape(btype)} • {_gm_daily_status_badge(row.get("status"))}</div></div><div><div class="gm-pick-muted">ODD TOTAL</div><div class="gm-pick-odd">{total_odd:.2f}</div></div></div>']
     for leg in legs:
         game=f"{leg.get('home','')} × {leg.get('away','')}"; leg_odd=_gm_daily_num(leg.get("odd")) or 0.0; time_label=_gm_daily_time_label(leg.get("time"))
         prob=_gm_daily_num(leg.get("probability")); conf=str(leg.get("confidence_band") or (_gm_daily_confidence_band(prob) if prob is not None else ""))
         prob_txt=(f" • prob. estimada {prob:.0f}% • {html.escape(conf)}" if prob is not None else "")
         card.append(f'<div class="gm-pick-leg"><div class="gm-pick-market">{html.escape(str(leg.get("market") or ""))}<span style="float:right">{leg_odd:.2f}</span></div><div class="gm-pick-muted">🕒 {html.escape(time_label)} • {html.escape(game)} • {html.escape(str(leg.get("competition") or ""))}{prob_txt}</div></div>')
     card.append('</div>'); st.markdown("".join(card),unsafe_allow_html=True)
-    if row.get("bookmaker"): st.caption(f"Odd registrada a partir de {row.get('bookmaker')}. As odds podem mudar depois da publicação.")
     direct_url=str(row.get("bookmaker_url") or "").strip()
     if direct_url:
         st.link_button("🎟️ Abrir aposta pronta",direct_url,use_container_width=True,key=f"gm_direct_{pick_kind}_{target_date}"); st.caption("O botão só aparece quando existir um link direto real para o bilhete. Links genéricos não são exibidos.")
 
 
 def gm_render_daily_pick_page():
-    st.markdown("## ⭐ Oportunidades GM do Dia")
-    st.caption("As oportunidades exibidas aos clientes são publicadas somente após aprovação do administrador. O motor prepara várias alternativas com probabilidade estimada mínima de 75% por perna; candidatos não aprovados não entram em resultado, histórico ou aproveitamento.")
-    st.markdown('''<div class="gm-risk-rule"><span class="gm-risk-green">QUANTO MAIOR A ODD</span><span class="gm-risk-arrow">→</span><span class="gm-risk-red">MENORES AS CHANCES</span></div>''',unsafe_allow_html=True)
+    st.markdown("## 💡 Dicas do Dia")
     try:
         profile=gm_auth_get_profile()
     except Exception:
         profile=None
     is_admin=(profile or {}).get("role")=="admin"
+    if is_admin:
+        st.caption("Área de aprovação: o motor prepara alternativas privadas com probabilidade estimada mínima de 75% por perna. Só as aprovadas são publicadas e entram no histórico oficial.")
+    st.markdown('''<div class="gm-risk-rule"><span class="gm-risk-green">QUANTO MAIOR A ODD</span><span class="gm-risk-arrow">→</span><span class="gm-risk-red">MENORES AS CHANCES</span></div>''',unsafe_allow_html=True)
 
     if is_admin:
         try:
@@ -12116,7 +12121,6 @@ def gm_render_daily_pick_page():
     st.markdown("### 📅 Hoje — publicado para clientes")
     for kind in ("matadeira","dica","bingo"):
         _gm_daily_pick_card(lookup(today,kind),today,kind)
-        st.caption(GM_DAILY_PICK_PROFILES[kind]["description"])
 
     with st.expander("📆 Ontem — seleções e resultados",expanded=False):
         found=False
@@ -12150,16 +12154,17 @@ def gm_render_daily_pick_page():
             icon="🟢" if dr==0 and dg>0 else "🔴" if dg==0 and dr>0 else "🟡"; chips.append(f'<span class="gm-pick-dot">{icon} {html.escape(label)} · {dg}/{dg+dr}</span>')
         st.markdown('<div class="gm-pick-history">'+''.join(chips)+'</div>',unsafe_allow_html=True)
 
-    with st.expander("ℹ️ Como funcionam as oportunidades"):
-        st.markdown("- O motor prepara várias alternativas privadas para o **ADM** e exige **75%+ em cada perna** da vitrine.\n- **Só a alternativa aprovada** é gravada em `gm_daily_picks` e mostrada aos clientes.\n- **Matadeira:** odd oficial entre **1,50 e 1,89**.\n- **Dica do Dia:** odd oficial entre **1,90 e 2,10**.\n- **Bingo:** múltipla de **4 a 10 jogos**, odd mínima **3,50**.\n- Mercados elegíveis continuam exigindo **odd pré-jogo real**; o GM SCORE não inventa cotação.\n- O aproveitamento oficial usa apenas Matadeira + Dica publicadas; o Bingo permanece separado.")
-        st.caption("Quanto maior a odd, menor tende a ser a probabilidade conjunta. Odds e probabilidades são estimativas pré-jogo, não garantia de retorno. Aposte com responsabilidade.")
+    if is_admin:
+        with st.expander("ℹ️ Como funcionam as oportunidades"):
+            st.markdown("- O motor prepara várias alternativas privadas para o **ADM** e exige **75%+ em cada perna** da vitrine.\n- **Só a alternativa aprovada** é gravada em `gm_daily_picks` e mostrada aos clientes.\n- **Matadeira:** odd oficial entre **1,50 e 1,89**.\n- **Dica do Dia:** odd oficial entre **1,90 e 2,10**.\n- **Bingo:** múltipla de **4 a 10 jogos**, odd mínima **3,50**.\n- Mercados elegíveis continuam exigindo **odd pré-jogo real**; o GM SCORE não inventa cotação.\n- O aproveitamento oficial usa apenas Matadeira + Dica publicadas; o Bingo permanece separado.")
+            st.caption("Quanto maior a odd, menor tende a ser a probabilidade conjunta. Odds e probabilidades são estimativas pré-jogo, não garantia de retorno. Aposte com responsabilidade.")
 
 
 def gm_render_main_shortcuts():
     st.markdown("### 🚀 Acesso rápido")
     c1,c2=st.columns(2)
     with c1:
-        if st.button("⭐ Oportunidades do dia",use_container_width=True,type="primary",key="gm_home_daily_pick"): st.session_state["gm_main_view"]="daily_pick"; st.rerun()
+        if st.button("💡 Dicas do Dia",use_container_width=True,type="primary",key="gm_home_daily_pick"): st.session_state["gm_main_view"]="daily_pick"; st.rerun()
     with c2:
         if st.button("⚽ Analisar jogos",use_container_width=True,key="gm_home_analysis"): st.session_state["gm_main_view"]="analysis"; st.rerun()
 
