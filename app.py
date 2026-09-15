@@ -12,7 +12,7 @@ import inspect
 import itertools
 import unicodedata
 from html.parser import HTMLParser
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 from datetime import datetime, date, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-15-v67-mobile-nav-compact-actions"
+GM_BUILD = "2026-09-15-v68-native-mobile-bottom-nav"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -12547,15 +12547,31 @@ def gm_render_account_page(profile):
 
 
 def gm_render_app_navigation(profile):
-    """Bottom navigation no mobile; no desktop a sidebar existente continua como navegação principal."""
+    """Navegação mobile própria em HTML; desktop continua usando a sidebar existente."""
     current = str(st.session_state.get("gm_main_view") or "analysis")
-    items = [("analysis", "🏠 Início"), ("games", "⚽ Jogos"), ("daily_pick", "💡 Dicas"), ("news", "📰 Novidades"), ("account", "👤 Conta")]
-    with st.container(key="gm_mobile_bottom_nav"):
-        cols = st.columns(5)
-        for col, (view, label) in zip(cols, items):
-            with col:
-                if st.button(label, use_container_width=True, type="primary" if current == view else "secondary", key=f"gm_mobile_nav_{view}"):
-                    st.session_state["gm_main_view"] = view; st.rerun()
+    items = [
+        ("analysis", "🏠", "Início"),
+        ("games", "⚽", "Jogos"),
+        ("daily_pick", "💡", "Dicas"),
+        ("news", "📰", "Novidades"),
+        ("account", "👤", "Conta"),
+    ]
+    try:
+        base_params = dict(st.query_params)
+    except Exception:
+        base_params = {}
+    links = []
+    for view, icon, label in items:
+        params = dict(base_params)
+        params["gm_view"] = view
+        href = "?" + urlencode(params, doseq=True)
+        active = " gm-mobile-nav-active" if current == view else ""
+        links.append(
+            f'<a class="gm-mobile-nav-item{active}" href="{html.escape(href, quote=True)}" target="_self" '
+            f'aria-label="{html.escape(label)}"><span class="gm-mobile-nav-icon">{icon}</span>'
+            f'<span class="gm-mobile-nav-label">{html.escape(label)}</span></a>'
+        )
+    st.markdown('<nav class="gm-mobile-nav-shell">' + "".join(links) + '</nav>', unsafe_allow_html=True)
 
 
 def gm_render_main_shortcuts():
@@ -12571,19 +12587,18 @@ def gm_render_main_shortcuts():
 st.markdown(r"""
 <style>
 .gm-game-card{display:flex;align-items:center;gap:14px;background:linear-gradient(145deg,#0d1718,#0b1118);border:1px solid rgba(52,230,129,.22);border-radius:16px;padding:13px 14px;margin:.55rem 0 .28rem}.gm-game-time{font-weight:950;color:#34e681;min-width:54px;font-size:1rem}.gm-game-body{min-width:0;flex:1}.gm-game-league{color:#94a3b8;font-size:.76rem;font-weight:750}.gm-game-teams{color:#f8fafc;font-size:1rem;font-weight:900;margin-top:2px}.gm-game-teams span{color:#34e681;padding:0 4px}
-.st-key-gm_mobile_bottom_nav{display:none}
+.gm-mobile-nav-shell{display:none}
 button[kind="secondary"]:has(+ div),button[kind="primary"]:has(+ div){}
 @media (max-width:768px){
 [data-testid="stSidebar"]{display:none!important}
 [data-testid="collapsedControl"]{display:none!important}
-[data-testid="stAppViewContainer"] .main .block-container{padding-bottom:5.4rem!important}
-.st-key-gm_mobile_bottom_nav{display:block!important;position:fixed!important;left:0!important;right:0!important;bottom:0!important;z-index:99999!important;background:rgba(7,16,15,.985)!important;border-top:1px solid rgba(52,230,129,.22)!important;padding:.34rem .28rem calc(.34rem + env(safe-area-inset-bottom))!important;box-shadow:0 -8px 24px rgba(0,0,0,.38)!important}
-.st-key-gm_mobile_bottom_nav [data-testid="stHorizontalBlock"]{display:flex!important;flex-direction:row!important;flex-wrap:nowrap!important;align-items:stretch!important;gap:.12rem!important;width:100%!important}
-.st-key-gm_mobile_bottom_nav [data-testid="column"]{display:block!important;min-width:0!important;width:20%!important;max-width:20%!important;flex:0 0 20%!important;padding:0!important}
-.st-key-gm_mobile_bottom_nav [data-testid="stButton"]{width:100%!important;margin:0!important}
-.st-key-gm_mobile_bottom_nav button{width:100%!important;min-width:0!important;min-height:3.55rem!important;height:3.55rem!important;padding:.22rem .04rem!important;border:0!important;border-radius:10px!important;background:transparent!important;box-shadow:none!important;font-size:.66rem!important;font-weight:750!important;line-height:1.05!important;white-space:normal!important;color:#aab6c4!important}
-.st-key-gm_mobile_bottom_nav button[kind="primary"]{background:rgba(52,230,129,.10)!important;color:#34e681!important}
-.st-key-gm_mobile_bottom_nav button:hover{background:rgba(52,230,129,.08)!important;color:#eafbf2!important}
+[data-testid="stAppViewContainer"] .main .block-container{padding-bottom:5.8rem!important}
+.gm-mobile-nav-shell{display:flex!important;position:fixed!important;left:0!important;right:0!important;bottom:0!important;z-index:99999!important;height:calc(4.15rem + env(safe-area-inset-bottom))!important;background:rgba(7,16,15,.985)!important;border-top:1px solid rgba(52,230,129,.22)!important;padding:.28rem .22rem calc(.28rem + env(safe-area-inset-bottom))!important;box-shadow:0 -8px 24px rgba(0,0,0,.38)!important;align-items:stretch!important;justify-content:space-between!important;gap:.08rem!important;box-sizing:border-box!important}
+.gm-mobile-nav-item{display:flex!important;flex:1 1 20%!important;min-width:0!important;height:3.55rem!important;align-items:center!important;justify-content:center!important;flex-direction:column!important;gap:.12rem!important;border-radius:11px!important;text-decoration:none!important;color:#9aa7b6!important;background:transparent!important;-webkit-tap-highlight-color:transparent!important}
+.gm-mobile-nav-item:visited{color:#9aa7b6!important}.gm-mobile-nav-item:hover{color:#eafbf2!important;background:rgba(52,230,129,.06)!important;text-decoration:none!important}
+.gm-mobile-nav-item.gm-mobile-nav-active{color:#34e681!important;background:rgba(52,230,129,.10)!important}
+.gm-mobile-nav-item.gm-mobile-nav-active:visited{color:#34e681!important}
+.gm-mobile-nav-icon{display:block!important;font-size:1.08rem!important;line-height:1.05!important;height:1.18rem!important}.gm-mobile-nav-label{display:block!important;font-size:.62rem!important;font-weight:800!important;line-height:1!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important;max-width:100%!important}
 .gm-game-card{padding:11px 12px;border-radius:14px;margin-bottom:.18rem}.gm-game-time{min-width:48px}.gm-game-teams{font-size:.94rem}
 div[class*="st-key-gm_games_analyze_"] [data-testid="stButton"]{display:flex!important;justify-content:flex-end!important;margin:0 0 .72rem!important}
 div[class*="st-key-gm_games_analyze_"] button{width:auto!important;min-width:7.8rem!important;min-height:2.35rem!important;padding:.3rem .85rem!important;border-radius:10px!important;border:1px solid rgba(52,230,129,.48)!important;background:rgba(52,230,129,.10)!important;color:#34e681!important;font-size:.82rem!important;font-weight:850!important}
@@ -12599,6 +12614,9 @@ try:
 except Exception:
     pass
 
+_gm_requested_view = str(st.query_params.get("gm_view", "") or "").strip()
+if _gm_requested_view in {"analysis", "games", "daily_pick", "news", "account"}:
+    st.session_state["gm_main_view"] = _gm_requested_view
 _gm_main_view = str(st.session_state.get("gm_main_view") or "analysis")
 gm_render_app_navigation(_gm_profile_after_gate)
 
