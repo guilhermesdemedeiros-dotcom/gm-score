@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-15-v73-account-support-dedup"
+GM_BUILD = "2026-09-15-v74-daily-pick-bet-links"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -1788,6 +1788,88 @@ def gm_admin_status_label(row):
     return "⏳ Pendente"
 
 
+GM_DAILY_PICK_BOOKMAKERS = {
+    "Betano": {"icon": "🟠", "host_token": "betano"},
+    "bet365": {"icon": "🟢", "host_token": "bet365"},
+    "Superbet": {"icon": "🔴", "host_token": "superbet"},
+}
+
+
+def _gm_daily_valid_bet_url(bookmaker, value):
+    """Aceita apenas HTTPS e um domínio compatível com a casa selecionada."""
+    value = str(value or "").strip()
+    if not value:
+        return None
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(value)
+        host = str(parsed.hostname or "").lower()
+        token = GM_DAILY_PICK_BOOKMAKERS.get(str(bookmaker), {}).get("host_token")
+        if parsed.scheme.lower() != "https" or not host or not token or token not in host:
+            return None
+        return value
+    except Exception:
+        return None
+
+
+def gm_daily_pick_admin_bet_links(kind, idx, key_prefix):
+    """Campos opcionais de links que o ADM anexa somente à opção aprovada."""
+    st.markdown("**🔗 Links para apostar (opcional)**")
+    selected = st.multiselect(
+        "Casas de apostas",
+        list(GM_DAILY_PICK_BOOKMAKERS.keys()),
+        key=f"{key_prefix}_houses_{kind}_{idx}",
+        placeholder="Selecione uma ou mais casas",
+    )
+    links = []
+    invalid = []
+    for bookmaker in selected:
+        icon = GM_DAILY_PICK_BOOKMAKERS[bookmaker]["icon"]
+        value = st.text_input(
+            f"{icon} Link direto — {bookmaker}",
+            key=f"{key_prefix}_url_{kind}_{idx}_{bookmaker}",
+            placeholder=f"https://...{bookmaker.lower()}...",
+        ).strip()
+        if value:
+            valid = _gm_daily_valid_bet_url(bookmaker, value)
+            if valid:
+                links.append({"bookmaker": bookmaker, "url": valid})
+            else:
+                invalid.append(bookmaker)
+    if invalid:
+        st.warning("Confira o link HTTPS de: " + ", ".join(invalid) + ".")
+    return links, bool(invalid)
+
+
+def _gm_daily_row_bet_links(row):
+    """Lê links persistidos no model_meta; mantém compatibilidade com bookmaker_url antigo."""
+    if not isinstance(row, dict):
+        return []
+    meta = row.get("model_meta") or {}
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except Exception:
+            meta = {}
+    raw = meta.get("bet_links") if isinstance(meta, dict) else None
+    out = []
+    seen = set()
+    for item in raw or []:
+        if not isinstance(item, dict):
+            continue
+        bookmaker = str(item.get("bookmaker") or "").strip()
+        url = _gm_daily_valid_bet_url(bookmaker, item.get("url"))
+        if bookmaker in GM_DAILY_PICK_BOOKMAKERS and url and (bookmaker, url) not in seen:
+            out.append({"bookmaker": bookmaker, "url": url})
+            seen.add((bookmaker, url))
+    if not out:
+        bookmaker = str(row.get("bookmaker") or "").strip()
+        url = _gm_daily_valid_bet_url(bookmaker, row.get("bookmaker_url"))
+        if bookmaker in GM_DAILY_PICK_BOOKMAKERS and url:
+            out.append({"bookmaker": bookmaker, "url": url})
+    return out
+
+
 def gm_render_admin_daily_pick_approval():
     """Área privada do ADM para avaliar e publicar as Dicas do Dia."""
     st.markdown("### 💡 Aprovação de dicas")
@@ -1859,9 +1941,12 @@ def gm_render_admin_daily_pick_approval():
                 st.caption(f"Probabilidade combinada estimada: {model_prob:.1f}% · todas as pernas ≥ 75%")
                 for leg in legs:
                     st.markdown(f"- **{leg.get('market')}** @ {(_gm_daily_num(leg.get('odd')) or 0):.2f} · {(_gm_daily_num(leg.get('probability')) or 0):.0f}% · {leg.get('home')} × {leg.get('away')} · {_gm_daily_time_label(leg.get('time'))}")
-                if st.button("✅ Aprovar e publicar", use_container_width=True, type="primary", key=f"gm_admin_approve_{kind}_{idx}"):
+                bet_links, bet_links_invalid = gm_daily_pick_admin_bet_links(kind, idx, "gm_admin")
+                if st.button("✅ Aprovar e publicar", use_container_width=True, type="primary", key=f"gm_admin_approve_{kind}_{idx}", disabled=bet_links_invalid):
                     try:
-                        result = gm_daily_pick_publish_selected(opt)
+                        publish_opt = dict(opt)
+                        publish_opt["bet_links"] = bet_links
+                        result = gm_daily_pick_publish_selected(publish_opt)
                         if result.get("ok"):
                             st.session_state.pop(cache_key, None)
                             st.success("Dica aprovada e publicada para os clientes.")
@@ -12137,14 +12222,26 @@ def gm_daily_pick_publish_selected(choice):
     for row in gm_daily_pick_recent(20):
         if str(row.get("pick_date") or "") == today.isoformat() and str(row.get("pick_kind") or "dica") == pick_kind:
             return {"ok": False, "reason": "already_published", "row": row}
+    bet_links = []
+    for item in choice.get("bet_links") or []:
+        if not isinstance(item, dict):
+            continue
+        bookmaker = str(item.get("bookmaker") or "").strip()
+        url = _gm_daily_valid_bet_url(bookmaker, item.get("url"))
+        if bookmaker not in GM_DAILY_PICK_BOOKMAKERS or not url:
+            return {"ok": False, "reason": "invalid_bet_link"}
+        if not any(x.get("bookmaker") == bookmaker for x in bet_links):
+            bet_links.append({"bookmaker": bookmaker, "url": url})
+    bookmaker_names = ", ".join(x["bookmaker"] for x in bet_links) or choice.get("bookmaker")
+    first_bet_url = bet_links[0]["url"] if bet_links else None
     payload = {
         "p_pick_date": today.isoformat(),
         "p_pick_kind": pick_kind,
         "p_status": "pending",
         "p_bet_type": str(choice.get("bet_type") or "none"),
         "p_total_odd": choice.get("total_odd"),
-        "p_bookmaker": choice.get("bookmaker"),
-        "p_bookmaker_url": None,
+        "p_bookmaker": bookmaker_names,
+        "p_bookmaker_url": first_bet_url,
         "p_legs": legs,
         "p_model_meta": {
             "build": GM_BUILD,
@@ -12153,6 +12250,7 @@ def gm_daily_pick_publish_selected(choice):
             "approved_at": datetime.now(BRASILIA_TZ).isoformat(),
             "model_probability": choice.get("model_probability"),
             "score": choice.get("score"),
+            "bet_links": bet_links,
             **(choice.get("model_meta_bingo") or {}),
         },
     }
@@ -12387,9 +12485,12 @@ def gm_render_daily_pick_page():
                         st.caption(f"Probabilidade combinada estimada: {model_prob:.1f}% · todas as pernas ≥ 75%")
                         for leg in legs:
                             st.markdown(f"- **{leg.get('market')}** @ {(_gm_daily_num(leg.get('odd')) or 0):.2f} · {(_gm_daily_num(leg.get('probability')) or 0):.0f}% · {leg.get('home')} × {leg.get('away')} · {_gm_daily_time_label(leg.get('time'))}")
-                        if st.button("✅ Aprovar e publicar",use_container_width=True,type="primary",key=f"gm_approve_{kind}_{idx}"):
+                        bet_links, bet_links_invalid = gm_daily_pick_admin_bet_links(kind, idx, "gm_daily")
+                        if st.button("✅ Aprovar e publicar",use_container_width=True,type="primary",key=f"gm_approve_{kind}_{idx}",disabled=bet_links_invalid):
                             try:
-                                result=gm_daily_pick_publish_selected(opt)
+                                publish_opt=dict(opt)
+                                publish_opt["bet_links"]=bet_links
+                                result=gm_daily_pick_publish_selected(publish_opt)
                                 if result.get("ok"):
                                     st.session_state.pop(cache_key,None)
                                     st.success("Oportunidade aprovada e publicada para os clientes.")
@@ -12582,6 +12683,33 @@ def gm_render_account_page(profile):
             st.caption("O prazo é acrescentado somente após a confirmação válida do Mercado Pago.")
         if st.button("⭐ Avaliar GM SCORE", use_container_width=True, key="gm_account_review"):
             st.session_state["gm_reviews_open"] = True; st.rerun()
+        try:
+            today = datetime.now(BRASILIA_TZ).date()
+            today_rows = [
+                r for r in gm_daily_pick_recent(30)
+                if str(r.get("pick_date") or "") == today.isoformat()
+                and str(r.get("status") or "") != "no_pick"
+            ]
+            rows_with_links = [(r, _gm_daily_row_bet_links(r)) for r in today_rows]
+            rows_with_links = [(r, links) for r, links in rows_with_links if links]
+            if rows_with_links:
+                st.markdown("### 🎟️ Links das dicas de hoje")
+                st.caption("Atalhos fornecidos pela administração para as dicas oficiais publicadas hoje.")
+                order = {"matadeira": 0, "dica": 1, "bingo": 2}
+                for row, links in sorted(rows_with_links, key=lambda x: order.get(str(x[0].get("pick_kind")), 9)):
+                    kind = str(row.get("pick_kind") or "dica")
+                    label = GM_DAILY_PICK_PROFILES.get(kind, {}).get("label", kind.title())
+                    if kind == "dica":
+                        label = "📊 Dica Principal"
+                    st.markdown(f"**{label}**")
+                    cols = st.columns(len(links))
+                    for col, item in zip(cols, links):
+                        bookmaker = item["bookmaker"]
+                        icon = GM_DAILY_PICK_BOOKMAKERS[bookmaker]["icon"]
+                        with col:
+                            st.link_button(f"{icon} {bookmaker}", item["url"], use_container_width=True)
+        except Exception:
+            pass
     st.link_button("✈️ Suporte pelo Telegram", "https://t.me/suport_gm", use_container_width=True)
     if st.button("🚪 Sair", use_container_width=True, key="gm_account_logout"):
         gm_auth_sign_out(); st.session_state.pop("gm_admin_panel_open", None); st.rerun()
