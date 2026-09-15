@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-15-v68-native-mobile-bottom-nav"
+GM_BUILD = "2026-09-15-v69-mobile-safe-zone"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -12592,9 +12592,9 @@ button[kind="secondary"]:has(+ div),button[kind="primary"]:has(+ div){}
 @media (max-width:768px){
 [data-testid="stSidebar"]{display:none!important}
 [data-testid="collapsedControl"]{display:none!important}
-[data-testid="stAppViewContainer"] .main .block-container{padding-bottom:5.8rem!important}
-.gm-mobile-nav-shell{display:flex!important;position:fixed!important;left:0!important;right:0!important;bottom:0!important;z-index:99999!important;height:calc(4.15rem + env(safe-area-inset-bottom))!important;background:rgba(7,16,15,.985)!important;border-top:1px solid rgba(52,230,129,.22)!important;padding:.28rem .22rem calc(.28rem + env(safe-area-inset-bottom))!important;box-shadow:0 -8px 24px rgba(0,0,0,.38)!important;align-items:stretch!important;justify-content:space-between!important;gap:.08rem!important;box-sizing:border-box!important}
-.gm-mobile-nav-item{display:flex!important;flex:1 1 20%!important;min-width:0!important;height:3.55rem!important;align-items:center!important;justify-content:center!important;flex-direction:column!important;gap:.12rem!important;border-radius:11px!important;text-decoration:none!important;color:#9aa7b6!important;background:transparent!important;-webkit-tap-highlight-color:transparent!important}
+[data-testid="stAppViewContainer"] .main .block-container{padding-bottom:10.4rem!important}
+.gm-mobile-nav-shell{display:flex!important;position:fixed!important;left:.45rem!important;right:.45rem!important;bottom:calc(5.35rem + env(safe-area-inset-bottom))!important;z-index:99999!important;height:4.05rem!important;background:rgba(7,16,15,.985)!important;border:1px solid rgba(52,230,129,.22)!important;border-radius:16px!important;padding:.25rem .18rem!important;box-shadow:0 10px 28px rgba(0,0,0,.46)!important;align-items:stretch!important;justify-content:space-between!important;gap:.06rem!important;box-sizing:border-box!important}
+.gm-mobile-nav-item{display:flex!important;flex:1 1 20%!important;min-width:0!important;height:3.45rem!important;align-items:center!important;justify-content:center!important;flex-direction:column!important;gap:.12rem!important;border-radius:11px!important;text-decoration:none!important;color:#9aa7b6!important;background:transparent!important;-webkit-tap-highlight-color:transparent!important}
 .gm-mobile-nav-item:visited{color:#9aa7b6!important}.gm-mobile-nav-item:hover{color:#eafbf2!important;background:rgba(52,230,129,.06)!important;text-decoration:none!important}
 .gm-mobile-nav-item.gm-mobile-nav-active{color:#34e681!important;background:rgba(52,230,129,.10)!important}
 .gm-mobile-nav-item.gm-mobile-nav-active:visited{color:#34e681!important}
