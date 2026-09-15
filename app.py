@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-15-v93-share-badges-expanded"
+GM_BUILD = "2026-09-15-v94-share-badges-embedded"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -202,6 +202,31 @@ def gm_team_visual(team_name, competition=None, team_id=None):
     except Exception:
         pass
     return {"id": str(team_id or ""), "name": str(team_name or ""), "badge": ""}
+
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def gm_badge_data_uri(url):
+    """V94: incorpora o brasão no compartilhamento para evitar bloqueio CORS do canvas.
+
+    É uma transformação exclusivamente visual. Falha silenciosamente e mantém o
+    fallback neutro; não participa de identificação estatística nem de cálculos.
+    """
+    src = str(url or "").strip()
+    if not src.lower().startswith("https://"):
+        return ""
+    try:
+        response = requests.get(src, timeout=8)
+        response.raise_for_status()
+        content = response.content or b""
+        if not content or len(content) > 2_000_000:
+            return ""
+        content_type = str(response.headers.get("Content-Type") or "image/png").split(";", 1)[0].strip().lower()
+        if not content_type.startswith("image/"):
+            content_type = "image/png"
+        encoded = base64.b64encode(content).decode("ascii")
+        return f"data:{content_type};base64,{encoded}"
+    except Exception:
+        return ""
 
 
 def gm_current_match_team_id(team_name, side=None):
@@ -10521,15 +10546,20 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
     import json as _json
 
     highlights = _gm_share_highlights(team_a, team_b, probs, opportunities, expectations)
+    # V94: reutiliza exatamente os mesmos brasões resolvidos para o cabeçalho da
+    # partida e os incorpora no payload da arte. O canvas do navegador não
+    # depende mais de permissão CORS do servidor externo dos escudos.
     home_visual = gm_team_visual(team_a, league_name, gm_current_match_team_id(team_a, "home"))
     away_visual = gm_team_visual(team_b, league_name, gm_current_match_team_id(team_b, "away"))
+    home_logo = gm_badge_data_uri(home_visual.get("badge"))
+    away_logo = gm_badge_data_uri(away_visual.get("badge"))
     data = _json.dumps({
         "title": f"{team_a} × {team_b}",
         "league": competition_display_name(league_name),
         "home": team_a,
         "away": team_b,
-        "home_logo": str(home_visual.get("badge") or ""),
-        "away_logo": str(away_visual.get("badge") or ""),
+        "home_logo": home_logo,
+        "away_logo": away_logo,
         "highlights": highlights,
     }, ensure_ascii=False)
 
@@ -10545,7 +10575,7 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
     function rr(c,x,y,w,h,r,fill,stroke=null,lw=1){{const q=Math.min(r,w/2,h/2);c.beginPath();c.moveTo(x+q,y);c.arcTo(x+w,y,x+w,y+h,q);c.arcTo(x+w,y+h,x,y+h,q);c.arcTo(x,y+h,x,y,q);c.arcTo(x,y,x+w,y,q);c.closePath();if(fill){{c.fillStyle=fill;c.fill();}}if(stroke){{c.lineWidth=lw;c.strokeStyle=stroke;c.stroke();}}}}
     function tx(c,v,x,y,size=28,weight='400',color=C.text,align='left'){{c.save();c.fillStyle=color;c.font=`${{weight}} ${{size}}px Arial`;c.textAlign=align;c.textBaseline='alphabetic';c.fillText(String(v),x,y);c.restore();}}
     function wrap(c,v,x,y,maxW,lineH,size=22,weight='700',color=C.text){{c.save();c.fillStyle=color;c.font=`${{weight}} ${{size}}px Arial`;let line='',yy=y;for(const w of String(v).split(' ')){{const t=line+w+' ';if(c.measureText(t).width>maxW&&line){{c.fillText(line.trim(),x,yy);yy+=lineH;line=w+' ';}}else line=t;}}if(line)c.fillText(line.trim(),x,yy);c.restore();return yy;}}
-    function loadImg(src){{return new Promise(resolve=>{{if(!src)return resolve(null);const i=new Image();i.crossOrigin='anonymous';i.onload=()=>resolve(i);i.onerror=()=>resolve(null);i.src=src;}});}}
+    function loadImg(src){{return new Promise(resolve=>{{if(!src)return resolve(null);const i=new Image();if(/^https?:/i.test(src))i.crossOrigin='anonymous';i.onload=()=>resolve(i);i.onerror=()=>resolve(null);i.src=src;}});}}
     document.getElementById('shareBtn').onclick=async()=>{{
       const W=1080,H=1180+Math.max(0,D.highlights.length-3)*128,scale=2;
       const canvas=document.createElement('canvas');canvas.width=W*scale;canvas.height=H*scale;const c=canvas.getContext('2d');c.scale(scale,scale);c.fillStyle=C.bg;c.fillRect(0,0,W,H);
