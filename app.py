@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-15-v75-admin-central-isolation-fix"
+GM_BUILD = "2026-09-15-v76-bet-links-dicas-only"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -12678,33 +12678,6 @@ def gm_render_account_page(profile):
             st.caption("O prazo é acrescentado somente após a confirmação válida do Mercado Pago.")
         if st.button("⭐ Avaliar GM SCORE", use_container_width=True, key="gm_account_review"):
             st.session_state["gm_reviews_open"] = True; st.rerun()
-        try:
-            today = datetime.now(BRASILIA_TZ).date()
-            today_rows = [
-                r for r in gm_daily_pick_recent(30)
-                if str(r.get("pick_date") or "") == today.isoformat()
-                and str(r.get("status") or "") != "no_pick"
-            ]
-            rows_with_links = [(r, _gm_daily_row_bet_links(r)) for r in today_rows]
-            rows_with_links = [(r, links) for r, links in rows_with_links if links]
-            if rows_with_links:
-                st.markdown("### 🎟️ Links das dicas de hoje")
-                st.caption("Atalhos fornecidos pela administração para as dicas oficiais publicadas hoje.")
-                order = {"matadeira": 0, "dica": 1, "bingo": 2}
-                for row, links in sorted(rows_with_links, key=lambda x: order.get(str(x[0].get("pick_kind")), 9)):
-                    kind = str(row.get("pick_kind") or "dica")
-                    label = GM_DAILY_PICK_PROFILES.get(kind, {}).get("label", kind.title())
-                    if kind == "dica":
-                        label = "📊 Dica Principal"
-                    st.markdown(f"**{label}**")
-                    cols = st.columns(len(links))
-                    for col, item in zip(cols, links):
-                        bookmaker = item["bookmaker"]
-                        icon = GM_DAILY_PICK_BOOKMAKERS[bookmaker]["icon"]
-                        with col:
-                            st.link_button(f"{icon} {bookmaker}", item["url"], use_container_width=True)
-        except Exception:
-            pass
     st.link_button("✈️ Suporte pelo Telegram", "https://t.me/suport_gm", use_container_width=True)
     if st.button("🚪 Sair", use_container_width=True, key="gm_account_logout"):
         gm_auth_sign_out(); st.session_state.pop("gm_admin_panel_open", None); st.rerun()
