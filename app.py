@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-15-v86-games-fixed-return-context"
+GM_BUILD = "2026-09-15-v87-team-badges"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -154,6 +154,65 @@ def _gm_api_norm(value):
     text = unicodedata.normalize("NFKD", str(value or ""))
     text = "".join(ch for ch in text if not unicodedata.combining(ch))
     return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
+
+# V87 — identidade visual das equipes. A APIfootball é a fonte de verdade dos
+# brasões; nenhum escudo é associado manualmente por nome. Falhas visuais nunca
+# interferem no motor estatístico, na agenda ou na seleção das partidas.
+@st.cache_data(ttl=21600, show_spinner=False)
+def gm_team_visual_catalog(competition):
+    league_id = str((GM_APIFOOTBALL_FIXED_LEAGUE_IDS or {}).get(competition) or "").strip()
+    if not league_id:
+        return {"by_id": {}, "by_name": {}}
+    payload, err = gm_apifootball_request("get_teams", league_id=league_id)
+    if err or not isinstance(payload, list):
+        return {"by_id": {}, "by_name": {}}
+    by_id, by_name = {}, {}
+    for row in payload:
+        if not isinstance(row, dict):
+            continue
+        tid = str(row.get("team_key") or row.get("team_id") or "").strip()
+        name = str(row.get("team_name") or "").strip()
+        badge = str(row.get("team_badge") or row.get("team_logo") or "").strip()
+        if not badge.lower().startswith("https://"):
+            badge = ""
+        item = {"id": tid, "name": name, "badge": badge}
+        if tid:
+            by_id[tid] = item
+        if name:
+            by_name[_gm_api_norm(name)] = item
+    return {"by_id": by_id, "by_name": by_name}
+
+
+def gm_team_visual(team_name, competition=None, team_id=None):
+    """Resolve ID/brasão só para exibição; nunca adivinha um escudo."""
+    try:
+        catalog = gm_team_visual_catalog(competition) if competition else {"by_id": {}, "by_name": {}}
+        tid = str(team_id or "").strip()
+        if tid and tid in catalog.get("by_id", {}):
+            return catalog["by_id"][tid]
+        key = _gm_api_norm(team_name)
+        exact = catalog.get("by_name", {}).get(key)
+        if exact:
+            return exact
+        # Compatibilidade controlada com abreviações já aceitas pelo próprio app.
+        matches = [v for k, v in catalog.get("by_name", {}).items() if _gm_team_name_match(team_name, v.get("name"))]
+        if len(matches) == 1:
+            return matches[0]
+    except Exception:
+        pass
+    return {"id": str(team_id or ""), "name": str(team_name or ""), "badge": ""}
+
+
+def gm_team_badge_html(team_name, competition=None, team_id=None, size=24, show_name=True):
+    visual = gm_team_visual(team_name, competition, team_id)
+    badge = str(visual.get("badge") or "")
+    name = html.escape(str(team_name or ""))
+    img = (f'<img src="{html.escape(badge, quote=True)}" alt="" loading="lazy" '
+           f'style="width:{int(size)}px;height:{int(size)}px;object-fit:contain;flex:0 0 auto">') if badge else (
+           f'<span aria-hidden="true" style="width:{int(size)}px;height:{int(size)}px;display:inline-flex;align-items:center;justify-content:center;opacity:.45">⚽</span>')
+    text = f'<span>{name}</span>' if show_name else ''
+    return f'<span class="gm-team-with-badge" style="display:inline-flex;align-items:center;gap:7px;min-width:0">{img}{text}</span>'
 
 def _gm_api_stat_map(items):
     out = {}
@@ -2884,6 +2943,8 @@ def gm_render_match_hero(team_a, team_b, league_name, season_text, probs=None, u
     """Cabeçalho visual da partida real, sem alterar nenhum cálculo do modelo."""
     team_a_html = _gm_safe_html(team_a)
     team_b_html = _gm_safe_html(team_b)
+    team_a_visual = gm_team_badge_html(team_a, league_name, size=38)
+    team_b_visual = gm_team_badge_html(team_b, league_name, size=38)
     league_html = _gm_safe_html(league_name)
     season_html = _gm_safe_html(season_text)
     meta = f"{league_html} • {season_html}"
@@ -2930,7 +2991,7 @@ def gm_render_match_hero(team_a, team_b, league_name, season_text, probs=None, u
         </style>
         <section class="gm-real-match">
           <div class="gm-real-kicker">Partida carregada • análise VIP</div>
-          <div class="gm-real-title">⚽ {team_a_html} <span style="opacity:.45">×</span> {team_b_html}</div>
+          <div class="gm-real-title" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">{team_a_visual} <span style="opacity:.45">×</span> {team_b_visual}</div>
           <div class="gm-real-meta">{meta}</div>
           {probability_html}
         </section>
@@ -9312,6 +9373,11 @@ def _merge_fixture_unique(best_list, candidate):
                 best_list[i]["home"] = candidate.get("home")
             if len(str(candidate.get("away") or "")) > len(str(old.get("away") or "")):
                 best_list[i]["away"] = candidate.get("away")
+        # V87: metadados visuais/IDs podem vir de uma fonte diferente daquela
+        # escolhida para horário/status. Eles nunca participam dos cálculos.
+        for meta_key in ("home_team_id", "away_team_id"):
+            if not str(best_list[i].get(meta_key) or "").strip() and str(candidate.get(meta_key) or "").strip():
+                best_list[i][meta_key] = candidate.get(meta_key)
         return
     best_list.append(dict(candidate))
 
@@ -9564,6 +9630,8 @@ def load_apifootball_prediction_fixtures_for_date(target_date, competition=None)
             "br_date": target_date,
             "match_id": str(ev.get("match_id") or "").strip(),
             "league_id": lid,
+            "home_team_id": str(ev.get("match_hometeam_id") or "").strip(),
+            "away_team_id": str(ev.get("match_awayteam_id") or "").strip(),
             "status": str(ev.get("match_status") or "").strip(),
             "source": "APIfootball · predictions",
         })
@@ -9692,6 +9760,8 @@ def load_apifootball_fixtures_for_date(target_date):
             "br_date": target_date,
             "match_id": str(ev.get("match_id") or "").strip(),
             "league_id": str(ev.get("league_id") or "").strip(),
+            "home_team_id": str(ev.get("match_hometeam_id") or "").strip(),
+            "away_team_id": str(ev.get("match_awayteam_id") or "").strip(),
             "status": str(ev.get("match_status") or "").strip(),
             "source": "APIfootball",
         })
@@ -9757,6 +9827,8 @@ def load_apifootball_competition_fixtures_for_date(competition, target_date):
             "br_date": target_date,
             "match_id": str(ev.get("match_id") or "").strip(),
             "league_id": str(ev.get("league_id") or "").strip(),
+            "home_team_id": str(ev.get("match_hometeam_id") or "").strip(),
+            "away_team_id": str(ev.get("match_awayteam_id") or "").strip(),
             "status": str(ev.get("match_status") or "").strip(),
             "source": "APIfootball · liga direta",
         })
@@ -12605,10 +12677,14 @@ def _gm_daily_pick_card(row, target_date, pick_kind, is_admin=False):
     title_suffix=f'<span class="gm-pick-muted" style="font-weight:600;margin-left:.45rem">{html.escape(title_meta)}</span>' if title_meta else ""
     card=[f'<div class="gm-pick-card gm-kind-{pick_kind}"><div class="gm-pick-head"><div><div class="gm-pick-title">{html.escape(display_label)}{title_suffix}</div><div class="gm-pick-muted">{target_date:%d/%m/%Y} • {html.escape(btype)} • {_gm_daily_status_badge(row.get("status"))}</div></div><div><div class="gm-pick-muted">ODD TOTAL</div><div class="gm-pick-odd">{total_odd:.2f}</div></div></div>']
     for leg in legs:
-        game=f"{leg.get('home','')} × {leg.get('away','')}"; leg_odd=_gm_daily_num(leg.get("odd")) or 0.0; time_label=_gm_daily_time_label(leg.get("time"))
+        leg_odd=_gm_daily_num(leg.get("odd")) or 0.0; time_label=_gm_daily_time_label(leg.get("time"))
         prob=_gm_daily_num(leg.get("probability")); conf=str(leg.get("confidence_band") or (_gm_daily_confidence_band(prob) if prob is not None else ""))
         prob_txt=(f" • prob. estimada {prob:.0f}% • {html.escape(conf)}" if prob is not None else "")
-        card.append(f'<div class="gm-pick-leg"><div class="gm-pick-market">{html.escape(str(leg.get("market") or ""))}<span style="float:right">{leg_odd:.2f}</span></div><div class="gm-pick-muted">🕒 {html.escape(time_label)} • {html.escape(game)} • {html.escape(str(leg.get("competition") or ""))}{prob_txt}</div></div>')
+        leg_comp = str(leg.get("competition") or "")
+        home_visual = gm_team_badge_html(str(leg.get("home") or ""), leg_comp, leg.get("home_team_id"), size=19)
+        away_visual = gm_team_badge_html(str(leg.get("away") or ""), leg_comp, leg.get("away_team_id"), size=19)
+        game_html = f'<span style="display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap">{home_visual}<span style="opacity:.45">×</span>{away_visual}</span>'
+        card.append(f'<div class="gm-pick-leg"><div class="gm-pick-market">{html.escape(str(leg.get("market") or ""))}<span style="float:right">{leg_odd:.2f}</span></div><div class="gm-pick-muted" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">🕒 {html.escape(time_label)} • {game_html} • {html.escape(leg_comp)}{prob_txt}</div></div>')
     card.append('</div>'); st.markdown("".join(card),unsafe_allow_html=True)
     direct_url = _gm_daily_row_direct_bet_url(row)
     if direct_url:
@@ -12797,7 +12873,9 @@ def gm_render_games_page():
     st.markdown(f"### {len(safe)} jogo(s) · {_agenda_date_label(target_date)}")
     for i, f in enumerate(safe):
         comp = str(f.get("competition") or ""); home = str(f.get("home") or ""); away = str(f.get("away") or ""); tm = str(f.get("time") or "—")
-        card_html = '<div id="gm-game-{}" class="gm-game-card"><div class="gm-game-time">{}</div><div class="gm-game-body"><div class="gm-game-league">{}</div><div class="gm-game-teams">{} <span>×</span> {}</div></div></div>'.format(i, html.escape(tm), html.escape(competition_display_name(comp)), html.escape(home), html.escape(away))
+        home_visual = gm_team_badge_html(home, comp, f.get("home_team_id"), size=25)
+        away_visual = gm_team_badge_html(away, comp, f.get("away_team_id"), size=25)
+        card_html = '<div id="gm-game-{}" class="gm-game-card"><div class="gm-game-time">{}</div><div class="gm-game-body"><div class="gm-game-league">{}</div><div class="gm-game-teams" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">{} <span style="opacity:.45">×</span> {}</div></div></div>'.format(i, html.escape(tm), html.escape(competition_display_name(comp)), home_visual, away_visual)
         st.markdown(card_html, unsafe_allow_html=True)
         if st.button("📊 Analisar", use_container_width=False, key=f"gm_games_analyze_{target_date}_{i}_{clean_col(comp)}"):
             # V81: transporta o contexto completo do jogo e neutraliza o gm_view=games
