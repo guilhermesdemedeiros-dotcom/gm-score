@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-15-v96-match-league-date-visual"
+GM_BUILD = "2026-09-15-v97-centered-match-identity"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -3089,9 +3089,17 @@ def gm_render_match_hero(team_a, team_b, league_name, season_text, probs=None, u
         </style>
         <section class="gm-real-match">
           <div class="gm-real-kicker">Partida carregada • análise VIP</div>
-          <div style="display:flex;align-items:center;justify-content:center;gap:8px;margin:.55rem 0 .25rem;font-weight:850;color:#cbd5e1">{league_logo_html}<span>{league_title}</span></div>
-          <div class="gm-real-title" style="display:flex;align-items:center;justify-content:center;gap:16px;flex-wrap:nowrap">{team_a_visual} <span style="opacity:.45">×</span> {team_b_visual}</div>
-          <div class="gm-real-meta" style="text-align:center">{meta}</div>
+          <div class="gm-match-identity" style="display:grid;grid-template-columns:minmax(0,1fr) minmax(112px,.72fr) minmax(0,1fr);align-items:center;gap:10px;margin:.65rem 0 .35rem">
+            <div style="display:flex;justify-content:center;align-items:center;min-width:0">{team_a_visual}</div>
+            <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-width:0;text-align:center">
+              <div style="height:38px;display:flex;align-items:center;justify-content:center">{league_logo_html}</div>
+              <div style="font-size:.76rem;font-weight:900;color:#cbd5e1;line-height:1.15;margin-top:3px">{league_title}</div>
+              <div style="font-size:1.38rem;font-weight:950;color:#24e58b;line-height:1;margin-top:7px">×</div>
+              <div style="font-size:.69rem;font-weight:750;color:#94a3b8;line-height:1.2;margin-top:7px">{_gm_safe_html(match_datetime) if match_datetime else ''}</div>
+            </div>
+            <div style="display:flex;justify-content:center;align-items:center;min-width:0">{team_b_visual}</div>
+          </div>
+          <div class="gm-real-meta" style="text-align:center">{season_html}{(' • dados até ' + pd.Timestamp(updated_until).strftime('%d/%m/%Y')) if updated_until is not None and not pd.isna(updated_until) else ''}{(' • amostra mínima: ' + str(int(sample)) + ' jogo(s)') if sample is not None else ''}</div>
           {probability_html}
         </section>
         """,
@@ -10640,12 +10648,14 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
       tx(c,'GM',70,82,50,'900','#fff');tx(c,'SCORE',165,82,50,'900',C.green);tx(c,'ANÁLISE • ESTATÍSTICAS • PROBABILIDADES',70,118,18,'700','#93e9bc');
       rr(c,60,160,960,260,22,C.panel,C.border,2);
       const [hi,ai,li]=await Promise.all([loadImg(D.home_logo),loadImg(D.away_logo),loadImg(D.league_logo)]);
-      if(li)c.drawImage(li,455,178,42,42);
-      tx(c,D.league.toUpperCase(),li?515:540,208,20,'800',C.muted,li?'left':'center');
-      if(D.match_datetime)tx(c,D.match_datetime,540,236,17,'700',C.muted,'center');
-      if(hi)c.drawImage(hi,278,250,92,92);else tx(c,'⚽',324,317,58,'700',C.muted,'center');
-      if(ai)c.drawImage(ai,710,250,92,92);else tx(c,'⚽',756,317,58,'700',C.muted,'center');
-      tx(c,D.home,324,377,27,'800',C.text,'center');tx(c,'×',540,326,40,'900',C.green,'center');tx(c,D.away,756,377,27,'800',C.text,'center');
+      // V97: identidade do confronto centralizada — liga, nome, ×, data/hora.
+      if(li)c.drawImage(li,511,174,58,58);
+      tx(c,D.league.toUpperCase(),540,258,20,'800',C.muted,'center');
+      tx(c,'×',540,302,40,'900',C.green,'center');
+      if(D.match_datetime)tx(c,D.match_datetime,540,336,17,'700',C.muted,'center');
+      if(hi)c.drawImage(hi,246,218,92,92);else tx(c,'⚽',292,285,58,'700',C.muted,'center');
+      if(ai)c.drawImage(ai,742,218,92,92);else tx(c,'⚽',788,285,58,'700',C.muted,'center');
+      tx(c,D.home,292,355,27,'800',C.text,'center');tx(c,D.away,788,355,27,'800',C.text,'center');
       let y=475;tx(c,'DESTAQUES DA ANÁLISE',70,y,29,'900',C.text);tx(c,'70%–95%',1010,y,22,'900',C.green,'right');y+=35;
       if(!D.highlights.length){{rr(c,60,y,960,150,18,C.panel,C.border,1);tx(c,'Nenhum mercado ficou na faixa de 70% a 95%.',540,y+72,24,'700',C.muted,'center');tx(c,'A análise completa continua disponível no GM SCORE.',540,y+108,18,'500',C.muted,'center');y+=180;}}
       else{{D.highlights.forEach((r,idx)=>{{rr(c,60,y,960,112,18,C.panel,C.border,1);wrap(c,r.label,88,y+42,690,28,23,'800',C.text);if(r.base)tx(c,r.base,88,y+84,16,'600',C.muted);tx(c,`${{Math.round(r.chance)}}%`,980,y+66,34,'900',C.green,'right');y+=128;}});}}
