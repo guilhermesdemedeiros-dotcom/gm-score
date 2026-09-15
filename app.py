@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-15-v83-analysis-scroll-top"
+GM_BUILD = "2026-09-15-v84-games-direct-analysis-return-position"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -10066,6 +10066,14 @@ if "_goto_comp" in st.session_state:
     st.session_state.loaded_competition = st.session_state.selected_competition
     st.session_state.league_widget = st.session_state.selected_competition
     st.session_state.main_league_widget = st.session_state.selected_competition
+    # V84: uma partida escolhida na aba Jogos já é um confronto carregado.
+    # Oculta a agenda interna da Home para entrar diretamente na análise, usando
+    # exatamente o mesmo motor estatístico da seleção normal.
+    if st.session_state.get("loaded_home") and st.session_state.get("loaded_away"):
+        st.session_state["_main_games_hidden_competition"] = st.session_state.selected_competition
+        st.session_state["_synced_loaded_signature"] = (
+            f"{st.session_state.selected_competition}|{st.session_state.loaded_home}|{st.session_state.loaded_away}"
+        )
 
     # V81: quando a análise veio da agenda geral de Jogos, preserva também a data.
     # Isso mantém o contexto completo Data → Competição → Partida e permite voltar
@@ -12789,7 +12797,7 @@ def gm_render_games_page():
     st.markdown(f"### {len(safe)} jogo(s) · {_agenda_date_label(target_date)}")
     for i, f in enumerate(safe):
         comp = str(f.get("competition") or ""); home = str(f.get("home") or ""); away = str(f.get("away") or ""); tm = str(f.get("time") or "—")
-        card_html = '<div class="gm-game-card"><div class="gm-game-time">{}</div><div class="gm-game-body"><div class="gm-game-league">{}</div><div class="gm-game-teams">{} <span>×</span> {}</div></div></div>'.format(html.escape(tm), html.escape(competition_display_name(comp)), html.escape(home), html.escape(away))
+        card_html = '<div id="gm-game-{}" class="gm-game-card"><div class="gm-game-time">{}</div><div class="gm-game-body"><div class="gm-game-league">{}</div><div class="gm-game-teams">{} <span>×</span> {}</div></div></div>'.format(i, html.escape(tm), html.escape(competition_display_name(comp)), html.escape(home), html.escape(away))
         st.markdown(card_html, unsafe_allow_html=True)
         if st.button("📊 Analisar", use_container_width=False, key=f"gm_games_analyze_{target_date}_{i}_{clean_col(comp)}"):
             # V81: transporta o contexto completo do jogo e neutraliza o gm_view=games
@@ -12801,6 +12809,7 @@ def gm_render_games_page():
             st.session_state["_goto_date"] = target_date
             st.session_state["gm_games_return_date"] = target_date
             st.session_state["gm_games_return_label"] = _agenda_date_label(target_date)
+            st.session_state["gm_games_return_index"] = i
             # V83: cada abertura de uma partida é uma nova navegação. O Streamlit
             # pode preservar o scroll da agenda anterior; este sinal força a análise
             # a começar no topo sem perder a data usada no botão de retorno.
@@ -12811,6 +12820,31 @@ def gm_render_games_page():
             except Exception:
                 pass
             st.rerun()
+
+    # V84: ao voltar de uma análise, restaura a região da agenda onde o usuário
+    # estava. A data permanece no selectbox e o card escolhido vira a âncora.
+    _restore_index = st.session_state.pop("gm_games_restore_index", None)
+    if _restore_index is not None:
+        try:
+            _restore_index = int(_restore_index)
+            components.html(
+                f"""
+                <script>
+                (() => {{
+                  const reveal = () => {{
+                    try {{
+                      const doc = window.parent.document;
+                      const el = doc.getElementById('gm-game-{_restore_index}');
+                      if (el) el.scrollIntoView({{block:'center', inline:'nearest', behavior:'instant'}});
+                    }} catch (e) {{}}
+                  }};
+                  reveal(); setTimeout(reveal, 100); setTimeout(reveal, 350); setTimeout(reveal, 700);
+                }})();
+                </script>
+                """, height=0, scrolling=False
+            )
+        except Exception:
+            pass
 
 
 def gm_render_news_page():
@@ -13012,6 +13046,7 @@ def gm_render_games_return_button():
         label = "data consultada"
     if st.button(f"← Voltar aos jogos · {label}", use_container_width=True, key="gm_back_to_games_context"):
         st.session_state["gm_games_page_date"] = return_date
+        st.session_state["gm_games_restore_index"] = st.session_state.get("gm_games_return_index")
         st.session_state["gm_main_view"] = "games"
         try:
             st.query_params["gm_view"] = "games"
