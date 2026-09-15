@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-15-v97-centered-match-identity"
+GM_BUILD = "2026-09-15-v98-competition-center-fix"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -3089,11 +3089,11 @@ def gm_render_match_hero(team_a, team_b, league_name, season_text, probs=None, u
         </style>
         <section class="gm-real-match">
           <div class="gm-real-kicker">Partida carregada • análise VIP</div>
-          <div class="gm-match-identity" style="display:grid;grid-template-columns:minmax(0,1fr) minmax(112px,.72fr) minmax(0,1fr);align-items:center;gap:10px;margin:.65rem 0 .35rem">
+          <div class="gm-match-identity" style="display:grid;grid-template-columns:minmax(0,1fr) minmax(150px,.82fr) minmax(0,1fr);align-items:center;gap:8px;margin:.65rem 0 .35rem">
             <div style="display:flex;justify-content:center;align-items:center;min-width:0">{team_a_visual}</div>
             <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-width:0;text-align:center">
               <div style="height:38px;display:flex;align-items:center;justify-content:center">{league_logo_html}</div>
-              <div style="font-size:.76rem;font-weight:900;color:#cbd5e1;line-height:1.15;margin-top:3px">{league_title}</div>
+              <div style="width:100%;font-size:.74rem;font-weight:900;color:#cbd5e1;line-height:1.15;margin-top:3px;text-align:center;white-space:normal;overflow-wrap:anywhere">{league_title}</div>
               <div style="font-size:1.38rem;font-weight:950;color:#24e58b;line-height:1;margin-top:7px">×</div>
               <div style="font-size:.69rem;font-weight:750;color:#94a3b8;line-height:1.2;margin-top:7px">{_gm_safe_html(match_datetime) if match_datetime else ''}</div>
             </div>
@@ -10648,14 +10648,20 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
       tx(c,'GM',70,82,50,'900','#fff');tx(c,'SCORE',165,82,50,'900',C.green);tx(c,'ANÁLISE • ESTATÍSTICAS • PROBABILIDADES',70,118,18,'700','#93e9bc');
       rr(c,60,160,960,260,22,C.panel,C.border,2);
       const [hi,ai,li]=await Promise.all([loadImg(D.home_logo),loadImg(D.away_logo),loadImg(D.league_logo)]);
-      // V97: identidade do confronto centralizada — liga, nome, ×, data/hora.
-      if(li)c.drawImage(li,511,174,58,58);
-      tx(c,D.league.toUpperCase(),540,258,20,'800',C.muted,'center');
-      tx(c,'×',540,302,40,'900',C.green,'center');
-      if(D.match_datetime)tx(c,D.match_datetime,540,336,17,'700',C.muted,'center');
-      if(hi)c.drawImage(hi,246,218,92,92);else tx(c,'⚽',292,285,58,'700',C.muted,'center');
-      if(ai)c.drawImage(ai,742,218,92,92);else tx(c,'⚽',788,285,58,'700',C.muted,'center');
-      tx(c,D.home,292,355,27,'800',C.text,'center');tx(c,D.away,788,355,27,'800',C.text,'center');
+      // V98: coluna central realmente independente dos clubes.
+      // Logo, competição, × e data/hora compartilham exatamente o mesmo eixo X.
+      const CX=540, LEAGUE_MAX_W=300;
+      if(li)c.drawImage(li,CX-29,174,58,58);
+      let leagueSize=20;
+      c.save();c.font=`800 ${{leagueSize}}px Arial`;
+      while(leagueSize>14 && c.measureText(String(D.league).toUpperCase()).width>LEAGUE_MAX_W){{leagueSize--;c.font=`800 ${{leagueSize}}px Arial`;}}
+      c.restore();
+      tx(c,String(D.league).toUpperCase(),CX,258,leagueSize,'800',C.muted,'center');
+      tx(c,'×',CX,302,40,'900',C.green,'center');
+      if(D.match_datetime)tx(c,D.match_datetime,CX,336,17,'700',C.muted,'center');
+      if(hi)c.drawImage(hi,218,218,92,92);else tx(c,'⚽',264,285,58,'700',C.muted,'center');
+      if(ai)c.drawImage(ai,770,218,92,92);else tx(c,'⚽',816,285,58,'700',C.muted,'center');
+      tx(c,D.home,264,355,27,'800',C.text,'center');tx(c,D.away,816,355,27,'800',C.text,'center');
       let y=475;tx(c,'DESTAQUES DA ANÁLISE',70,y,29,'900',C.text);tx(c,'70%–95%',1010,y,22,'900',C.green,'right');y+=35;
       if(!D.highlights.length){{rr(c,60,y,960,150,18,C.panel,C.border,1);tx(c,'Nenhum mercado ficou na faixa de 70% a 95%.',540,y+72,24,'700',C.muted,'center');tx(c,'A análise completa continua disponível no GM SCORE.',540,y+108,18,'500',C.muted,'center');y+=180;}}
       else{{D.highlights.forEach((r,idx)=>{{rr(c,60,y,960,112,18,C.panel,C.border,1);wrap(c,r.label,88,y+42,690,28,23,'800',C.text);if(r.base)tx(c,r.base,88,y+84,16,'600',C.muted);tx(c,`${{Math.round(r.chance)}}%`,980,y+66,34,'900',C.green,'right');y+=128;}});}}
