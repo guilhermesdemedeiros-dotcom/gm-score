@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-15-v105-daily-picks-clean-reset"
+GM_BUILD = "2026-09-15-v106-admin-results-rls-fix"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -2488,42 +2488,43 @@ def gm_render_admin_bets_manager():
 def gm_render_admin_bets_home():
     # Card compacto na Home; ADM e VIP veem a mesma apresentação.
     try:
-        rows = [r for r in gm_admin_bets_list(active_only=True, limit=30) if gm_admin_bet_is_current(r)]
+        active_rows = [r for r in gm_admin_bets_list(active_only=True, limit=30) if gm_admin_bet_is_current(r)]
+        all_visible_rows = gm_admin_bets_list(active_only=False, limit=100)
     except Exception:
         return
-    if not rows:
-        return
-    show_all = bool(st.session_state.get("gm_admin_bets_show_all"))
-    visible = rows if show_all else rows[:3]
-    st.markdown("### ⭐ Apostas do ADM")
-    st.caption("Seleções manuais publicadas pela administração do GM SCORE.")
-    st.markdown('''<style>
-    .gm-adm-bet-card{background:linear-gradient(145deg,rgba(13,24,23,.97),rgba(9,15,20,.98));border:1px solid rgba(52,230,129,.27);border-left:3px solid #34e681;border-radius:14px;padding:11px 12px 9px;margin:.42rem 0 .18rem}
-    .gm-adm-bet-top{display:flex;align-items:center;justify-content:space-between;gap:8px}.gm-adm-bet-title{font-weight:900;color:#f8fafc;font-size:.94rem;line-height:1.2}.gm-adm-bet-odd{white-space:nowrap;color:#34e681;font-weight:950;font-size:.86rem;border:1px solid rgba(52,230,129,.28);border-radius:999px;padding:3px 8px;background:rgba(52,230,129,.08)}
-    .gm-adm-bet-desc{color:#cbd5df;font-size:.80rem;line-height:1.35;margin-top:5px}.gm-adm-bet-meta{color:#7f8997;font-size:.67rem;margin-top:7px}.gm-adm-bet-note{color:#7f8997;font-size:.64rem;margin-top:4px}
-    div[class*="st-key-gm_adm_bet_link_"] a{min-height:2.25rem!important;border-radius:10px!important;border:1px solid rgba(52,230,129,.45)!important;background:rgba(52,230,129,.08)!important;color:#eafff3!important;font-size:.79rem!important;font-weight:850!important}
-    </style>''', unsafe_allow_html=True)
-    for row in visible:
-        bet_id = str(row.get("id") or "")
-        try: odd_text = f"{float(row.get('odd') or 0):.2f}"
-        except Exception: odd_text = str(row.get("odd") or "—")
-        expiry = f" • até {gm_admin_bet_format_time(row.get('valid_until'))}" if row.get("valid_until") else ""
-        st.markdown(f'''<div class="gm-adm-bet-card"><div class="gm-adm-bet-top"><div class="gm-adm-bet-title">⭐ {html.escape(str(row.get('title') or 'Aposta do ADM'))}</div><div class="gm-adm-bet-odd">ODD {html.escape(odd_text)}</div></div><div class="gm-adm-bet-desc">{html.escape(str(row.get('description') or ''))}</div><div class="gm-adm-bet-meta">Publicada {html.escape(gm_admin_bet_format_time(row.get('created_at')))}{html.escape(expiry)}</div><div class="gm-adm-bet-note">Seleção manual do administrador · não integra o histórico estatístico das Dicas do Dia.</div></div>''', unsafe_allow_html=True)
-        url = str(row.get("bet_url") or "").strip()
-        if url.lower().startswith("https://"):
-            st.link_button("🎯 Ir para a aposta · GM SCORE  ›", url, use_container_width=True, key=f"gm_adm_bet_link_{bet_id}")
-    if len(rows) > 3:
-        label = "Mostrar somente as mais recentes" if show_all else f"Ver todas ({len(rows)})"
-        if st.button(label, use_container_width=True, key="gm_admin_bets_show_all_btn"):
-            st.session_state["gm_admin_bets_show_all"] = not show_all; st.rerun()
 
-    # V104: resultados manuais não ficam misturados à Home nem às Dicas do Dia.
-    # Um botão discreto abaixo das apostas ativas abre uma página exclusiva.
-    try:
-        history_count = len([r for r in gm_admin_bets_list(active_only=False, limit=100) if str(r.get("result_status") or "pending") in {"green", "red", "void"}])
-    except Exception:
-        history_count = 0
-    if history_count:
+    # V106: o histórico é independente do feed ativo. Uma aposta finalizada fica
+    # is_active=False, mas continua visível aos clientes pela política RLS V106.
+    history_rows = [r for r in all_visible_rows if str(r.get("result_status") or "pending") in {"green", "red", "void"}]
+
+    if active_rows:
+        show_all = bool(st.session_state.get("gm_admin_bets_show_all"))
+        visible = active_rows if show_all else active_rows[:3]
+        st.markdown("### ⭐ Apostas do ADM")
+        st.caption("Seleções manuais publicadas pela administração do GM SCORE.")
+        st.markdown('''<style>
+        .gm-adm-bet-card{background:linear-gradient(145deg,rgba(13,24,23,.97),rgba(9,15,20,.98));border:1px solid rgba(52,230,129,.27);border-left:3px solid #34e681;border-radius:14px;padding:11px 12px 9px;margin:.42rem 0 .18rem}
+        .gm-adm-bet-top{display:flex;align-items:center;justify-content:space-between;gap:8px}.gm-adm-bet-title{font-weight:900;color:#f8fafc;font-size:.94rem;line-height:1.2}.gm-adm-bet-odd{white-space:nowrap;color:#34e681;font-weight:950;font-size:.86rem;border:1px solid rgba(52,230,129,.28);border-radius:999px;padding:3px 8px;background:rgba(52,230,129,.08)}
+        .gm-adm-bet-desc{color:#cbd5df;font-size:.80rem;line-height:1.35;margin-top:5px}.gm-adm-bet-meta{color:#7f8997;font-size:.67rem;margin-top:7px}.gm-adm-bet-note{color:#7f8997;font-size:.64rem;margin-top:4px}
+        div[class*="st-key-gm_adm_bet_link_"] a{min-height:2.25rem!important;border-radius:10px!important;border:1px solid rgba(52,230,129,.45)!important;background:rgba(52,230,129,.08)!important;color:#eafff3!important;font-size:.79rem!important;font-weight:850!important}
+        </style>''', unsafe_allow_html=True)
+        for row in visible:
+            bet_id = str(row.get("id") or "")
+            try: odd_text = f"{float(row.get('odd') or 0):.2f}"
+            except Exception: odd_text = str(row.get("odd") or "—")
+            expiry = f" • até {gm_admin_bet_format_time(row.get('valid_until'))}" if row.get("valid_until") else ""
+            st.markdown(f'''<div class="gm-adm-bet-card"><div class="gm-adm-bet-top"><div class="gm-adm-bet-title">⭐ {html.escape(str(row.get('title') or 'Aposta do ADM'))}</div><div class="gm-adm-bet-odd">ODD {html.escape(odd_text)}</div></div><div class="gm-adm-bet-desc">{html.escape(str(row.get('description') or ''))}</div><div class="gm-adm-bet-meta">Publicada {html.escape(gm_admin_bet_format_time(row.get('created_at')))}{html.escape(expiry)}</div><div class="gm-adm-bet-note">Seleção manual do administrador · não integra o histórico estatístico das Dicas do Dia.</div></div>''', unsafe_allow_html=True)
+            url = str(row.get("bet_url") or "").strip()
+            if url.lower().startswith("https://"):
+                st.link_button("🎯 Ir para a aposta · GM SCORE  ›", url, use_container_width=True, key=f"gm_adm_bet_link_{bet_id}")
+        if len(active_rows) > 3:
+            label = "Mostrar somente as mais recentes" if show_all else f"Ver todas ({len(active_rows)})"
+            if st.button(label, use_container_width=True, key="gm_admin_bets_show_all_btn"):
+                st.session_state["gm_admin_bets_show_all"] = not show_all; st.rerun()
+
+    # Botão discreto sempre que houver ao menos um resultado publicado, inclusive
+    # quando não existir nenhuma aposta ativa no momento.
+    if history_rows:
         if st.button("Ver resultados ›", use_container_width=False, key="gm_admin_bets_results_page_btn"):
             st.session_state["gm_main_view"] = "admin_results"
             st.rerun()
