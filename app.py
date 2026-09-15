@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-15-v70-mobile-polish-news-cards"
+GM_BUILD = "2026-09-15-v71-account-vip-days-nav-clearance"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -12555,8 +12555,22 @@ def gm_render_account_page(profile):
         vip_until_raw = profile.get("vip_until")
         if vip_until_raw:
             try:
-                vip_until_dt = datetime.fromisoformat(str(vip_until_raw).replace("Z", "+00:00")); st.caption("Vencimento: " + vip_until_dt.astimezone(ZoneInfo("America/Sao_Paulo")).strftime("%d/%m/%Y às %H:%M"))
-            except Exception: pass
+                vip_until_dt = datetime.fromisoformat(str(vip_until_raw).replace("Z", "+00:00"))
+                now_vip = datetime.now(vip_until_dt.tzinfo)
+                remaining_seconds = (vip_until_dt - now_vip).total_seconds()
+                remaining_days = max(0, math.ceil(remaining_seconds / 86400))
+                vip_until_br = vip_until_dt.astimezone(ZoneInfo("America/Sao_Paulo")).strftime("%d/%m/%Y às %H:%M")
+                if remaining_days == 1:
+                    remaining_label = "1 dia restante"
+                else:
+                    remaining_label = f"{remaining_days} dias restantes"
+                st.markdown(
+                    f'<div class="gm-account-vip-meta"><span class="gm-account-days">📅 {remaining_label}</span>'
+                    f'<span class="gm-account-expiry">Vencimento: {vip_until_br}</span></div>',
+                    unsafe_allow_html=True,
+                )
+            except Exception:
+                pass
         with st.expander("💳 Renovar VIP", expanded=False):
             for plan in GM_VIP_PLANS:
                 st.markdown(f"**VIP {str(plan['title']).upper()} · {plan['pix_price']} no Pix**")
@@ -12619,14 +12633,15 @@ button[kind="secondary"]:has(+ div),button[kind="primary"]:has(+ div){}
 @media (max-width:768px){
 [data-testid="stSidebar"]{display:none!important}
 [data-testid="collapsedControl"]{display:none!important}
-[data-testid="stAppViewContainer"] .main .block-container{padding-bottom:7.2rem!important}
-.gm-mobile-nav-shell{display:flex!important;position:fixed!important;left:.45rem!important;right:.45rem!important;bottom:calc(.45rem + env(safe-area-inset-bottom))!important;z-index:99999!important;height:4.05rem!important;background:rgba(7,16,15,.985)!important;border:1px solid rgba(52,230,129,.22)!important;border-radius:16px!important;padding:.25rem .18rem!important;box-shadow:0 10px 28px rgba(0,0,0,.46)!important;align-items:stretch!important;justify-content:space-between!important;gap:.06rem!important;box-sizing:border-box!important}
+[data-testid="stAppViewContainer"] .main .block-container{padding-bottom:8.9rem!important}
+.gm-mobile-nav-shell{display:flex!important;position:fixed!important;left:.45rem!important;right:.45rem!important;bottom:calc(3.55rem + env(safe-area-inset-bottom))!important;z-index:99999!important;height:4.05rem!important;background:rgba(7,16,15,.985)!important;border:1px solid rgba(52,230,129,.22)!important;border-radius:16px!important;padding:.25rem .18rem!important;box-shadow:0 10px 28px rgba(0,0,0,.46)!important;align-items:stretch!important;justify-content:space-between!important;gap:.06rem!important;box-sizing:border-box!important}
 .gm-mobile-nav-item{display:flex!important;flex:1 1 20%!important;min-width:0!important;height:3.45rem!important;align-items:center!important;justify-content:center!important;flex-direction:column!important;gap:.12rem!important;border-radius:11px!important;text-decoration:none!important;color:#9aa7b6!important;background:transparent!important;-webkit-tap-highlight-color:transparent!important}
 .gm-mobile-nav-item:visited{color:#9aa7b6!important}.gm-mobile-nav-item:hover{color:#eafbf2!important;background:rgba(52,230,129,.06)!important;text-decoration:none!important}
 .gm-mobile-nav-item.gm-mobile-nav-active{color:#34e681!important;background:rgba(52,230,129,.10)!important}
 .gm-mobile-nav-item.gm-mobile-nav-active:visited{color:#34e681!important}
 .gm-mobile-nav-icon{display:block!important;font-size:1.08rem!important;line-height:1.05!important;height:1.18rem!important}.gm-mobile-nav-label{display:block!important;font-size:.62rem!important;font-weight:800!important;line-height:1!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important;max-width:100%!important}
 .gm-game-card{padding:11px 12px;border-radius:14px;margin-bottom:.18rem}.gm-game-time{min-width:48px}.gm-game-teams{font-size:.94rem}
+.gm-account-vip-meta{display:flex;align-items:center;justify-content:space-between;gap:.6rem;flex-wrap:wrap;margin:.15rem 0 .75rem}.gm-account-days{display:inline-flex;align-items:center;padding:.38rem .7rem;border-radius:999px;border:1px solid rgba(52,230,129,.38);background:rgba(52,230,129,.10);color:#34e681;font-size:.78rem;font-weight:850}.gm-account-expiry{color:#9aa7b6;font-size:.76rem}
 div[class*="st-key-gm_games_analyze_"] [data-testid="stButton"]{display:flex!important;justify-content:flex-end!important;margin:0 0 .72rem!important}
 div[class*="st-key-gm_games_analyze_"] button{width:auto!important;min-width:7.8rem!important;min-height:2.35rem!important;padding:.3rem .85rem!important;border-radius:10px!important;border:1px solid rgba(52,230,129,.48)!important;background:rgba(52,230,129,.10)!important;color:#34e681!important;font-size:.82rem!important;font-weight:850!important}
 }
