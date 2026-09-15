@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-14-v63-england-flag"
+GM_BUILD = "2026-09-14-v64-share-all-analysis-data"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -9873,7 +9873,123 @@ def resolve_team_name(candidate, teams):
     return best if best_score >= 0.45 else None
 
 
-def render_share_button(team_a, team_b, league_name, probs, opportunities, expectations, a, b):
+def gm_share_market_sections(team_a, team_b, probs, expectations, a, b, df, sample_games=0):
+    """Espelha no compartilhamento todos os dados disponíveis dos Mercados Essenciais."""
+    ex = expectations or {}
+    sections = []
+
+    def add(title, rows):
+        clean = [[str(k), str(v)] for k, v in (rows or []) if v not in (None, "")]
+        if clean:
+            sections.append({"title": title, "rows": clean})
+
+    def proj_lines(prefix, item, lines):
+        rows = []
+        if item:
+            rows.append(("Projeção GM", f"{float(item['total']):.2f}".replace('.', ',')))
+            for line, pct in _gm_pct_lines(item['total'], lines):
+                rows.append((f"Mais de {str(line).replace('.', ',')}", f"{pct:.0f}%"))
+        add(prefix, rows)
+
+    # Resultado + odds justas + dupla chance.
+    if probs:
+        d = _gm_display_1x2_percentages(probs)
+        add("🏆 Resultado", [
+            (f"Vitória {team_a}", f"{d['home']}% · odd justa {100/max(float(probs['home']),0.5):.2f}"),
+            ("Empate", f"{d['draw']}% · odd justa {100/max(float(probs['draw']),0.5):.2f}"),
+            (f"Vitória {team_b}", f"{d['away']}% · odd justa {100/max(float(probs['away']),0.5):.2f}"),
+            ("Dupla chance 1X", f"{float(probs['home'])+float(probs['draw']):.0f}%"),
+            ("Dupla chance X2", f"{float(probs['draw'])+float(probs['away']):.0f}%"),
+            ("Dupla chance 12", f"{float(probs['home'])+float(probs['away']):.0f}%"),
+        ])
+
+    # Gols.
+    g = ex.get("Gols")
+    if g:
+        rows=[("Projeção GM", f"{g['total']:.2f}".replace('.', ','))]
+        rows += [(f"Mais de {str(line).replace('.', ',')}", f"{pct:.0f}%") for line,pct in _gm_pct_lines(g['total'], [0.5,1.5,2.5,3.5,4.5])]
+        add("⚽ Gols na partida", rows)
+        add("👥 Gols por equipe", [(team_a, f"{g['home']:.2f}".replace('.', ',')), (team_b, f"{g['away']:.2f}".replace('.', ','))])
+        btts=(1-math.exp(-max(g['home'],0.01)))*(1-math.exp(-max(g['away'],0.01)))*100
+        add("🤝 Ambas marcam", [("Sim", f"{btts:.0f}%"), ("Não", f"{100-btts:.0f}%")])
+
+        matches=list(df.attrs.get("matches", []) or []) if isinstance(df, pd.DataFrame) else []
+        goal_split=None
+        g1a,g1b=metric_value(a,"Gols 1T"),metric_value(b,"Gols 1T")
+        g2a,g2b=metric_value(a,"Gols 2T"),metric_value(b,"Gols 2T")
+        half_n=_gm_pair_metric_sample(a,b,["Gols 1T","Gols 2T"],0)
+        if all(v is not None for v in (g1a,g1b,g2a,g2b)) and half_n>=3:
+            first=max(float(g1a)+float(g1b),0.0); second=max(float(g2a)+float(g2b),0.0)
+            if first+second>0:
+                share=max(.20,min(.65,first/(first+second)))
+                goal_split={"first":float(g['total'])*share,"second":float(g['total'])*(1-share)}
+        if goal_split is None:
+            goal_split=expected_goals_by_half(team_a,team_b,matches,g['total'])
+        if goal_split:
+            for title,key in (("⏱️ Gols — 1º tempo","first"),("⏱️ Gols — 2º tempo","second")):
+                val=goal_split[key]
+                rows=[("Projeção GM",f"{val:.2f}".replace('.',','))]
+                rows += [(f"Mais de {str(line).replace('.', ',')}",f"{pct:.0f}%") for line,pct in _gm_pct_lines(val,[0.5,1.5,2.5])]
+                add(title,rows)
+
+    # Escanteios.
+    c=ex.get("Escanteios")
+    if c:
+        rows=[("Projeção GM",f"{c['total']:.2f}".replace('.',','))]
+        rows += [(f"Mais de {str(line).replace('.', ',')}",f"{pct:.0f}%") for line,pct in _gm_pct_lines(c['total'],[6.5,7.5,8.5,9.5,10.5])]
+        add("⛳ Escanteios na partida",rows)
+        for title,metric,lines in (("⏱️ Escanteios — 1º tempo","Escanteios 1T",[2.5,3.5,4.5,5.5,6.5]),("⏱️ Escanteios — 2º tempo","Escanteios 2T",[2.5,3.5,4.5,5.5,6.5])):
+            va,vb=metric_value(a,metric),metric_value(b,metric)
+            if va is not None and vb is not None:
+                total=va+vb; rr=[("Projeção GM",f"{total:.2f}".replace('.',','))]
+                rr += [(f"Mais de {str(line).replace('.', ',')}",f"{pct:.0f}%") for line,pct in _gm_pct_lines(total,lines)]
+                add(title,rr)
+        rr=[]
+        for team,val in ((team_a,c['home']),(team_b,c['away'])):
+            rr.append((team,f"{val:.2f}".replace('.',',')))
+            rr += [(f"{team} +{str(line).replace('.', ',')}",f"{pct:.0f}%") for line,pct in _gm_pct_lines(val,[2.5,3.5,4.5,5.5])]
+        add("👥 Escanteios por equipe",rr)
+
+    # Cartões.
+    c=ex.get("Cartões")
+    if c:
+        rows=[("Projeção GM",f"{c['total']:.2f}".replace('.',','))]
+        rows += [(f"Mais de {str(line).replace('.', ',')}",f"{pct:.0f}%") for line,pct in _gm_pct_lines(c['total'],[1.5,2.5,3.5,4.5,5.5])]
+        add("🟨 Cartões totais",rows)
+        rr=[]
+        for team,val in ((team_a,c['home']),(team_b,c['away'])):
+            rr.append((team,f"{val:.2f}".replace('.',',')))
+            rr += [(f"{team} +{str(line).replace('.', ',')}",f"{pct:.0f}%") for line,pct in _gm_pct_lines(val,[0.5,1.5,2.5,3.5])]
+        add("👥 Cartões por equipe",rr)
+        both1=(prob_over_half_line(c['home'],0.5) or 0)*(prob_over_half_line(c['away'],0.5) or 0)*100
+        both2=(prob_over_half_line(c['home'],1.5) or 0)*(prob_over_half_line(c['away'],1.5) or 0)*100
+        add("🟨 Cartões — ambas equipes",[("Ambas 1+",f"{both1:.0f}%"),("Ambas 2+",f"{both2:.0f}%")])
+
+    # Finalizações.
+    s=ex.get("Finalizações")
+    if s:
+        add("🎯 Finalizações",[("Total da partida",f"{s['total']:.2f}".replace('.',','))])
+        if s.get("individual_reliable",False):
+            add("👥 Finalizações por equipe",[(team_a,f"{s['home']:.2f}".replace('.',',')),(team_b,f"{s['away']:.2f}".replace('.',','))])
+    t=ex.get("Chutes no alvo")
+    if t:
+        add("🥅 Finalizações no alvo",[("Total da partida",f"{t['total']:.2f}".replace('.',','))])
+        if t.get("individual_reliable",False):
+            add("👥 No alvo por equipe",[(team_a,f"{t['home']:.2f}".replace('.',',')),(team_b,f"{t['away']:.2f}".replace('.',','))])
+
+    # Outros dados.
+    for title,metric,suffix in (("⚪ Posse de bola","Posse (%)","%"),("🚫 Faltas por equipe","Faltas",""),("🚩 Impedimentos por equipe","Impedimentos","")):
+        va,vb=metric_value(a,metric),metric_value(b,metric)
+        if va is not None and vb is not None:
+            if suffix:
+                rows=[(team_a,f"{va:.1f}{suffix}"),(team_b,f"{vb:.1f}{suffix}")]
+            else:
+                rows=[(team_a,f"{va:.2f}".replace('.',',')),(team_b,f"{vb:.2f}".replace('.',','))]
+            add(title,rows)
+    return sections
+
+
+def render_share_button(team_a, team_b, league_name, probs, opportunities, expectations, a, b, df=None, sample_games=0):
     """Gera uma arte HD no tema escuro do GM SCORE com os mesmos dados exibidos na análise."""
     import json as _json
 
@@ -9935,6 +10051,7 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
             "expectations": exp_lines,
             "opportunities": opp_lines,
             "averages": avg_lines,
+            "market_sections": gm_share_market_sections(team_a, team_b, probs, expectations, a, b, df, sample_games),
             "home": team_a,
             "away": team_b,
         },
@@ -9989,9 +10106,10 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
     document.getElementById('shareBtn').onclick = async () => {{
       const avgH = D.averages.length*42;
       const oppH = D.opportunities.length*88;
+      const marketH = (D.market_sections||[]).reduce((sum,s)=>sum + 78 + s.rows.length*34, 0);
       const expRows = Math.ceil(D.expectations.length/5);
       const logicalW=1080;
-      const logicalH=Math.max(1850, 1250 + avgH + oppH + expRows*120);
+      const logicalH=Math.max(1850, 1300 + avgH + oppH + marketH + expRows*120);
       const scale=2; // arquivo final com 2160 px de largura para preservar alta resolução
       const canvas=document.createElement('canvas');
       canvas.width=logicalW*scale; canvas.height=logicalH*scale;
@@ -10049,6 +10167,23 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
           wrap(ctx,r[0],x+12,y+127,w-24,18,15,'600',C.muted);
         }});
         y+=195;
+      }}
+
+      if((D.market_sections||[]).length) {{
+        sectionTitle(ctx,'🧭 Mercados essenciais GM SCORE',y+34); y+=58;
+        D.market_sections.forEach((sec)=>{{
+          const h=58 + sec.rows.length*34;
+          rr(ctx,60,y,960,h,18,C.panel,C.border,1);
+          text(ctx,sec.title,88,y+34,22,'800',C.text);
+          let sy=y+64;
+          sec.rows.forEach((r)=>{{
+            text(ctx,r[0],92,sy,17,'500',C.muted);
+            text(ctx,r[1],988,sy,18,'800',C.text,'right');
+            sy+=34;
+          }});
+          y+=h+14;
+        }});
+        y+=8;
       }}
 
       if(D.opportunities.length) {{
@@ -10494,7 +10629,7 @@ def render_analysis():
         st.info("🔎 Nenhuma oportunidade atingiu os critérios atuais do GM SCORE para destaque nesta partida.")
 
     st.markdown("### 📲 Compartilhar")
-    render_share_button(team_a, team_b, league_name, probs, opportunities, expectations, a, b)
+    render_share_button(team_a, team_b, league_name, probs, opportunities, expectations, a, b, df=df, sample_games=comp_sample)
 
     try:
         _avg_profile = gm_auth_get_profile()
