@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-15-v77-gm-score-direct-bet-link"
+GM_BUILD = "2026-09-15-v78-admin-vip-mirror-central"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -2140,12 +2140,47 @@ def gm_render_admin_panel(profile):
         if st.button("🔄 Atualizar", use_container_width=True, key="gm_admin_refresh", help="Atualizar dados do painel"):
             st.rerun()
 
-    tab_tips, tab_news, tab_reviews, tab_vip = st.tabs([
-        "💡 Aprovação de dicas",
-        "📣 Publicar novidade",
-        "⭐ Avaliações de clientes",
-        "👥 Gestão de VIPs",
+    tab_system, tab_tips, tab_news, tab_reviews, tab_vip = st.tabs([
+        "⚽ Jogos / Sistema",
+        "💡 Dicas do Dia",
+        "📰 Novidades",
+        "⭐ Avaliações",
+        "👥 Clientes / VIP",
     ])
+    with tab_system:
+        st.markdown("### ⚽ Jogos e operação do sistema")
+        st.caption("Controles administrativos de atualização e diagnóstico. A experiência normal de Jogos permanece idêntica à do cliente VIP.")
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("🔄 Atualizar base de jogos", use_container_width=True, type="primary", key="gm_admin_games_refresh"):
+                for _fn_name in (
+                    "load_apifootball_prediction_fixtures_for_date",
+                    "load_apifootball_competition_fixtures_for_date",
+                    "load_apifootball_fixtures_for_date",
+                    "load_sofascore_fixtures_for_date",
+                    "load_espn_fixtures_for_date",
+                    "load_thesportsdb_fixtures_for_date",
+                    "load_fixtures_for_date",
+                ):
+                    _fn = globals().get(_fn_name)
+                    try:
+                        if _fn is not None and hasattr(_fn, "clear"):
+                            _fn.clear()
+                    except Exception:
+                        pass
+                st.success("Cache de jogos limpo. A próxima consulta carregará os dados novamente.")
+        with c2:
+            if st.button("🔄 Sincronizar resultados", use_container_width=True, key="gm_admin_results_sync"):
+                try:
+                    _sync = gm_calibration_auto_settle(limit=30, force=True)
+                    st.success(f"Sincronização concluída: {_sync.get('settled', 0)} resultado(s) atualizado(s).")
+                except Exception as exc:
+                    st.warning("Não foi possível concluir a sincronização agora.")
+                    st.caption(f"Detalhe: {type(exc).__name__}")
+        st.markdown("#### Diagnóstico das competições")
+        gm_render_apifootball_league_audit()
+        gm_render_apifootball_stat_audit()
+        gm_render_calibration_dashboard()
     with tab_tips:
         gm_render_admin_daily_pick_approval()
     with tab_news:
@@ -12609,46 +12644,49 @@ def gm_render_news_page():
 
 
 def gm_render_account_page(profile):
-    """Conta mobile/desktop; replica os acessos essenciais antes concentrados na sidebar."""
+    """Conta do ADM espelha a experiência VIP e acrescenta somente o acesso à Central Administrativa."""
     profile = profile or {}; is_admin = profile.get("role") == "admin"
     st.markdown("## 👤 Minha Conta")
     st.markdown(f"**{html.escape(str(profile.get('nome') or profile.get('email') or 'GM SCORE'))}**")
+
+    # V78: ADM também enxerga a mesma experiência de conta do cliente VIP.
+    st.success("⭐ VIP ativo")
+    vip_until_raw = profile.get("vip_until")
+    if vip_until_raw:
+        try:
+            vip_until_dt = datetime.fromisoformat(str(vip_until_raw).replace("Z", "+00:00"))
+            now_vip = datetime.now(vip_until_dt.tzinfo)
+            remaining_seconds = (vip_until_dt - now_vip).total_seconds()
+            remaining_days = max(0, math.ceil(remaining_seconds / 86400))
+            vip_until_br = vip_until_dt.astimezone(ZoneInfo("America/Sao_Paulo")).strftime("%d/%m/%Y às %H:%M")
+            remaining_label = "1 dia restante" if remaining_days == 1 else f"{remaining_days} dias restantes"
+            st.markdown(
+                f'<div class="gm-account-vip-meta"><span class="gm-account-days">📅 {remaining_label}</span>'
+                f'<span class="gm-account-expiry">Vencimento: {vip_until_br}</span></div>',
+                unsafe_allow_html=True,
+            )
+        except Exception:
+            pass
+
+    with st.expander("💳 Renovar VIP", expanded=False):
+        for plan in GM_VIP_PLANS:
+            st.markdown(f"**VIP {str(plan['title']).upper()} · {plan['pix_price']} no Pix**")
+            saving = str(plan.get("saving") or "").strip()
+            if saving: st.caption(saving)
+            gm_checkout_button(plan, "pix", "⚡ Renovar com Pix", primary=True)
+            if plan.get("card_price"):
+                gm_checkout_button(plan, "card", "💳 Renovar com cartão"); st.caption(plan.get("card_text") or "")
+        st.caption("O prazo é acrescentado somente após a confirmação válida do Mercado Pago.")
+    if st.button("⭐ Avaliar GM SCORE", use_container_width=True, key="gm_account_review"):
+        st.session_state["gm_reviews_open"] = True; st.rerun()
+
+    # Único acréscimo visível na Conta do administrador.
     if is_admin:
-        st.success("🛡️ Conta administrativa GM SCORE"); st.caption(f"Sistema operacional · Build {GM_BUILD}")
+        st.markdown("---")
+        st.caption(f"🛡️ Administrador GM SCORE · Build {GM_BUILD}")
         if st.button("🛠 Abrir Central Administrativa", use_container_width=True, type="primary", key="gm_account_admin"):
             st.session_state["gm_admin_panel_open"] = True; st.rerun()
-    else:
-        st.success("⭐ VIP ativo")
-        vip_until_raw = profile.get("vip_until")
-        if vip_until_raw:
-            try:
-                vip_until_dt = datetime.fromisoformat(str(vip_until_raw).replace("Z", "+00:00"))
-                now_vip = datetime.now(vip_until_dt.tzinfo)
-                remaining_seconds = (vip_until_dt - now_vip).total_seconds()
-                remaining_days = max(0, math.ceil(remaining_seconds / 86400))
-                vip_until_br = vip_until_dt.astimezone(ZoneInfo("America/Sao_Paulo")).strftime("%d/%m/%Y às %H:%M")
-                if remaining_days == 1:
-                    remaining_label = "1 dia restante"
-                else:
-                    remaining_label = f"{remaining_days} dias restantes"
-                st.markdown(
-                    f'<div class="gm-account-vip-meta"><span class="gm-account-days">📅 {remaining_label}</span>'
-                    f'<span class="gm-account-expiry">Vencimento: {vip_until_br}</span></div>',
-                    unsafe_allow_html=True,
-                )
-            except Exception:
-                pass
-        with st.expander("💳 Renovar VIP", expanded=False):
-            for plan in GM_VIP_PLANS:
-                st.markdown(f"**VIP {str(plan['title']).upper()} · {plan['pix_price']} no Pix**")
-                saving = str(plan.get("saving") or "").strip()
-                if saving: st.caption(saving)
-                gm_checkout_button(plan, "pix", "⚡ Renovar com Pix", primary=True)
-                if plan.get("card_price"):
-                    gm_checkout_button(plan, "card", "💳 Renovar com cartão"); st.caption(plan.get("card_text") or "")
-            st.caption("O prazo é acrescentado somente após a confirmação válida do Mercado Pago.")
-        if st.button("⭐ Avaliar GM SCORE", use_container_width=True, key="gm_account_review"):
-            st.session_state["gm_reviews_open"] = True; st.rerun()
+
     st.link_button("✈️ Suporte pelo Telegram", "https://t.me/suport_gm", use_container_width=True)
     if st.button("🚪 Sair", use_container_width=True, key="gm_account_logout"):
         gm_auth_sign_out(); st.session_state.pop("gm_admin_panel_open", None); st.rerun()
