@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-15-v81-games-return-context"
+GM_BUILD = "2026-09-15-v82-admin-bets-feed"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -2097,6 +2097,194 @@ def gm_render_admin_vip_manager():
 
 
 
+
+# ============================================================
+# APOSTAS DO ADM — feed manual, separado das Dicas do Dia
+# ============================================================
+def gm_admin_bets_client():
+    client = gm_auth_client_from_session()
+    if client is None:
+        raise RuntimeError("Sessão autenticada indisponível.")
+    return client
+
+
+def gm_admin_bets_list(active_only=False, limit=100):
+    # Lista publicações manuais; o RLS define o acesso.
+    client = gm_admin_bets_client()
+    query = client.table("gm_admin_bets").select("*").order("created_at", desc=True).limit(int(limit))
+    if active_only:
+        query = query.eq("is_active", True)
+    result = query.execute()
+    rows = getattr(result, "data", None) or []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def gm_admin_bet_is_current(row):
+    if not bool((row or {}).get("is_active")):
+        return False
+    valid_until = (row or {}).get("valid_until")
+    if not valid_until:
+        return True
+    try:
+        expiry = pd.to_datetime(valid_until, utc=True, errors="coerce")
+        if pd.isna(expiry):
+            return True
+        return expiry > pd.Timestamp.now(tz="UTC")
+    except Exception:
+        return True
+
+
+def gm_admin_bet_format_time(value):
+    return gm_news_format_datetime(value)
+
+
+def gm_admin_bet_publish(title, description, odd, bet_url, valid_until=None):
+    client = gm_admin_bets_client()
+    payload = {
+        "title": str(title).strip(),
+        "description": str(description).strip(),
+        "odd": float(odd),
+        "bet_url": str(bet_url).strip(),
+        "is_active": True,
+    }
+    if valid_until:
+        payload["valid_until"] = valid_until
+    result = client.table("gm_admin_bets").insert(payload).execute()
+    return getattr(result, "data", None)
+
+
+def gm_admin_bet_update(bet_id, payload):
+    client = gm_admin_bets_client()
+    data = dict(payload or {})
+    data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    result = client.table("gm_admin_bets").update(data).eq("id", str(bet_id)).execute()
+    return getattr(result, "data", None)
+
+
+def gm_admin_bet_delete(bet_id):
+    client = gm_admin_bets_client()
+    result = client.table("gm_admin_bets").delete().eq("id", str(bet_id)).execute()
+    return getattr(result, "data", None)
+
+
+def gm_render_admin_bets_manager():
+    st.markdown("### ⭐ Apostas do ADM")
+    st.caption("Publicações manuais independentes das Dicas do Dia. Não entram no desempenho nem no aprendizado estatístico do GM SCORE.")
+
+    with st.expander("➕ Publicar Aposta do ADM", expanded=True):
+        with st.form("gm_admin_bet_publish_form", clear_on_submit=True):
+            title = st.text_input("Título curto", max_chars=120, placeholder="Ex.: Especial da tarde")
+            description = st.text_area("Aposta / descrição", max_chars=600, height=100, placeholder="Ex.: Mais de 1.5 gols no jogo...")
+            odd = st.number_input("Odd", min_value=1.01, max_value=1000.0, value=1.50, step=0.01, format="%.2f")
+            bet_url = st.text_input("🔗 Link direto da aposta", placeholder="https://...")
+            use_expiry = st.checkbox("Definir horário limite")
+            expiry_date = st.date_input("Data limite", value=datetime.now(BRASILIA_TZ).date(), disabled=not use_expiry)
+            expiry_time = st.time_input("Horário limite", value=datetime.now(BRASILIA_TZ).replace(hour=23, minute=59, second=0, microsecond=0).time(), disabled=not use_expiry)
+            submitted = st.form_submit_button("⭐ Publicar Aposta do ADM", type="primary", use_container_width=True)
+        if submitted:
+            clean_url = str(bet_url or "").strip()
+            if not str(title or "").strip() or not str(description or "").strip():
+                st.warning("Informe título e descrição da aposta.")
+            elif not clean_url.lower().startswith("https://"):
+                st.warning("Informe um link HTTPS válido para a aposta.")
+            else:
+                valid_until = None
+                if use_expiry:
+                    local_dt = datetime.combine(expiry_date, expiry_time).replace(tzinfo=BRASILIA_TZ)
+                    if local_dt <= datetime.now(BRASILIA_TZ):
+                        st.warning("O horário limite precisa estar no futuro.")
+                        st.stop()
+                    valid_until = local_dt.astimezone(timezone.utc).isoformat()
+                try:
+                    gm_admin_bet_publish(title, description, odd, clean_url, valid_until)
+                    news_ok = True
+                    try:
+                        gm_admin_rpc("gm_admin_publish_news", {
+                            "p_title": "⭐ Nova Aposta do ADM disponível",
+                            "p_message": f"{str(title).strip()} · Odd {float(odd):.2f}. Confira a publicação na página Início.",
+                            "p_category": "novidade",
+                            "p_is_featured": True,
+                        })
+                    except Exception:
+                        news_ok = False
+                    st.success("Aposta do ADM publicada com sucesso.")
+                    if not news_ok:
+                        st.warning("A aposta foi publicada, mas a Novidade automática não pôde ser criada. Você pode publicá-la manualmente na aba Novidades.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error("Não foi possível publicar a Aposta do ADM.")
+                    st.caption(str(exc))
+
+    try:
+        rows = gm_admin_bets_list(active_only=False, limit=100)
+    except Exception as exc:
+        st.error("Não foi possível carregar as Apostas do ADM.")
+        st.caption(str(exc))
+        return
+    if not rows:
+        st.info("Nenhuma Aposta do ADM publicada ainda.")
+        return
+
+    st.markdown("#### Publicações")
+    for row in rows:
+        bet_id = str(row.get("id") or "")
+        active = gm_admin_bet_is_current(row)
+        raw_active = bool(row.get("is_active"))
+        status = "🟢 Ativa" if active else ("⏱ Encerrada" if raw_active else "⚪ Inativa")
+        title_now = str(row.get("title") or "Aposta do ADM")
+        with st.expander(f"{status} · {title_now} · Odd {float(row.get('odd') or 0):.2f}", expanded=False):
+            st.write(str(row.get("description") or ""))
+            st.caption(f"Publicada em {gm_admin_bet_format_time(row.get('created_at'))}" + (f" • Limite: {gm_admin_bet_format_time(row.get('valid_until'))}" if row.get("valid_until") else ""))
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("⏸ Encerrar" if raw_active else "▶️ Reativar", use_container_width=True, key=f"gm_admin_bet_toggle_{bet_id}"):
+                    try:
+                        gm_admin_bet_update(bet_id, {"is_active": not raw_active})
+                        st.rerun()
+                    except Exception as exc:
+                        st.error("Não foi possível alterar a publicação."); st.caption(str(exc))
+            with c2:
+                confirm = st.checkbox("Confirmar exclusão", key=f"gm_admin_bet_delete_confirm_{bet_id}")
+                if st.button("🗑 Excluir", use_container_width=True, disabled=not confirm, key=f"gm_admin_bet_delete_{bet_id}"):
+                    try:
+                        gm_admin_bet_delete(bet_id); st.rerun()
+                    except Exception as exc:
+                        st.error("Não foi possível excluir a publicação."); st.caption(str(exc))
+
+
+def gm_render_admin_bets_home():
+    # Card compacto na Home; ADM e VIP veem a mesma apresentação.
+    try:
+        rows = [r for r in gm_admin_bets_list(active_only=True, limit=30) if gm_admin_bet_is_current(r)]
+    except Exception:
+        return
+    if not rows:
+        return
+    show_all = bool(st.session_state.get("gm_admin_bets_show_all"))
+    visible = rows if show_all else rows[:3]
+    st.markdown("### ⭐ Apostas do ADM")
+    st.caption("Seleções manuais publicadas pela administração do GM SCORE.")
+    st.markdown('''<style>
+    .gm-adm-bet-card{background:linear-gradient(145deg,rgba(13,24,23,.97),rgba(9,15,20,.98));border:1px solid rgba(52,230,129,.27);border-left:3px solid #34e681;border-radius:14px;padding:11px 12px 9px;margin:.42rem 0 .18rem}
+    .gm-adm-bet-top{display:flex;align-items:center;justify-content:space-between;gap:8px}.gm-adm-bet-title{font-weight:900;color:#f8fafc;font-size:.94rem;line-height:1.2}.gm-adm-bet-odd{white-space:nowrap;color:#34e681;font-weight:950;font-size:.86rem;border:1px solid rgba(52,230,129,.28);border-radius:999px;padding:3px 8px;background:rgba(52,230,129,.08)}
+    .gm-adm-bet-desc{color:#cbd5df;font-size:.80rem;line-height:1.35;margin-top:5px}.gm-adm-bet-meta{color:#7f8997;font-size:.67rem;margin-top:7px}.gm-adm-bet-note{color:#7f8997;font-size:.64rem;margin-top:4px}
+    div[class*="st-key-gm_adm_bet_link_"] a{min-height:2.25rem!important;border-radius:10px!important;border:1px solid rgba(52,230,129,.45)!important;background:rgba(52,230,129,.08)!important;color:#eafff3!important;font-size:.79rem!important;font-weight:850!important}
+    </style>''', unsafe_allow_html=True)
+    for row in visible:
+        bet_id = str(row.get("id") or "")
+        try: odd_text = f"{float(row.get('odd') or 0):.2f}"
+        except Exception: odd_text = str(row.get("odd") or "—")
+        expiry = f" • até {gm_admin_bet_format_time(row.get('valid_until'))}" if row.get("valid_until") else ""
+        st.markdown(f'''<div class="gm-adm-bet-card"><div class="gm-adm-bet-top"><div class="gm-adm-bet-title">⭐ {html.escape(str(row.get('title') or 'Aposta do ADM'))}</div><div class="gm-adm-bet-odd">ODD {html.escape(odd_text)}</div></div><div class="gm-adm-bet-desc">{html.escape(str(row.get('description') or ''))}</div><div class="gm-adm-bet-meta">Publicada {html.escape(gm_admin_bet_format_time(row.get('created_at')))}{html.escape(expiry)}</div><div class="gm-adm-bet-note">Seleção manual do administrador · não integra o histórico estatístico das Dicas do Dia.</div></div>''', unsafe_allow_html=True)
+        url = str(row.get("bet_url") or "").strip()
+        if url.lower().startswith("https://"):
+            st.link_button("🎯 Ir para a aposta · GM SCORE  ›", url, use_container_width=True, key=f"gm_adm_bet_link_{bet_id}")
+    if len(rows) > 3:
+        label = "Mostrar somente as mais recentes" if show_all else f"Ver todas ({len(rows)})"
+        if st.button(label, use_container_width=True, key="gm_admin_bets_show_all_btn"):
+            st.session_state["gm_admin_bets_show_all"] = not show_all; st.rerun()
+
+
 def gm_render_admin_panel(profile):
     """Painel administrativo organizado por função. Validações continuam no Supabase."""
     if not profile or profile.get("role") != "admin":
@@ -2140,9 +2328,10 @@ def gm_render_admin_panel(profile):
         if st.button("🔄 Atualizar", use_container_width=True, key="gm_admin_refresh", help="Atualizar dados do painel"):
             st.rerun()
 
-    tab_system, tab_tips, tab_news, tab_reviews, tab_vip = st.tabs([
+    tab_system, tab_tips, tab_admin_bets, tab_news, tab_reviews, tab_vip = st.tabs([
         "⚽ Jogos / Sistema",
         "💡 Dicas do Dia",
+        "⭐ Apostas do ADM",
         "📰 Novidades",
         "⭐ Avaliações",
         "👥 Clientes / VIP",
@@ -2183,6 +2372,8 @@ def gm_render_admin_panel(profile):
         gm_render_calibration_dashboard()
     with tab_tips:
         gm_render_admin_daily_pick_approval()
+    with tab_admin_bets:
+        gm_render_admin_bets_manager()
     with tab_news:
         gm_render_admin_news_manager()
     with tab_reviews:
@@ -12861,6 +13052,7 @@ else:
     # Início preserva integralmente o seletor Data → Liga → Partida/equipes e o motor atual.
     # Se a análise foi aberta pela agenda geral, oferece retorno imediato ao mesmo dia.
     gm_render_games_return_button()
+    gm_render_admin_bets_home()
     gm_render_main_shortcuts()
     gm_render_apifootball_league_audit()
     gm_render_apifootball_stat_audit()
