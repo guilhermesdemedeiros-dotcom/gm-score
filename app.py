@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-15-v94-share-badges-embedded"
+GM_BUILD = "2026-09-15-v95-share-team-name-centered"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -10584,7 +10584,7 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
       const [hi,ai]=await Promise.all([loadImg(D.home_logo),loadImg(D.away_logo)]);
       if(hi)c.drawImage(hi,175,238,92,92);else tx(c,'⚽',220,305,58,'700',C.muted,'center');
       if(ai)c.drawImage(ai,813,238,92,92);else tx(c,'⚽',858,305,58,'700',C.muted,'center');
-      tx(c,D.home,300,365,27,'800',C.text,'center');tx(c,'×',540,315,40,'900',C.green,'center');tx(c,D.away,780,365,27,'800',C.text,'center');
+      tx(c,D.home,221,365,27,'800',C.text,'center');tx(c,'×',540,315,40,'900',C.green,'center');tx(c,D.away,859,365,27,'800',C.text,'center');
       let y=475;tx(c,'DESTAQUES DA ANÁLISE',70,y,29,'900',C.text);tx(c,'70%–95%',1010,y,22,'900',C.green,'right');y+=35;
       if(!D.highlights.length){{rr(c,60,y,960,150,18,C.panel,C.border,1);tx(c,'Nenhum mercado ficou na faixa de 70% a 95%.',540,y+72,24,'700',C.muted,'center');tx(c,'A análise completa continua disponível no GM SCORE.',540,y+108,18,'500',C.muted,'center');y+=180;}}
       else{{D.highlights.forEach((r,idx)=>{{rr(c,60,y,960,112,18,C.panel,C.border,1);wrap(c,r.label,88,y+42,690,28,23,'800',C.text);if(r.base)tx(c,r.base,88,y+84,16,'600',C.muted);tx(c,`${{Math.round(r.chance)}}%`,980,y+66,34,'900',C.green,'right');y+=128;}});}}
