@@ -38,7 +38,8 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-15-v103-desktop-nav-admin-bet-results"
+GM_BUILD = "2026-09-15-v105-daily-picks-clean-reset"
+GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -2516,26 +2517,47 @@ def gm_render_admin_bets_home():
         if st.button(label, use_container_width=True, key="gm_admin_bets_show_all_btn"):
             st.session_state["gm_admin_bets_show_all"] = not show_all; st.rerun()
 
-    # V103: histórico opcional das publicações manuais já finalizadas.
+    # V104: resultados manuais não ficam misturados à Home nem às Dicas do Dia.
+    # Um botão discreto abaixo das apostas ativas abre uma página exclusiva.
     try:
-        history = [r for r in gm_admin_bets_list(active_only=False, limit=100) if str(r.get("result_status") or "pending") in {"green", "red", "void"}]
+        history_count = len([r for r in gm_admin_bets_list(active_only=False, limit=100) if str(r.get("result_status") or "pending") in {"green", "red", "void"}])
     except Exception:
-        history = []
-    if history:
-        with st.expander(f"📚 Histórico de Apostas do ADM ({len(history)})", expanded=False):
-            for old in history[:30]:
-                old_title = html.escape(str(old.get("title") or "Aposta do ADM"))
-                try:
-                    old_odd = f"{float(old.get('odd') or 0):.2f}"
-                except Exception:
-                    old_odd = "—"
-                st.markdown(f"**{gm_admin_bet_result_label(old.get('result_status'))} · {old_title} · ODD {old_odd}**")
-                if old.get("description"):
-                    st.caption(str(old.get("description")))
-                st.caption("Finalizada " + gm_admin_bet_format_time(old.get("settled_at") or old.get("updated_at") or old.get("created_at")))
-                if old.get("result_image_url"):
-                    st.image(str(old.get("result_image_url")), caption="Comprovante do resultado", use_container_width=True)
-                st.markdown("---")
+        history_count = 0
+    if history_count:
+        if st.button("Ver resultados ›", use_container_width=False, key="gm_admin_bets_results_page_btn"):
+            st.session_state["gm_main_view"] = "admin_results"
+            st.rerun()
+
+
+def gm_render_admin_bets_results_page():
+    """V104: página exclusiva, para clientes e ADM, com resultados publicados manualmente."""
+    st.markdown("## 📋 Resultados do ADM")
+    st.caption("Histórico das Apostas do ADM que já foram finalizadas e publicadas.")
+    if st.button("‹ Voltar ao Início", use_container_width=False, key="gm_admin_results_back_home"):
+        st.session_state["gm_main_view"] = "analysis"
+        st.rerun()
+    try:
+        rows = [r for r in gm_admin_bets_list(active_only=False, limit=100) if str(r.get("result_status") or "pending") in {"green", "red", "void"}]
+    except Exception:
+        rows = []
+    if not rows:
+        st.info("Ainda não há resultados publicados pelo ADM.")
+        return
+    for row in rows:
+        title = html.escape(str(row.get("title") or "Aposta do ADM"))
+        try:
+            odd_text = f"{float(row.get('odd') or 0):.2f}"
+        except Exception:
+            odd_text = "—"
+        status = gm_admin_bet_result_label(row.get("result_status"))
+        st.markdown(f"### {status} · {title}")
+        st.markdown(f"**ODD {html.escape(odd_text)}**")
+        if row.get("description"):
+            st.write(str(row.get("description")))
+        st.caption("Finalizada " + gm_admin_bet_format_time(row.get("settled_at") or row.get("updated_at") or row.get("created_at")))
+        if row.get("result_image_url"):
+            st.image(str(row.get("result_image_url")), caption="Comprovante do resultado", use_container_width=True)
+        st.markdown("---")
 
 
 def gm_render_admin_panel(profile):
@@ -12819,6 +12841,8 @@ def gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=5):
     if (profile or {}).get("role") != "admin":
         return {"ok": False, "reason": "admin_only"}
     today = datetime.now(BRASILIA_TZ).date()
+    if today < GM_DAILY_PICK_RESET_DATE:
+        return {"ok": False, "reason": "reset_window", "options": {}, "rows": []}
     recent_rows = gm_daily_pick_recent(100)
     existing_rows = [r for r in recent_rows if str(r.get("pick_date") or "") == today.isoformat()]
     existing_kinds = {str(r.get("pick_kind") or "dica") for r in existing_rows}
@@ -12856,6 +12880,8 @@ def gm_daily_pick_publish_selected(choice):
     if not isinstance(choice, dict):
         return {"ok": False, "reason": "invalid_choice"}
     today = datetime.now(BRASILIA_TZ).date()
+    if today < GM_DAILY_PICK_RESET_DATE:
+        return {"ok": False, "reason": "reset_window"}
     pick_kind = str(choice.get("pick_kind") or "").strip()
     if pick_kind not in {"matadeira", "dica", "bingo"}:
         return {"ok": False, "reason": "invalid_kind"}
@@ -12893,8 +12919,22 @@ def gm_daily_pick_publish_selected(choice):
 
 
 def gm_daily_pick_recent(limit=80):
+    """V105: expõe somente o novo ciclo iniciado em 16/09/2026."""
     rows = gm_daily_pick_rpc("gm_daily_pick_recent_v2", {"p_limit": max(1, min(int(limit), 100))}) or []
-    return [r for r in rows if isinstance(r, dict)]
+    clean = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        kind = str(r.get("pick_kind") or "dica")
+        if kind not in {"matadeira", "dica", "bingo"}:
+            continue
+        try:
+            pick_day = datetime.fromisoformat(str(r.get("pick_date") or "")).date()
+        except Exception:
+            continue
+        if pick_day >= GM_DAILY_PICK_RESET_DATE:
+            clean.append(r)
+    return clean
 
 
 def _gm_daily_recent_market_rotation(rows, today):
@@ -12925,7 +12965,9 @@ def _gm_daily_recent_market_rotation(rows, today):
 def gm_daily_pick_publish_today(force_refresh=False):
     profile = gm_auth_get_profile(force=True)
     if (profile or {}).get("role") != "admin": return {"ok": False, "reason": "admin_only"}
-    today = datetime.now(BRASILIA_TZ).date(); recent_rows = gm_daily_pick_recent(100); existing_rows=[r for r in recent_rows if str(r.get("pick_date") or "") == today.isoformat()]
+    today = datetime.now(BRASILIA_TZ).date()
+    if today < GM_DAILY_PICK_RESET_DATE: return {"ok": False, "reason": "reset_window"}
+    recent_rows = gm_daily_pick_recent(100); existing_rows=[r for r in recent_rows if str(r.get("pick_date") or "") == today.isoformat()]
     history_market_counts, history_family_counts, history_kind_market_counts = _gm_daily_recent_market_rotation(recent_rows, today)
     existing_kinds={str(r.get("pick_kind") or "dica") for r in existing_rows}; missing=[k for k in ("matadeira","dica","bingo") if k not in existing_kinds]
     if not missing: return {"ok": True, "reason": "exists", "rows": existing_rows}
@@ -13065,6 +13107,9 @@ def gm_render_daily_pick_page():
         return
 
     today=datetime.now(BRASILIA_TZ).date(); yesterday=today-timedelta(days=1)
+    if today < GM_DAILY_PICK_RESET_DATE:
+        st.info(f"Novo ciclo das Dicas do Dia começa em {GM_DAILY_PICK_RESET_DATE:%d/%m/%Y}. O histórico anterior foi encerrado.")
+        return
     def lookup(day,kind):
         for r in rows:
             if str(r.get("pick_date") or "")==day.isoformat() and str(r.get("pick_kind") or "dica")==kind:
@@ -13585,7 +13630,7 @@ if (
     st.stop()
 
 _gm_requested_view = str(st.query_params.get("gm_view", "") or "").strip()
-if _gm_requested_view in {"analysis", "games", "daily_pick", "news", "account"}:
+if _gm_requested_view in {"analysis", "games", "daily_pick", "news", "account", "admin_results"}:
     st.session_state["gm_main_view"] = _gm_requested_view
     # V103: query param da navegação mobile é um comando de uso único. Sem isso,
     # ele reaplicava a view antiga em todo rerun e anulava a sidebar no desktop.
@@ -13612,6 +13657,8 @@ elif _gm_main_view == "news":
     gm_render_news_page()
 elif _gm_main_view == "account":
     gm_render_account_page(_gm_profile_after_gate)
+elif _gm_main_view == "admin_results":
+    gm_render_admin_bets_results_page()
 else:
     # V89: análises abertas pela aba Jogos usam uma tela dedicada ao confronto.
     # Nada da Home (Apostas do ADM, atalhos, auditorias ou seletores) é exibido.
