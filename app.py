@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-14-v65-learning-share-cleanup"
+GM_BUILD = "2026-09-15-v66-app-layout-admin-dashboard"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -2039,8 +2039,33 @@ def gm_render_admin_panel(profile):
         st.error("Acesso administrativo não autorizado.")
         return
 
-    st.markdown("## 🛠 Painel Administrativo")
-    st.caption("Funções administrativas separadas por área para facilitar a operação diária.")
+    st.markdown("## 🛡️ CENTRAL ADMINISTRATIVA · GM SCORE")
+    st.caption(f"Administrador • Sistema operacional • Build {GM_BUILD}")
+
+    # V66: visão operacional rica, calculada apenas com dados administrativos já existentes.
+    try:
+        _admin_users = gm_admin_list_users() or []
+    except Exception:
+        _admin_users = []
+    try:
+        _admin_reviews = gm_admin_rpc("gm_admin_list_reviews") or []
+    except Exception:
+        _admin_reviews = []
+    try:
+        _admin_picks = gm_daily_pick_recent(100) or []
+    except Exception:
+        _admin_picks = []
+    _admin_today = datetime.now(BRASILIA_TZ).date().isoformat()
+    _vip_active = sum(1 for r in _admin_users if str((r or {}).get("vip_status") or "") == "active" and not bool((r or {}).get("blocked")))
+    _tips_today = sum(1 for r in _admin_picks if str((r or {}).get("pick_date") or "") == _admin_today and str((r or {}).get("status") or "") != "no_pick")
+    _reviews_total = len([r for r in _admin_reviews if isinstance(r, dict)])
+    _pending_picks = sum(1 for r in _admin_picks if str((r or {}).get("status") or "") == "pending")
+    m1,m2,m3,m4 = st.columns(4)
+    m1.metric("VIPs ativos", _vip_active)
+    m2.metric("Dicas hoje", _tips_today)
+    m3.metric("Avaliações", _reviews_total)
+    m4.metric("Dicas pendentes", _pending_picks)
+    st.info("🟢 Área administrativa ativa · autenticação, pagamentos, motor estatístico e dados permanecem sob as mesmas regras do GM SCORE.")
 
     top1, top2 = st.columns([1, 1])
     with top1:
@@ -3028,13 +3053,25 @@ def gm_render_public_portal():
                 st.markdown("### 🧭 Navegação")
                 nav1, nav2 = st.columns(2)
                 with nav1:
-                    if st.button("⚽ Análises", use_container_width=True, key="gm_sidebar_nav_analysis"):
+                    if st.button("🏠 Início", use_container_width=True, key="gm_sidebar_nav_analysis"):
                         st.session_state["gm_main_view"] = "analysis"
                         st.rerun()
                 with nav2:
+                    if st.button("⚽ Jogos", use_container_width=True, key="gm_sidebar_nav_games"):
+                        st.session_state["gm_main_view"] = "games"
+                        st.rerun()
+                nav3, nav4 = st.columns(2)
+                with nav3:
                     if st.button("💡 Dicas do Dia", use_container_width=True, key="gm_sidebar_nav_daily_pick"):
                         st.session_state["gm_main_view"] = "daily_pick"
                         st.rerun()
+                with nav4:
+                    if st.button("📰 Novidades", use_container_width=True, key="gm_sidebar_nav_news"):
+                        st.session_state["gm_main_view"] = "news"
+                        st.rerun()
+                if st.button("👤 Minha Conta", use_container_width=True, key="gm_sidebar_nav_account"):
+                    st.session_state["gm_main_view"] = "account"
+                    st.rerun()
 
                 if state == "vip":
                     if st.button("⭐ Avaliar GM SCORE", use_container_width=True, key="gm_sidebar_review"):
@@ -3109,15 +3146,8 @@ try:
 except Exception:
     _gm_profile_after_gate = None
 
-# Sino de novidades no canto superior direito da área autenticada.
-# O contador vem do Supabase; nenhuma regra de VIP, sessão ou pagamento é alterada.
-if _gm_profile_after_gate:
-    try:
-        _gm_news_unread_top = gm_unread_news_count()
-    except Exception:
-        _gm_news_unread_top = 0
-    gm_render_top_news_bell(_gm_news_unread_top)
-
+# V66: as novidades ficam concentradas na aba própria da navegação.
+# O sino flutuante deixou de ser renderizado; RPCs, leitura e publicações permanecem intactos.
 if _gm_profile_after_gate and st.session_state.get("gm_news_open"):
     gm_render_news_center()
 
@@ -12379,7 +12409,7 @@ def gm_render_daily_pick_page():
     .gm-pick-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.gm-pick-title{font-weight:950;font-size:1.1rem;color:#34e681}.gm-pick-odd{font-size:1.6rem;font-weight:950;color:#34e681}.gm-pick-leg{background:#111b25;border:1px solid rgba(148,163,184,.12);border-radius:12px;padding:10px 12px;margin-top:8px}.gm-pick-muted{color:#94a3b8;font-size:.76rem}.gm-pick-market{color:#f8fafc;font-weight:850}.gm-pick-history{display:flex;gap:7px;flex-wrap:wrap;margin-top:8px}.gm-pick-dot{padding:7px 9px;border-radius:10px;background:#101923;border:1px solid rgba(148,163,184,.12);font-size:.75rem;font-weight:800}
     </style>''',unsafe_allow_html=True)
 
-    st.markdown("### 📅 Hoje — publicado para clientes")
+    st.markdown("### 📅 Hoje — publicado para clientes" if is_admin else "### 📅 Hoje")
     for kind in ("matadeira","dica","bingo"):
         _gm_daily_pick_card(lookup(today,kind),today,kind)
 
@@ -12421,14 +12451,130 @@ def gm_render_daily_pick_page():
             st.caption("Quanto maior a odd, menor tende a ser a probabilidade conjunta. Odds e probabilidades são estimativas pré-jogo, não garantia de retorno. Aposte com responsabilidade.")
 
 
+def gm_render_games_page():
+    """Agenda única das competições GM SCORE, sem alterar fontes ou cálculos."""
+    st.markdown("## ⚽ Jogos")
+    st.caption("Todos os jogos das competições GM SCORE em ordem de horário de Brasília.")
+    target_date = st.selectbox("📅 Data dos jogos", _date_options, key="gm_games_page_date", format_func=_agenda_date_label)
+    if st.button("🔄 Atualizar jogos", use_container_width=True, key=f"gm_games_refresh_{target_date}"):
+        for _fn in (load_apifootball_prediction_fixtures_for_date, load_apifootball_competition_fixtures_for_date, load_apifootball_fixtures_for_date, load_sofascore_fixtures_for_date, load_espn_fixtures_for_date, load_thesportsdb_fixtures_for_date, load_fixtures_for_date):
+            try: _fn.clear()
+            except Exception: pass
+        st.rerun()
+    try:
+        with st.spinner("Carregando jogos do dia..."):
+            fixtures = load_fixtures_for_date(target_date) or []
+    except Exception:
+        fixtures = []
+    safe = []
+    for f in fixtures:
+        comp = str((f or {}).get("competition") or "")
+        if comp not in COMPETITIONS: continue
+        if not valid_daily_fixture(f) or not fixture_matches_selected_date(f, target_date): continue
+        if not gm_fixture_matches_official_league_roster(f): continue
+        _merge_fixture_unique(safe, dict(f))
+    safe = sorted(safe, key=lambda f: (str(f.get("time") or "99:99"), str(f.get("competition") or ""), str(f.get("home") or "")))
+    if not safe:
+        st.info("Nenhum jogo das competições GM SCORE foi localizado para esta data.")
+        return
+    st.markdown(f"### {len(safe)} jogo(s) · {_agenda_date_label(target_date)}")
+    for i, f in enumerate(safe):
+        comp = str(f.get("competition") or ""); home = str(f.get("home") or ""); away = str(f.get("away") or ""); tm = str(f.get("time") or "—")
+        card_html = '<div class="gm-game-card"><div class="gm-game-time">{}</div><div class="gm-game-body"><div class="gm-game-league">{}</div><div class="gm-game-teams">{} <span>×</span> {}</div></div></div>'.format(html.escape(tm), html.escape(competition_display_name(comp)), html.escape(home), html.escape(away))
+        st.markdown(card_html, unsafe_allow_html=True)
+        if st.button("📊 Analisar", use_container_width=True, key=f"gm_games_analyze_{target_date}_{i}_{clean_col(comp)}"):
+            st.session_state["_goto_comp"] = comp; st.session_state["_goto_home"] = home; st.session_state["_goto_away"] = away; st.session_state["gm_main_view"] = "analysis"; st.rerun()
+
+
+def gm_render_news_page():
+    """Central de Novidades como página, substituindo o sino flutuante."""
+    st.markdown("## 📰 Novidades")
+    st.caption("Atualizações publicadas pela administração do GM SCORE.")
+    try: rows = gm_list_news() or []
+    except Exception:
+        st.warning("Não foi possível carregar as novidades agora."); return
+    hidden = set(st.session_state.get("gm_news_hidden_session", []))
+    rows = [r for r in rows if str((r or {}).get("id") or "") not in hidden]
+    if not rows:
+        st.info("Nenhuma novidade publicada no momento."); return
+    for row in rows:
+        news_id = str(row.get("id") or ""); title = str(row.get("title") or "Novidade"); message = str(row.get("message") or ""); category = str(row.get("category") or "novidade")
+        icon = str(GM_NEWS_CATEGORIES.get(category, "🆕 Novidade")).split(" ", 1)[0]; is_read = bool(row.get("is_read"))
+        st.markdown(f"### {icon} {title}")
+        if message: st.write(message)
+        st.caption(gm_news_format_datetime(row.get("published_at")) + (" · lida" if is_read else " · nova"))
+        c1, c2 = st.columns(2)
+        with c1:
+            if not is_read and news_id and st.button("✓ Marcar como lida", use_container_width=True, key=f"gm_news_page_read_{news_id}"):
+                try: gm_news_rpc("gm_mark_news_read", {"p_news_id": news_id}); st.rerun()
+                except Exception: st.warning("Não foi possível atualizar a leitura agora.")
+        with c2:
+            if news_id and st.button("Ocultar", use_container_width=True, key=f"gm_news_page_hide_{news_id}"):
+                hidden_now = set(st.session_state.get("gm_news_hidden_session", [])); hidden_now.add(news_id); st.session_state["gm_news_hidden_session"] = list(hidden_now); st.rerun()
+        st.divider()
+
+
+def gm_render_account_page(profile):
+    """Conta mobile/desktop; replica os acessos essenciais antes concentrados na sidebar."""
+    profile = profile or {}; is_admin = profile.get("role") == "admin"
+    st.markdown("## 👤 Minha Conta")
+    st.markdown(f"**{html.escape(str(profile.get('nome') or profile.get('email') or 'GM SCORE'))}**")
+    if is_admin:
+        st.success("🛡️ Conta administrativa GM SCORE"); st.caption(f"Sistema operacional · Build {GM_BUILD}")
+        if st.button("🛠 Abrir Central Administrativa", use_container_width=True, type="primary", key="gm_account_admin"):
+            st.session_state["gm_admin_panel_open"] = True; st.rerun()
+    else:
+        st.success("⭐ VIP ativo")
+        vip_until_raw = profile.get("vip_until")
+        if vip_until_raw:
+            try:
+                vip_until_dt = datetime.fromisoformat(str(vip_until_raw).replace("Z", "+00:00")); st.caption("Vencimento: " + vip_until_dt.astimezone(ZoneInfo("America/Sao_Paulo")).strftime("%d/%m/%Y às %H:%M"))
+            except Exception: pass
+        with st.expander("💳 Renovar VIP", expanded=False):
+            for plan in GM_VIP_PLANS:
+                st.markdown(f"**VIP {str(plan['title']).upper()} · {plan['pix_price']} no Pix**")
+                saving = str(plan.get("saving") or "").strip()
+                if saving: st.caption(saving)
+                gm_checkout_button(plan, "pix", "⚡ Renovar com Pix", primary=True)
+                if plan.get("card_price"):
+                    gm_checkout_button(plan, "card", "💳 Renovar com cartão"); st.caption(plan.get("card_text") or "")
+            st.caption("O prazo é acrescentado somente após a confirmação válida do Mercado Pago.")
+        if st.button("⭐ Avaliar GM SCORE", use_container_width=True, key="gm_account_review"):
+            st.session_state["gm_reviews_open"] = True; st.rerun()
+    st.link_button("✈️ Suporte pelo Telegram", "https://t.me/suport_gm", use_container_width=True)
+    if st.button("🚪 Sair", use_container_width=True, key="gm_account_logout"):
+        gm_auth_sign_out(); st.session_state.pop("gm_admin_panel_open", None); st.rerun()
+
+
+def gm_render_app_navigation(profile):
+    """Bottom navigation no mobile; no desktop a sidebar existente continua como navegação principal."""
+    current = str(st.session_state.get("gm_main_view") or "analysis")
+    items = [("analysis", "🏠 Início"), ("games", "⚽ Jogos"), ("daily_pick", "💡 Dicas"), ("news", "📰 Novidades"), ("account", "👤 Conta")]
+    with st.container(key="gm_mobile_bottom_nav"):
+        cols = st.columns(5)
+        for col, (view, label) in zip(cols, items):
+            with col:
+                if st.button(label, use_container_width=True, type="primary" if current == view else "secondary", key=f"gm_mobile_nav_{view}"):
+                    st.session_state["gm_main_view"] = view; st.rerun()
+
+
 def gm_render_main_shortcuts():
     st.markdown("### 🚀 Acesso rápido")
     c1,c2=st.columns(2)
     with c1:
-        if st.button("💡 Dicas do Dia",use_container_width=True,type="primary",key="gm_home_daily_pick"): st.session_state["gm_main_view"]="daily_pick"; st.rerun()
+        if st.button("⚽ Jogos do dia",use_container_width=True,type="primary",key="gm_home_games"): st.session_state["gm_main_view"]="games"; st.rerun()
     with c2:
-        if st.button("⚽ Analisar jogos",use_container_width=True,key="gm_home_analysis"): st.session_state["gm_main_view"]="analysis"; st.rerun()
+        if st.button("💡 Dicas do Dia",use_container_width=True,key="gm_home_daily_pick"): st.session_state["gm_main_view"]="daily_pick"; st.rerun()
 
+
+
+st.markdown(r"""
+<style>
+.gm-game-card{display:flex;align-items:center;gap:14px;background:linear-gradient(145deg,#0d1718,#0b1118);border:1px solid rgba(52,230,129,.22);border-radius:16px;padding:13px 14px;margin:.55rem 0 .28rem}.gm-game-time{font-weight:950;color:#34e681;min-width:54px;font-size:1rem}.gm-game-body{min-width:0;flex:1}.gm-game-league{color:#94a3b8;font-size:.76rem;font-weight:750}.gm-game-teams{color:#f8fafc;font-size:1rem;font-weight:900;margin-top:2px}.gm-game-teams span{color:#34e681;padding:0 4px}
+.st-key-gm_mobile_bottom_nav{display:none}
+@media (max-width:768px){[data-testid="stSidebar"]{display:none!important}[data-testid="collapsedControl"]{display:none!important}[data-testid="stAppViewContainer"] .main .block-container{padding-bottom:6.8rem!important}.st-key-gm_mobile_bottom_nav{display:block!important;position:fixed!important;left:0;right:0;bottom:0;z-index:99999;background:rgba(7,16,15,.97);border-top:1px solid rgba(52,230,129,.24);padding:.42rem .3rem calc(.42rem + env(safe-area-inset-bottom));box-shadow:0 -12px 30px rgba(0,0,0,.34)}.st-key-gm_mobile_bottom_nav [data-testid="stHorizontalBlock"]{gap:.18rem!important}.st-key-gm_mobile_bottom_nav [data-testid="column"]{min-width:0!important;width:20%!important;flex:1 1 20%!important}.st-key-gm_mobile_bottom_nav button{min-height:3.35rem!important;padding:.3rem .12rem!important;border-radius:12px!important;font-size:.69rem!important;line-height:1.05!important;white-space:normal!important}.gm-game-card{padding:11px 12px;border-radius:14px}.gm-game-time{min-width:48px}.gm-game-teams{font-size:.94rem}}
+</style>
+""", unsafe_allow_html=True)
 
 # Sincronização leve e silenciosa. Em uso normal verifica no máximo 2 pendências
 # a cada 30 minutos por sessão; o administrador pode forçar uma sincronização maior.
@@ -12438,14 +12584,19 @@ except Exception:
     pass
 
 _gm_main_view = str(st.session_state.get("gm_main_view") or "analysis")
+gm_render_app_navigation(_gm_profile_after_gate)
 
 if _gm_main_view == "daily_pick":
     gm_render_daily_pick_page()
+elif _gm_main_view == "games":
+    gm_render_games_page()
+elif _gm_main_view == "news":
+    gm_render_news_page()
+elif _gm_main_view == "account":
+    gm_render_account_page(_gm_profile_after_gate)
 else:
-    # Atalhos também ficam na página principal; a navegação lateral permanece.
+    # Início preserva integralmente o seletor Data → Liga → Partida/equipes e o motor atual.
     gm_render_main_shortcuts()
-    # As auditorias ficam disponíveis somente ao administrador autenticado e
-    # permanecem na tela de análises para não poluir as Oportunidades do Dia.
     gm_render_apifootball_league_audit()
     gm_render_apifootball_stat_audit()
     gm_render_calibration_dashboard()
