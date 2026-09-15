@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-14-v59-daily-tips-ui"
+GM_BUILD = "2026-09-14-v61-client-clean-result-tabs"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -2929,7 +2929,7 @@ def gm_render_public_portal():
                         st.session_state["gm_main_view"] = "analysis"
                         st.rerun()
                 with nav2:
-                    if st.button("⭐ Oportunidades", use_container_width=True, key="gm_sidebar_nav_daily_pick"):
+                    if st.button("💡 Dicas do Dia", use_container_width=True, key="gm_sidebar_nav_daily_pick"):
                         st.session_state["gm_main_view"] = "daily_pick"
                         st.rerun()
 
@@ -7637,7 +7637,12 @@ def render_core_markets_dashboard(a, b, team_a, team_b, df, probs=None, sample_g
     st.markdown("#### 🧭 Mercados essenciais GM SCORE")
     st.caption("Os campos principais aparecem sempre. Quando a base não sustenta um cálculo, o mercado é marcado como inconclusivo.")
     recovery_active = bool(a.get("_gm_recovery_used", False) or b.get("_gm_recovery_used", False))
-    if recovery_active:
+    try:
+        _market_profile = gm_auth_get_profile()
+    except Exception:
+        _market_profile = None
+    _market_is_admin = (_market_profile or {}).get("role") == "admin"
+    if recovery_active and _market_is_admin:
         st.caption("🔎 Recuperação de dados ativa: o GM SCORE cruzou histórico recente e cobertura específica por mercado. A confiança é calculada separadamente para gols, escanteios, cartões e finalizações; nenhum número é criado para preencher lacunas.")
     competition_fallback_active = bool(a.get("_gm_competition_fallback_used", False) or b.get("_gm_competition_fallback_used", False))
     if competition_fallback_active:
@@ -7649,7 +7654,7 @@ def render_core_markets_dashboard(a, b, team_a, team_b, df, probs=None, sample_g
     shot_sample = _gm_pair_metric_sample(a, b, ["Finalizações"], sample_games)
     sot_sample = _gm_pair_metric_sample(a, b, ["Chutes no alvo"], sample_games)
 
-    tabs = st.tabs(["⚽ Resultado e gols", "⛳ Escanteios", "🟨 Cartões", "🎯 Finalizações", "📊 Outros dados"])
+    tabs = st.tabs(["🏆 Resultado", "⚽ Gols", "⛳ Escanteios", "🟨 Cartões", "🎯 Finalizações", "📊 Outros dados"])
 
     with tabs[0]:
         status_result = _gm_market_status(sample_games, available=bool(probs), specific_sample=goal_sample)
@@ -7660,6 +7665,15 @@ def render_core_markets_dashboard(a, b, team_a, team_b, df, probs=None, sample_g
         _gm_market_card("🏆 Resultado final", status_result, compact_rows=rows,
                         note="Distribuição 1X2 final do modelo; casa + empate + fora = 100%." if probs else None)
 
+        if probs:
+            p1x=float(probs['home'])+float(probs['draw']); px2=float(probs['draw'])+float(probs['away']); p12=float(probs['home'])+float(probs['away'])
+            dc_rows=[("1X",f"{p1x:.0f}%"),("X2",f"{px2:.0f}%"),("12",f"{p12:.0f}%")]
+        else:
+            dc_rows=None
+        _gm_market_card("🛡️ Dupla chance", status_result, compact_rows=dc_rows,
+                        note="Cenários sobrepostos; não devem ser somados entre si." if probs else None)
+
+    with tabs[1]:
         g = ex.get("Gols")
         g_status = _gm_market_status(sample_games, available=bool(g), specific_sample=goal_sample)
         _gm_market_card("⚽ Gols na partida", g_status,
@@ -7686,14 +7700,6 @@ def render_core_markets_dashboard(a, b, team_a, team_b, df, probs=None, sample_g
         _gm_market_card("👥 Gols por equipe", g_status, compact_rows=rows,
                         note="Projeção ofensiva de cada equipe ajustada ao contexto da competição." if g else None)
 
-        if probs:
-            p1x=float(probs['home'])+float(probs['draw']); px2=float(probs['draw'])+float(probs['away']); p12=float(probs['home'])+float(probs['away'])
-            dc_rows=[("1X",f"{p1x:.0f}%"),("X2",f"{px2:.0f}%"),("12",f"{p12:.0f}%")]
-        else:
-            dc_rows=None
-        _gm_market_card("🛡️ Dupla chance", status_result, compact_rows=dc_rows,
-                        note="Cenários sobrepostos; não devem ser somados entre si." if probs else None)
-
         if g:
             btts_yes=(1-math.exp(-max(g['home'],0.01)))*(1-math.exp(-max(g['away'],0.01)))*100
             btts_rows=[("Sim",f"{btts_yes:.0f}%"),("Não",f"{100-btts_yes:.0f}%")]
@@ -7702,7 +7708,7 @@ def render_core_markets_dashboard(a, b, team_a, team_b, df, probs=None, sample_g
         _gm_market_card("🤝 Ambas marcam", g_status, compact_rows=btts_rows,
                         note="Estimativa derivada das projeções individuais de gols." if g else None)
 
-    with tabs[1]:
+    with tabs[2]:
         c = ex.get("Escanteios")
         c_status = _gm_market_status(sample_games, available=bool(c), specific_sample=corner_sample)
         _gm_market_card("⛳ Escanteios na partida", c_status,
@@ -7739,7 +7745,7 @@ def render_core_markets_dashboard(a, b, team_a, team_b, df, probs=None, sample_g
             note="Linhas individuais calculadas somente a partir da projeção disponível para cada equipe; a confiança segue a qualidade da base." if c else None,
         )
 
-    with tabs[2]:
+    with tabs[3]:
         c = ex.get("Cartões")
         c_status = _gm_market_status(sample_games, available=bool(c), specific_sample=card_sample)
         _gm_market_card("🟨 Cartões totais", c_status,
@@ -7766,7 +7772,7 @@ def render_core_markets_dashboard(a, b, team_a, team_b, df, probs=None, sample_g
         _gm_market_card("🟨 Ambas as equipes recebem 2+ cartões", c_status, compact_rows=r2,
                         note="Mercado mais exigente; não vira oportunidade apenas por ter média elevada." if c else None)
 
-    with tabs[3]:
+    with tabs[4]:
         s = ex.get("Finalizações")
         s_status = _gm_market_status(sample_games, available=bool(s), specific_sample=shot_sample)
         _gm_market_card(
@@ -7806,7 +7812,7 @@ def render_core_markets_dashboard(a, b, team_a, team_b, df, probs=None, sample_g
         )
 
 
-    with tabs[4]:
+    with tabs[5]:
         posse_a, posse_b = metric_value(a, "Posse (%)"), metric_value(b, "Posse (%)")
         posse_n = _gm_pair_metric_sample(a, b, ["Posse (%)"], 0)
         posse_rows = [(team_a, f"{posse_a:.1f}%"), (team_b, f"{posse_b:.1f}%")] if posse_a is not None and posse_b is not None else None
@@ -10304,7 +10310,12 @@ def render_analysis():
             eval_bits.append("confronto direto histórico verificado")
         if moneyline:
             eval_bits.append("mercado público como validação externa")
-        st.caption("📌 Leitura GM SCORE considera " + ", ".join(eval_bits) + ". O favoritismo é uma estimativa do cruzamento dos dados, não uma garantia de resultado.")
+        try:
+            _reading_profile = gm_auth_get_profile()
+        except Exception:
+            _reading_profile = None
+        if (_reading_profile or {}).get("role") == "admin":
+            st.caption("📌 Leitura GM SCORE considera " + ", ".join(eval_bits) + ". O favoritismo é uma estimativa do cruzamento dos dados, não uma garantia de resultado.")
 
         # Quando existe cotação pública validada, mantemos apenas a leitura de
         # mercado/edge. A odd justa em si não é repetida em um bloco separado.
