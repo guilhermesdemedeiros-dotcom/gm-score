@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-15-v100-fixture-coverage-all-leagues"
+GM_BUILD = "2026-09-15-v101-legitimate-juniors-fixture-fix"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -3770,7 +3770,11 @@ CURRENT_TEAM_ROSTERS = {
 STRICT_OFFICIAL_ROSTERS = {"UEFA Champions League"}
 SECONDARY_TEAM_RE = re.compile(
     r"(?:\bu\s*[- ]?\d{2}\b|\bsub\s*[- ]?\d{2}\b|\bunder\s*[- ]?\d{2}\b|"
-    r"\byouth\b|\bacadem(?:y|ia)\b|\bjunior(?:es|s)?\b|\breserv(?:e|es|as?)\b|"
+    # Não bloqueie a palavra "Junior/Juniors" isoladamente: ela faz parte de
+    # nomes oficiais de clubes profissionais (Boca Juniors, Argentinos Juniors,
+    # Junior FC etc.). Categorias de base continuam bloqueadas por Uxx/Sub-xx,
+    # Youth, Academy, reservas, feminino e demais marcadores inequívocos.
+    r"\byouth\b|\bacadem(?:y|ia)\b|\breserv(?:e|es|as?)\b|"
     r"\bb\s*team\b|\bteam\s*b\b|\bfemin(?:ino|ina|ine)?\b|\bwomen(?:'s)?\b|"
     r"\bfemenin(?:o|a)\b|\bfrauen\b|\bfemminile\b|\b(?:ii|iii)\s*$)",
     re.IGNORECASE,
@@ -10949,6 +10953,7 @@ def render_analysis():
                 for _fn in (
                     load_apifootball_prediction_fixtures_for_date,
                     load_apifootball_competition_fixtures_for_date,
+                    load_apifootball_all_competitions_fixtures_for_date,
                     load_apifootball_fixtures_for_date,
                     load_sofascore_fixtures_for_date,
                     load_espn_fixtures_for_date,
