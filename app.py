@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-14-v61-client-clean-result-tabs"
+GM_BUILD = "2026-09-14-v63-england-flag"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -1788,29 +1788,96 @@ def gm_admin_status_label(row):
     return "⏳ Pendente"
 
 
-def gm_render_admin_panel(profile):
-    """Painel administrativo. Todas as alterações são validadas novamente pelo banco."""
-    if not profile or profile.get("role") != "admin":
-        st.error("Acesso administrativo não autorizado.")
+def gm_render_admin_daily_pick_approval():
+    """Área privada do ADM para avaliar e publicar as Dicas do Dia."""
+    st.markdown("### 💡 Aprovação de dicas")
+    st.caption("O motor prepara alternativas privadas. Só a opção aprovada é publicada para os clientes e entra no histórico oficial.")
+    try:
+        rows = gm_daily_pick_recent(100)
+    except Exception:
+        st.warning("As Dicas do Dia ainda não estão ativas nesta instalação.")
         return
 
-    st.markdown("## 🛠 Painel Administrativo")
-    st.caption("Gerencie clientes VIP. As operações são validadas no Supabase antes de qualquer alteração.")
+    today = datetime.now(BRASILIA_TZ).date()
+    def lookup(kind):
+        for row in rows:
+            if str(row.get("pick_date") or "") == today.isoformat() and str(row.get("pick_kind") or "dica") == kind:
+                return row
+        return None
 
-    # Navegação principal fica realmente no topo do painel, antes das seções longas.
-    top1, top2 = st.columns([1, 1])
-    with top1:
-        if st.button("← Voltar", use_container_width=True, key="gm_admin_back_top", help="Retornar ao GM SCORE"):
-            st.session_state["gm_admin_panel_open"] = False
-            st.rerun()
-    with top2:
-        if st.button("🔄 Atualizar", use_container_width=True, key="gm_admin_refresh", help="Atualizar dados do painel"):
-            st.rerun()
+    try:
+        gm_daily_pick_settle_pending(limit=40)
+    except Exception:
+        pass
 
-    gm_render_admin_news_manager()
-    st.markdown("---")
-    gm_render_admin_reviews_manager()
-    st.markdown("---")
+    cache_key = f"gm_daily_admin_options_{today.isoformat()}"
+    if cache_key not in st.session_state:
+        try:
+            with st.spinner("Preparando opções para avaliação do ADM..."):
+                st.session_state[cache_key] = gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=5)
+        except Exception as exc:
+            st.session_state[cache_key] = {"ok": False, "reason": type(exc).__name__}
+
+    a1, a2 = st.columns(2)
+    if a1.button("🔄 Atualizar opções", use_container_width=True, key="gm_admin_daily_refresh_candidates"):
+        try:
+            with st.spinner("Atualizando odds e probabilidades..."):
+                st.session_state[cache_key] = gm_daily_pick_prepare_admin_options(force_refresh=True, per_kind=5)
+            st.rerun()
+        except Exception as exc:
+            st.error("Não foi possível atualizar as opções agora.")
+            st.caption(type(exc).__name__)
+    if a2.button("✅ Conferir resultados", use_container_width=True, key="gm_admin_daily_settle_now"):
+        try:
+            result = gm_daily_pick_settle_pending(limit=60)
+            st.success(f"Conferência concluída: {result['settled']} seleção(ões) atualizada(s).")
+            st.rerun()
+        except Exception as exc:
+            st.error("Não foi possível conferir os resultados agora.")
+            st.caption(type(exc).__name__)
+
+    prepared = st.session_state.get(cache_key) or {}
+    if not prepared.get("ok"):
+        st.info("As opções privadas ainda não puderam ser preparadas.")
+        return
+
+    option_map = prepared.get("options") or {}
+    for kind in ("matadeira", "dica", "bingo"):
+        label = GM_DAILY_PICK_PROFILES[kind]["label"]
+        if lookup(kind) is not None:
+            st.success(f"{label} já aprovada e publicada hoje.")
+            continue
+        opts = option_map.get(kind) or []
+        with st.expander(f"{label} — {len(opts)} opção(ões) para avaliar", expanded=(kind == "matadeira")):
+            if not opts:
+                st.caption("Nenhuma alternativa atingiu os filtros mínimos nesta atualização.")
+            for idx, opt in enumerate(opts, 1):
+                legs = _gm_daily_sort_legs(opt.get("legs") or [])
+                total_odd = _gm_daily_num(opt.get("total_odd")) or 0.0
+                model_prob = _gm_daily_num(opt.get("model_probability")) or 0.0
+                st.markdown(f"**Opção {idx} · {_gm_daily_bet_type_label(opt.get('bet_type'), len(legs))} · odd {total_odd:.2f}**")
+                st.caption(f"Probabilidade combinada estimada: {model_prob:.1f}% · todas as pernas ≥ 75%")
+                for leg in legs:
+                    st.markdown(f"- **{leg.get('market')}** @ {(_gm_daily_num(leg.get('odd')) or 0):.2f} · {(_gm_daily_num(leg.get('probability')) or 0):.0f}% · {leg.get('home')} × {leg.get('away')} · {_gm_daily_time_label(leg.get('time'))}")
+                if st.button("✅ Aprovar e publicar", use_container_width=True, type="primary", key=f"gm_admin_approve_{kind}_{idx}"):
+                    try:
+                        result = gm_daily_pick_publish_selected(opt)
+                        if result.get("ok"):
+                            st.session_state.pop(cache_key, None)
+                            st.success("Dica aprovada e publicada para os clientes.")
+                            st.rerun()
+                        elif result.get("reason") == "already_published":
+                            st.warning("Já existe uma dica oficial publicada para esta categoria hoje.")
+                        else:
+                            st.warning("Esta alternativa não pôde ser publicada pelos critérios de segurança.")
+                    except Exception as exc:
+                        st.error("Falha ao publicar a dica aprovada.")
+                        st.caption(type(exc).__name__)
+                if idx < len(opts):
+                    st.divider()
+
+
+def gm_render_admin_vip_manager():
     st.markdown("### 👥 Gestão de clientes VIP")
 
     try:
@@ -1964,10 +2031,46 @@ def gm_render_admin_panel(profile):
                     st.error("Não foi possível liberar a sessão do cliente.")
                     st.caption(str(exc))
 
+
+
+def gm_render_admin_panel(profile):
+    """Painel administrativo organizado por função. Validações continuam no Supabase."""
+    if not profile or profile.get("role") != "admin":
+        st.error("Acesso administrativo não autorizado.")
+        return
+
+    st.markdown("## 🛠 Painel Administrativo")
+    st.caption("Funções administrativas separadas por área para facilitar a operação diária.")
+
+    top1, top2 = st.columns([1, 1])
+    with top1:
+        if st.button("← Voltar", use_container_width=True, key="gm_admin_back_top", help="Retornar ao GM SCORE"):
+            st.session_state["gm_admin_panel_open"] = False
+            st.rerun()
+    with top2:
+        if st.button("🔄 Atualizar", use_container_width=True, key="gm_admin_refresh", help="Atualizar dados do painel"):
+            st.rerun()
+
+    tab_tips, tab_news, tab_reviews, tab_vip = st.tabs([
+        "💡 Aprovação de dicas",
+        "📣 Publicar novidade",
+        "⭐ Avaliações de clientes",
+        "👥 Gestão de VIPs",
+    ])
+    with tab_tips:
+        gm_render_admin_daily_pick_approval()
+    with tab_news:
+        gm_render_admin_news_manager()
+    with tab_reviews:
+        gm_render_admin_reviews_manager()
+    with tab_vip:
+        gm_render_admin_vip_manager()
+
     st.markdown("---")
     if st.button("← Voltar", use_container_width=True, key="gm_admin_back_bottom", help="Retornar ao GM SCORE"):
         st.session_state["gm_admin_panel_open"] = False
         st.rerun()
+
 
 
 def gm_render_auth_test_console():
@@ -2266,7 +2369,7 @@ def gm_payment_url():
 
 
 GM_PUBLIC_COMPETITIONS = [
-    "🇬🇧 Inglaterra - Premier League",
+    "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Inglaterra - Premier League",
     "🇪🇸 Espanha - La Liga",
     "🇮🇹 Itália - Serie A",
     "🇩🇪 Alemanha - Bundesliga",
@@ -3205,7 +3308,7 @@ def is_main_senior_team_name(name):
     return SECONDARY_TEAM_RE.search(text) is None
 
 COMPETITION_ICONS = {
-    "Inglaterra - Premier League": "🇬🇧", "Espanha - La Liga": "🇪🇸",
+    "Inglaterra - Premier League": "🏴󠁧󠁢󠁥󠁮󠁧󠁿", "Espanha - La Liga": "🇪🇸",
     "Itália - Serie A": "🇮🇹", "Alemanha - Bundesliga": "🇩🇪",
     "França - Ligue 1": "🇫🇷", "Portugal - Liga Portugal": "🇵🇹",
     "Holanda - Eredivisie": "🇳🇱", "Escócia - Premiership": "🏴",
