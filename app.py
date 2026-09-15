@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-15-v102-home-agenda-filter-clarity"
+GM_BUILD = "2026-09-15-v103-desktop-nav-admin-bet-results"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -2249,6 +2249,23 @@ def gm_render_admin_vip_manager():
 
 
 # ============================================================
+# NAVEGAÇÃO DESKTOP — sidebar deve controlar a mesma view do app
+# ============================================================
+def gm_desktop_navigate(view):
+    """V103: navegação lateral desktop sem interferir na navegação mobile."""
+    st.session_state["gm_main_view"] = str(view)
+    # Se o ADM estiver na Central, qualquer item normal da sidebar volta ao app.
+    st.session_state["gm_admin_panel_open"] = False
+    # gm_view é usado por links da navegação mobile. Consumido uma vez, não pode
+    # sobrescrever cliques posteriores da sidebar em cada rerun.
+    try:
+        if "gm_view" in st.query_params:
+            del st.query_params["gm_view"]
+    except Exception:
+        pass
+
+
+# ============================================================
 # APOSTAS DO ADM — feed manual, separado das Dicas do Dia
 # ============================================================
 def gm_admin_bets_client():
@@ -2309,6 +2326,34 @@ def gm_admin_bet_update(bet_id, payload):
     data["updated_at"] = datetime.now(timezone.utc).isoformat()
     result = client.table("gm_admin_bets").update(data).eq("id", str(bet_id)).execute()
     return getattr(result, "data", None)
+
+
+def gm_admin_bet_upload_result_image(bet_id, uploaded_file):
+    """Envia comprovante HD opcional para o bucket público gm-admin-bet-results."""
+    if uploaded_file is None:
+        return None
+    client = gm_admin_bets_client()
+    raw = uploaded_file.getvalue()
+    if not raw:
+        return None
+    if len(raw) > 12 * 1024 * 1024:
+        raise ValueError("A imagem deve ter no máximo 12 MB.")
+    content_type = str(getattr(uploaded_file, "type", "") or "image/jpeg")
+    allowed = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
+    if content_type not in allowed:
+        raise ValueError("Use uma imagem JPG, PNG ou WEBP.")
+    ext = allowed[content_type]
+    path = f"{str(bet_id)}/{int(time.time())}-{secrets.token_hex(4)}.{ext}"
+    bucket = client.storage.from_("gm-admin-bet-results")
+    bucket.upload(path, raw, {"content-type": content_type, "upsert": "false"})
+    public = bucket.get_public_url(path)
+    if isinstance(public, dict):
+        public = public.get("publicUrl") or public.get("public_url") or public.get("data", {}).get("publicUrl")
+    return str(public or "").strip()
+
+
+def gm_admin_bet_result_label(status):
+    return {"green": "✅ GREEN", "red": "❌ RED", "void": "↩️ ANULADA", "pending": "⏳ Pendente"}.get(str(status or "pending"), "⏳ Pendente")
 
 
 def gm_admin_bet_delete(bet_id):
@@ -2385,6 +2430,43 @@ def gm_render_admin_bets_manager():
         with st.expander(f"{status} · {title_now} · Odd {float(row.get('odd') or 0):.2f}", expanded=False):
             st.write(str(row.get("description") or ""))
             st.caption(f"Publicada em {gm_admin_bet_format_time(row.get('created_at'))}" + (f" • Limite: {gm_admin_bet_format_time(row.get('valid_until'))}" if row.get("valid_until") else ""))
+            current_result = str(row.get("result_status") or "pending")
+            st.markdown(f"**Resultado:** {gm_admin_bet_result_label(current_result)}")
+            result_choice = st.selectbox(
+                "Finalizar como",
+                options=["pending", "green", "red", "void"],
+                format_func=lambda x: gm_admin_bet_result_label(x),
+                index=["pending", "green", "red", "void"].index(current_result) if current_result in {"pending", "green", "red", "void"} else 0,
+                key=f"gm_admin_bet_result_{bet_id}",
+            )
+            result_image = st.file_uploader(
+                "📷 Comprovante do resultado (opcional · HD)",
+                type=["jpg", "jpeg", "png", "webp"],
+                accept_multiple_files=False,
+                key=f"gm_admin_bet_result_image_{bet_id}",
+                help="Opcional. JPG, PNG ou WEBP, até 12 MB.",
+            )
+            if row.get("result_image_url"):
+                st.image(str(row.get("result_image_url")), caption="Comprovante publicado", use_container_width=True)
+            if st.button("💾 Salvar resultado", use_container_width=True, type="primary", key=f"gm_admin_bet_save_result_{bet_id}"):
+                try:
+                    image_url = str(row.get("result_image_url") or "").strip() or None
+                    if result_image is not None:
+                        image_url = gm_admin_bet_upload_result_image(bet_id, result_image)
+                    payload = {
+                        "result_status": result_choice,
+                        "result_image_url": image_url,
+                        "settled_at": datetime.now(timezone.utc).isoformat() if result_choice != "pending" else None,
+                    }
+                    # Uma publicação finalizada deixa o feed ativo e passa ao histórico.
+                    if result_choice != "pending":
+                        payload["is_active"] = False
+                    gm_admin_bet_update(bet_id, payload)
+                    st.success("Resultado salvo no histórico.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error("Não foi possível salvar o resultado. Confirme se a migração V103 foi aplicada no Supabase.")
+                    st.caption(str(exc))
             c1, c2 = st.columns(2)
             with c1:
                 if st.button("⏸ Encerrar" if raw_active else "▶️ Reativar", use_container_width=True, key=f"gm_admin_bet_toggle_{bet_id}"):
@@ -2433,6 +2515,27 @@ def gm_render_admin_bets_home():
         label = "Mostrar somente as mais recentes" if show_all else f"Ver todas ({len(rows)})"
         if st.button(label, use_container_width=True, key="gm_admin_bets_show_all_btn"):
             st.session_state["gm_admin_bets_show_all"] = not show_all; st.rerun()
+
+    # V103: histórico opcional das publicações manuais já finalizadas.
+    try:
+        history = [r for r in gm_admin_bets_list(active_only=False, limit=100) if str(r.get("result_status") or "pending") in {"green", "red", "void"}]
+    except Exception:
+        history = []
+    if history:
+        with st.expander(f"📚 Histórico de Apostas do ADM ({len(history)})", expanded=False):
+            for old in history[:30]:
+                old_title = html.escape(str(old.get("title") or "Aposta do ADM"))
+                try:
+                    old_odd = f"{float(old.get('odd') or 0):.2f}"
+                except Exception:
+                    old_odd = "—"
+                st.markdown(f"**{gm_admin_bet_result_label(old.get('result_status'))} · {old_title} · ODD {old_odd}**")
+                if old.get("description"):
+                    st.caption(str(old.get("description")))
+                st.caption("Finalizada " + gm_admin_bet_format_time(old.get("settled_at") or old.get("updated_at") or old.get("created_at")))
+                if old.get("result_image_url"):
+                    st.image(str(old.get("result_image_url")), caption="Comprovante do resultado", use_container_width=True)
+                st.markdown("---")
 
 
 def gm_render_admin_panel(profile):
@@ -3512,23 +3615,23 @@ def gm_render_public_portal():
                 nav1, nav2 = st.columns(2)
                 with nav1:
                     if st.button("🏠 Início", use_container_width=True, key="gm_sidebar_nav_analysis"):
-                        st.session_state["gm_main_view"] = "analysis"
+                        gm_desktop_navigate("analysis")
                         st.rerun()
                 with nav2:
                     if st.button("⚽ Jogos", use_container_width=True, key="gm_sidebar_nav_games"):
-                        st.session_state["gm_main_view"] = "games"
+                        gm_desktop_navigate("games")
                         st.rerun()
                 nav3, nav4 = st.columns(2)
                 with nav3:
                     if st.button("💡 Dicas do Dia", use_container_width=True, key="gm_sidebar_nav_daily_pick"):
-                        st.session_state["gm_main_view"] = "daily_pick"
+                        gm_desktop_navigate("daily_pick")
                         st.rerun()
                 with nav4:
                     if st.button("📰 Novidades", use_container_width=True, key="gm_sidebar_nav_news"):
-                        st.session_state["gm_main_view"] = "news"
+                        gm_desktop_navigate("news")
                         st.rerun()
                 if st.button("👤 Minha Conta", use_container_width=True, key="gm_sidebar_nav_account"):
-                    st.session_state["gm_main_view"] = "account"
+                    gm_desktop_navigate("account")
                     st.rerun()
 
                 if state == "vip":
@@ -13484,6 +13587,12 @@ if (
 _gm_requested_view = str(st.query_params.get("gm_view", "") or "").strip()
 if _gm_requested_view in {"analysis", "games", "daily_pick", "news", "account"}:
     st.session_state["gm_main_view"] = _gm_requested_view
+    # V103: query param da navegação mobile é um comando de uso único. Sem isso,
+    # ele reaplicava a view antiga em todo rerun e anulava a sidebar no desktop.
+    try:
+        del st.query_params["gm_view"]
+    except Exception:
+        pass
 _gm_main_view = str(st.session_state.get("gm_main_view") or "analysis")
 # V86: o retorno contextual pertence somente ao fluxo Jogos → Análise. Ao navegar
 # deliberadamente para outra área, encerra a sessão de retorno e o botão desaparece.
