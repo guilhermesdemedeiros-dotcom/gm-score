@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-15-v98-competition-center-fix"
+GM_BUILD = "2026-09-15-v99-competition-true-center"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -3040,7 +3040,7 @@ def gm_render_match_hero(team_a, team_b, league_name, season_text, probs=None, u
     league_visual = gm_league_visual(league_name)
     league_logo = str(league_visual.get("logo") or "")
     league_logo_html = (f'<img src="{html.escape(league_logo, quote=True)}" alt="" loading="lazy" style="width:30px;height:30px;object-fit:contain">') if league_logo else ""
-    league_title = _gm_safe_html(competition_display_name(league_name))
+    league_title = _gm_safe_html(league_name)
     match_datetime = gm_current_match_datetime()
     season_html = _gm_safe_html(season_text)
     meta = f"{season_html}"
@@ -10619,7 +10619,7 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
     match_datetime = gm_current_match_datetime()
     data = _json.dumps({
         "title": f"{team_a} × {team_b}",
-        "league": competition_display_name(league_name),
+        "league": str(league_name),
         "home": team_a,
         "away": team_b,
         "home_logo": home_logo,
