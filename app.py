@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-15-v89-games-dedicated-match-view"
+GM_BUILD = "2026-09-15-v91-games-direct-analysis-hydration"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -10547,10 +10547,39 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
 
 def render_analysis():
     global period
+    # V91: antes de qualquer validação/carregamento, reidrata atomicamente o
+    # confronto vindo da aba Jogos. Assim reruns do Streamlit ou query params não
+    # conseguem deixar a tela dedicada sem as equipes selecionadas.
+    _pre_direct = st.session_state.get("gm_games_direct_match") or {}
+    if st.session_state.get("gm_analysis_origin") == "games" and _pre_direct:
+        _pc = str(_pre_direct.get("competition") or "")
+        _ph = str(_pre_direct.get("home") or "")
+        _pa = str(_pre_direct.get("away") or "")
+        if _pc in COMPETITIONS and _ph and _pa:
+            st.session_state.selected_competition = _pc
+            st.session_state.selected_home = _ph
+            st.session_state.selected_away = _pa
+            st.session_state.loaded_home = _ph
+            st.session_state.loaded_away = _pa
+            st.session_state.loaded_competition = _pc
+            st.session_state.league_widget = _pc
+            st.session_state.main_league_widget = _pc
+            st.session_state["_main_games_hidden_competition"] = _pc
+
     # V89: quando o confronto veio da aba Jogos, a análise vira uma tela dedicada.
     # O período continua sendo exatamente o já escolhido pelo usuário (10 por padrão),
     # mas os controles da Home não são renderizados neste fluxo.
     _games_direct_view = st.session_state.get("gm_analysis_origin") == "games"
+    if _games_direct_view and _pre_direct:
+        # Atualiza também os globais consumidos pelas funções legadas do motor.
+        # Isso não muda cálculo; apenas garante que elas apontem para a competição
+        # do confronto clicado neste mesmo ciclo de execução.
+        global league_name, config, used_year
+        _effective_comp = str(_pre_direct.get("competition") or "")
+        if _effective_comp in COMPETITIONS:
+            league_name = _effective_comp
+            config = COMPETITIONS[league_name]
+            used_year = current_season_year(config["season"])
     if _games_direct_view:
         try:
             period = int(st.session_state.get("analysis_period", 10))
@@ -10773,12 +10802,30 @@ def render_analysis():
 
         st.markdown("---")
 
+    # V90: no fluxo Jogos → Partida, resolve o confronto diretamente do payload
+    # persistente criado no clique. Isso evita que reruns/query params apaguem a
+    # seleção antes de o motor estatístico receber as equipes.
+    if _games_direct_view:
+        _direct = st.session_state.get("gm_games_direct_match") or {}
+        _direct_comp = str(_direct.get("competition") or "")
+        if _direct_comp == league_name:
+            _dh = resolve_team_name(_direct.get("home"), teams)
+            _da = resolve_team_name(_direct.get("away"), teams)
+            if _dh and _da:
+                st.session_state.selected_home = _dh
+                st.session_state.selected_away = _da
+                st.session_state.loaded_home = _dh
+                st.session_state.loaded_away = _da
+                st.session_state.loaded_competition = league_name
+                st.session_state["_main_games_hidden_competition"] = league_name
+                st.session_state["_synced_loaded_signature"] = f"{league_name}|{_dh}|{_da}"
+
     loaded_home = resolve_team_name(st.session_state.get("loaded_home"), teams)
     loaded_away = resolve_team_name(st.session_state.get("loaded_away"), teams)
 
     if loaded_home and loaded_away:
         st.caption(f"✅ Jogo carregado: {loaded_home} × {loaded_away}")
-        if st.button("↩️ Escolher outro confronto", use_container_width=True, key="choose_another_match"):
+        if not _games_direct_view and st.button("↩️ Escolher outro confronto", use_container_width=True, key="choose_another_match"):
             st.session_state.loaded_home = None
             st.session_state.loaded_away = None
             st.session_state.selected_home = None
@@ -10787,7 +10834,11 @@ def render_analysis():
             st.session_state.pop("_synced_loaded_signature", None)
             st.rerun()
     else:
-        st.info("Escolha um jogo da data ou selecione as equipes manualmente para gerar a análise.")
+        if _games_direct_view:
+            st.error("Não foi possível associar esta partida à base atual da competição.")
+            st.caption("Volte aos jogos e tente novamente. Nenhuma análise foi calculada com equipes incorretas.")
+        else:
+            st.info("Escolha um jogo da data ou selecione as equipes manualmente para gerar a análise.")
         return
 
     team_a, team_b = loaded_home, loaded_away
@@ -12773,10 +12824,38 @@ def gm_render_games_page():
             # V81: transporta o contexto completo do jogo e neutraliza o gm_view=games
             # que pode permanecer na URL da navegação mobile. Sem isso, o query param
             # poderia devolver o usuário imediatamente à agenda após o rerun.
-            st.session_state["_goto_comp"] = comp
-            st.session_state["_goto_home"] = home
-            st.session_state["_goto_away"] = away
-            st.session_state["_goto_date"] = target_date
+            # V90: payload persistente e atômico da partida. A tela dedicada não
+            # depende mais dos widgets/seletores da Home para descobrir o confronto.
+            st.session_state["gm_games_direct_match"] = {
+                "competition": comp,
+                "home": home,
+                "away": away,
+                "date": target_date.isoformat() if hasattr(target_date, "isoformat") else str(target_date),
+            }
+            # V91: hidrata imediatamente o mesmo estado usado pela análise normal.
+            # O payload continua como fonte persistente, mas a abertura não depende
+            # de um segundo rerun para consumir _goto_*.
+            st.session_state.selected_competition = comp
+            st.session_state.selected_home = home
+            st.session_state.selected_away = away
+            st.session_state.loaded_home = home
+            st.session_state.loaded_away = away
+            st.session_state.loaded_competition = comp
+            st.session_state.league_widget = comp
+            st.session_state.main_league_widget = comp
+            st.session_state["_main_games_hidden_competition"] = comp
+            st.session_state["_synced_loaded_signature"] = f"{comp}|{home}|{away}"
+            try:
+                _comp_key = clean_col(str(comp))
+                st.session_state[f"main_fixture_date_{_comp_key}"] = target_date
+                st.session_state[f"main_match_choice_{_comp_key}"] = "📅 Jogos da data"
+            except Exception:
+                pass
+            # Limpa resíduos do mecanismo antigo para que não sobrescrevam o payload.
+            st.session_state.pop("_goto_comp", None)
+            st.session_state.pop("_goto_home", None)
+            st.session_state.pop("_goto_away", None)
+            st.session_state.pop("_goto_date", None)
             st.session_state["gm_games_return_date"] = target_date
             st.session_state["gm_games_return_label"] = _agenda_date_label(target_date)
             st.session_state["gm_games_return_index"] = i
@@ -13106,6 +13185,7 @@ if _gm_main_view not in {"analysis", "games"}:
     st.session_state.pop("gm_games_return_date", None)
     st.session_state.pop("gm_games_return_label", None)
     st.session_state.pop("gm_games_return_index", None)
+    st.session_state.pop("gm_games_direct_match", None)
 gm_render_app_navigation(_gm_profile_after_gate)
 
 if _gm_main_view == "daily_pick":
