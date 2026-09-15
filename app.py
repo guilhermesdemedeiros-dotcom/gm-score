@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-15-v72-scotland-flag"
+GM_BUILD = "2026-09-15-v73-account-support-dedup"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -12679,7 +12679,8 @@ else:
     render_analysis()
 
 st.markdown("---")
-st.link_button("✈️ Suporte pelo Telegram", "https://t.me/suport_gm", use_container_width=True)
+if _gm_main_view != "account":
+    st.link_button("✈️ Suporte pelo Telegram", "https://t.me/suport_gm", use_container_width=True)
 
 st.caption("As chances são estimativas estatísticas e não garantem resultado. Use como apoio à análise e aposte com responsabilidade.")
 
