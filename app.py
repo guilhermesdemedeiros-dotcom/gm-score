@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-15-v101-legitimate-juniors-fixture-fix"
+GM_BUILD = "2026-09-15-v102-home-agenda-filter-clarity"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -10938,7 +10938,26 @@ def render_analysis():
                 key=f"main_fixture_date_{clean_col(league_name)}",
                 format_func=_agenda_date_label,
             )
-            st.caption("🕒 Horário de Brasília · toque em **Analisar** para carregar o confronto")
+            # V102: a agenda da Home é deliberadamente filtrada pela competição
+            # selecionada acima. Deixa isso explícito e oferece acesso imediato à
+            # agenda global para evitar que jogos de OUTRA competição pareçam
+            # ausentes (ex.: Sul-Americana enquanto Libertadores está selecionada).
+            st.caption(
+                f"🕒 Horário de Brasília · exibindo somente **{competition_display_name(league_name)}** "
+                "nesta lista · toque em **Analisar** para carregar o confronto"
+            )
+            if st.button(
+                "🌐 Ver todos os jogos desta data",
+                use_container_width=True,
+                key=f"main_open_all_games_{main_fixture_date}",
+            ):
+                st.session_state["gm_games_page_date"] = main_fixture_date
+                st.session_state["gm_main_view"] = "games"
+                try:
+                    st.query_params["gm_view"] = "games"
+                except Exception:
+                    pass
+                st.rerun()
 
             # v43: a agenda NÃO depende mais do elenco estatístico carregado.
             # O calendário e a base de estatísticas têm ciclos de atualização diferentes;
