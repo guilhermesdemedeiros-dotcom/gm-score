@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-15-v95-share-team-name-centered"
+GM_BUILD = "2026-09-15-v96-match-league-date-visual"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -249,6 +249,51 @@ def gm_current_match_team_id(team_name, side=None):
         pass
     return ""
 
+
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def gm_league_visual(competition):
+    """Identidade visual oficial da competição; camada somente de apresentação."""
+    league_id = str((GM_APIFOOTBALL_FIXED_LEAGUE_IDS or {}).get(competition) or "").strip()
+    if not league_id:
+        return {"id": "", "name": competition_display_name(competition), "logo": ""}
+    try:
+        leagues, err = gm_apifootball_all_leagues()
+        if not err:
+            for row in leagues or []:
+                if not isinstance(row, dict):
+                    continue
+                rid = str(row.get("league_id") or row.get("league_key") or "").strip()
+                if rid != league_id:
+                    continue
+                logo = str(row.get("league_logo") or row.get("league_badge") or "").strip()
+                if not logo.lower().startswith("https://"):
+                    logo = ""
+                return {
+                    "id": league_id,
+                    "name": str(row.get("league_name") or competition_display_name(competition)),
+                    "logo": logo,
+                }
+    except Exception:
+        pass
+    return {"id": league_id, "name": competition_display_name(competition), "logo": ""}
+
+
+def gm_current_match_datetime():
+    """Data/hora visual do confronto aberto pela agenda; não participa dos cálculos."""
+    try:
+        payload = st.session_state.get("gm_games_direct_match") or {}
+        raw_date = str(payload.get("date") or "").strip()
+        raw_time = str(payload.get("time") or "").strip()
+        if raw_date:
+            dt = datetime.strptime(raw_date[:10], "%Y-%m-%d")
+            label = dt.strftime("%d/%m/%Y")
+            if raw_time and raw_time != "—":
+                label += f" • {raw_time[:5]}"
+            return label
+    except Exception:
+        pass
+    return ""
 
 def gm_team_badge_html(team_name, competition=None, team_id=None, size=24, show_name=True):
     visual = gm_team_visual(team_name, competition, team_id)
@@ -2992,8 +3037,15 @@ def gm_render_match_hero(team_a, team_b, league_name, season_text, probs=None, u
     team_a_visual = gm_team_badge_html(team_a, league_name, team_id=gm_current_match_team_id(team_a, "home"), size=38)
     team_b_visual = gm_team_badge_html(team_b, league_name, team_id=gm_current_match_team_id(team_b, "away"), size=38)
     league_html = _gm_safe_html(league_name)
+    league_visual = gm_league_visual(league_name)
+    league_logo = str(league_visual.get("logo") or "")
+    league_logo_html = (f'<img src="{html.escape(league_logo, quote=True)}" alt="" loading="lazy" style="width:30px;height:30px;object-fit:contain">') if league_logo else ""
+    league_title = _gm_safe_html(competition_display_name(league_name))
+    match_datetime = gm_current_match_datetime()
     season_html = _gm_safe_html(season_text)
-    meta = f"{league_html} • {season_html}"
+    meta = f"{season_html}"
+    if match_datetime:
+        meta += f" • {_gm_safe_html(match_datetime)}"
     if updated_until is not None and not pd.isna(updated_until):
         try:
             meta += f" • dados até {pd.Timestamp(updated_until):%d/%m/%Y}"
@@ -3037,8 +3089,9 @@ def gm_render_match_hero(team_a, team_b, league_name, season_text, probs=None, u
         </style>
         <section class="gm-real-match">
           <div class="gm-real-kicker">Partida carregada • análise VIP</div>
-          <div class="gm-real-title" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">{team_a_visual} <span style="opacity:.45">×</span> {team_b_visual}</div>
-          <div class="gm-real-meta">{meta}</div>
+          <div style="display:flex;align-items:center;justify-content:center;gap:8px;margin:.55rem 0 .25rem;font-weight:850;color:#cbd5e1">{league_logo_html}<span>{league_title}</span></div>
+          <div class="gm-real-title" style="display:flex;align-items:center;justify-content:center;gap:16px;flex-wrap:nowrap">{team_a_visual} <span style="opacity:.45">×</span> {team_b_visual}</div>
+          <div class="gm-real-meta" style="text-align:center">{meta}</div>
           {probability_html}
         </section>
         """,
@@ -10553,6 +10606,9 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
     away_visual = gm_team_visual(team_b, league_name, gm_current_match_team_id(team_b, "away"))
     home_logo = gm_badge_data_uri(home_visual.get("badge"))
     away_logo = gm_badge_data_uri(away_visual.get("badge"))
+    league_visual = gm_league_visual(league_name)
+    league_logo = gm_badge_data_uri(league_visual.get("logo"))
+    match_datetime = gm_current_match_datetime()
     data = _json.dumps({
         "title": f"{team_a} × {team_b}",
         "league": competition_display_name(league_name),
@@ -10560,6 +10616,8 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
         "away": team_b,
         "home_logo": home_logo,
         "away_logo": away_logo,
+        "league_logo": league_logo,
+        "match_datetime": match_datetime,
         "highlights": highlights,
     }, ensure_ascii=False)
 
@@ -10580,11 +10638,14 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
       const W=1080,H=1180+Math.max(0,D.highlights.length-3)*128,scale=2;
       const canvas=document.createElement('canvas');canvas.width=W*scale;canvas.height=H*scale;const c=canvas.getContext('2d');c.scale(scale,scale);c.fillStyle=C.bg;c.fillRect(0,0,W,H);
       tx(c,'GM',70,82,50,'900','#fff');tx(c,'SCORE',165,82,50,'900',C.green);tx(c,'ANÁLISE • ESTATÍSTICAS • PROBABILIDADES',70,118,18,'700','#93e9bc');
-      rr(c,60,160,960,260,22,C.panel,C.border,2);tx(c,D.league.toUpperCase(),540,205,20,'800',C.muted,'center');
-      const [hi,ai]=await Promise.all([loadImg(D.home_logo),loadImg(D.away_logo)]);
-      if(hi)c.drawImage(hi,175,238,92,92);else tx(c,'⚽',220,305,58,'700',C.muted,'center');
-      if(ai)c.drawImage(ai,813,238,92,92);else tx(c,'⚽',858,305,58,'700',C.muted,'center');
-      tx(c,D.home,221,365,27,'800',C.text,'center');tx(c,'×',540,315,40,'900',C.green,'center');tx(c,D.away,859,365,27,'800',C.text,'center');
+      rr(c,60,160,960,260,22,C.panel,C.border,2);
+      const [hi,ai,li]=await Promise.all([loadImg(D.home_logo),loadImg(D.away_logo),loadImg(D.league_logo)]);
+      if(li)c.drawImage(li,455,178,42,42);
+      tx(c,D.league.toUpperCase(),li?515:540,208,20,'800',C.muted,li?'left':'center');
+      if(D.match_datetime)tx(c,D.match_datetime,540,236,17,'700',C.muted,'center');
+      if(hi)c.drawImage(hi,278,250,92,92);else tx(c,'⚽',324,317,58,'700',C.muted,'center');
+      if(ai)c.drawImage(ai,710,250,92,92);else tx(c,'⚽',756,317,58,'700',C.muted,'center');
+      tx(c,D.home,324,377,27,'800',C.text,'center');tx(c,'×',540,326,40,'900',C.green,'center');tx(c,D.away,756,377,27,'800',C.text,'center');
       let y=475;tx(c,'DESTAQUES DA ANÁLISE',70,y,29,'900',C.text);tx(c,'70%–95%',1010,y,22,'900',C.green,'right');y+=35;
       if(!D.highlights.length){{rr(c,60,y,960,150,18,C.panel,C.border,1);tx(c,'Nenhum mercado ficou na faixa de 70% a 95%.',540,y+72,24,'700',C.muted,'center');tx(c,'A análise completa continua disponível no GM SCORE.',540,y+108,18,'500',C.muted,'center');y+=180;}}
       else{{D.highlights.forEach((r,idx)=>{{rr(c,60,y,960,112,18,C.panel,C.border,1);wrap(c,r.label,88,y+42,690,28,23,'800',C.text);if(r.base)tx(c,r.base,88,y+84,16,'600',C.muted);tx(c,`${{Math.round(r.chance)}}%`,980,y+66,34,'900',C.green,'right');y+=128;}});}}
@@ -12987,6 +13048,7 @@ def gm_render_games_page():
                 "home": home,
                 "away": away,
                 "date": target_date.isoformat() if hasattr(target_date, "isoformat") else str(target_date),
+                "time": tm,
                 # V92: identidade oficial da partida viaja junto com a navegação.
                 # Estes IDs servem apenas para resolver o confronto correto; não
                 # alteram fórmulas, probabilidades ou critérios estatísticos.
