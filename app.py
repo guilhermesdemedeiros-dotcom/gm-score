@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-15-v99-competition-true-center"
+GM_BUILD = "2026-09-15-v100-fixture-coverage-all-leagues"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -9942,6 +9942,38 @@ def load_apifootball_competition_fixtures_for_date(competition, target_date):
     return fixtures
 
 
+@st.cache_data(ttl=900, show_spinner=False)
+def load_apifootball_all_competitions_fixtures_for_date(target_date):
+    """Varredura de cobertura da agenda nas 21 competições suportadas.
+
+    A consulta global de ``get_events`` pode retornar uma grade parcial. Esta
+    rotina consulta cada ``league_id`` auditado separadamente e serve SOMENTE
+    para completar a agenda de partidas. Não fornece dados ao motor estatístico
+    e não altera probabilidades, médias, thresholds ou critérios de análise.
+    """
+    if isinstance(target_date, pd.Timestamp):
+        target_date = target_date.date()
+    if isinstance(target_date, datetime):
+        target_date = target_date.date()
+    if not isinstance(target_date, date):
+        try:
+            target_date = pd.to_datetime(target_date).date()
+        except Exception:
+            return []
+
+    fixtures = []
+    for competition in GM_APIFOOTBALL_FIXED_LEAGUE_IDS.keys():
+        try:
+            fixtures.extend(
+                load_apifootball_competition_fixtures_for_date(competition, target_date) or []
+            )
+        except Exception:
+            # Falha aberta por competição: as demais fontes da agenda continuam
+            # disponíveis e uma liga indisponível não derruba o calendário todo.
+            continue
+    return fixtures
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_fixtures_for_date(target_date):
     """Carrega somente jogos das competições suportadas para uma data de Brasília."""
@@ -9961,6 +9993,16 @@ def load_fixtures_for_date(target_date):
     # mapeamento por nome e corrige omissões pontuais (ex.: Premier League).
     try:
         fixtures.extend(load_apifootball_fixtures_for_date(today))
+    except Exception:
+        pass
+
+    # v100: cobertura liga a liga. O endpoint global do provedor pode omitir
+    # partidas isoladas mesmo quando outras partidas da mesma competição vêm na
+    # resposta. Consultar os 21 league_id auditados individualmente evita esse
+    # falso negativo (especialmente em mata-matas continentais) e vale para
+    # qualquer data escolhida pelo usuário. É somente descoberta de agenda.
+    try:
+        fixtures.extend(load_apifootball_all_competitions_fixtures_for_date(today))
     except Exception:
         pass
 
@@ -13028,7 +13070,7 @@ def gm_render_games_page():
     st.caption("Todos os jogos das competições GM SCORE em ordem de horário de Brasília.")
     target_date = st.selectbox("📅 Data dos jogos", _date_options, key="gm_games_page_date", format_func=_agenda_date_label)
     if st.button("🔄 Atualizar jogos", use_container_width=True, key=f"gm_games_refresh_{target_date}"):
-        for _fn in (load_apifootball_prediction_fixtures_for_date, load_apifootball_competition_fixtures_for_date, load_apifootball_fixtures_for_date, load_sofascore_fixtures_for_date, load_espn_fixtures_for_date, load_thesportsdb_fixtures_for_date, load_fixtures_for_date):
+        for _fn in (load_apifootball_prediction_fixtures_for_date, load_apifootball_competition_fixtures_for_date, load_apifootball_all_competitions_fixtures_for_date, load_apifootball_fixtures_for_date, load_sofascore_fixtures_for_date, load_espn_fixtures_for_date, load_thesportsdb_fixtures_for_date, load_fixtures_for_date):
             try: _fn.clear()
             except Exception: pass
         st.rerun()
