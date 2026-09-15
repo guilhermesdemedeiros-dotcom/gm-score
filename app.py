@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-15-v69-mobile-safe-zone"
+GM_BUILD = "2026-09-15-v70-mobile-polish-news-cards"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -12283,15 +12283,16 @@ def _gm_daily_status_badge(status): return {"green":"🟢 GREEN","red":"🔴 RED
 def _gm_daily_bet_type_label(value, legs_count=0): return f"Múltipla ({int(legs_count or 0)} jogos)" if str(value)=="multiple" else {"simple":"Simples","double":"Dupla","triple":"Tripla","none":"Sem seleção"}.get(str(value),str(value or "—").title())
 
 
-def _gm_daily_pick_card(row, target_date, pick_kind):
+def _gm_daily_pick_card(row, target_date, pick_kind, is_admin=False):
     profile=GM_DAILY_PICK_PROFILES[pick_kind]
-    if not row: st.info(f"{profile['label']}: ainda não preparada para este dia."); return
-    if str(row.get("status"))=="no_pick": st.info(f"{profile['label']}: hoje não houve combinação que atingisse os critérios de qualidade. Nenhuma aposta foi forçada."); return
+    display_label = profile["label"] if (is_admin or pick_kind != "dica") else "📊 Dica Principal"
+    if not row: st.info(f"{display_label}: ainda não preparada para este dia."); return
+    if str(row.get("status"))=="no_pick": st.info(f"{display_label}: hoje não houve combinação que atingisse os critérios de qualidade. Nenhuma aposta foi forçada."); return
     legs=_gm_daily_sort_legs(row.get("legs") or []); total_odd=_gm_daily_num(row.get("total_odd")) or 0.0; btype=_gm_daily_bet_type_label(row.get("bet_type"),len(legs))
     bookmaker=str(row.get("bookmaker") or "").strip()
     title_meta=" • ".join(x for x in (bookmaker, profile.get("description")) if x)
     title_suffix=f'<span class="gm-pick-muted" style="font-weight:600;margin-left:.45rem">{html.escape(title_meta)}</span>' if title_meta else ""
-    card=[f'<div class="gm-pick-card gm-kind-{pick_kind}"><div class="gm-pick-head"><div><div class="gm-pick-title">{html.escape(profile["label"])}{title_suffix}</div><div class="gm-pick-muted">{target_date:%d/%m/%Y} • {html.escape(btype)} • {_gm_daily_status_badge(row.get("status"))}</div></div><div><div class="gm-pick-muted">ODD TOTAL</div><div class="gm-pick-odd">{total_odd:.2f}</div></div></div>']
+    card=[f'<div class="gm-pick-card gm-kind-{pick_kind}"><div class="gm-pick-head"><div><div class="gm-pick-title">{html.escape(display_label)}{title_suffix}</div><div class="gm-pick-muted">{target_date:%d/%m/%Y} • {html.escape(btype)} • {_gm_daily_status_badge(row.get("status"))}</div></div><div><div class="gm-pick-muted">ODD TOTAL</div><div class="gm-pick-odd">{total_odd:.2f}</div></div></div>']
     for leg in legs:
         game=f"{leg.get('home','')} × {leg.get('away','')}"; leg_odd=_gm_daily_num(leg.get("odd")) or 0.0; time_label=_gm_daily_time_label(leg.get("time"))
         prob=_gm_daily_num(leg.get("probability")); conf=str(leg.get("confidence_band") or (_gm_daily_confidence_band(prob) if prob is not None else ""))
@@ -12409,9 +12410,10 @@ def gm_render_daily_pick_page():
     .gm-pick-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.gm-pick-title{font-weight:950;font-size:1.1rem;color:#34e681}.gm-pick-odd{font-size:1.6rem;font-weight:950;color:#34e681}.gm-pick-leg{background:#111b25;border:1px solid rgba(148,163,184,.12);border-radius:12px;padding:10px 12px;margin-top:8px}.gm-pick-muted{color:#94a3b8;font-size:.76rem}.gm-pick-market{color:#f8fafc;font-weight:850}.gm-pick-history{display:flex;gap:7px;flex-wrap:wrap;margin-top:8px}.gm-pick-dot{padding:7px 9px;border-radius:10px;background:#101923;border:1px solid rgba(148,163,184,.12);font-size:.75rem;font-weight:800}
     </style>''',unsafe_allow_html=True)
 
-    st.markdown("### 📅 Hoje — publicado para clientes" if is_admin else "### 📅 Hoje")
+    if is_admin:
+        st.markdown("### 📅 Hoje — publicado para clientes")
     for kind in ("matadeira","dica","bingo"):
-        _gm_daily_pick_card(lookup(today,kind),today,kind)
+        _gm_daily_pick_card(lookup(today,kind),today,kind,is_admin=is_admin)
 
     with st.expander("📆 Ontem — seleções e resultados",expanded=False):
         found=False
@@ -12487,31 +12489,56 @@ def gm_render_games_page():
 
 
 def gm_render_news_page():
-    """Central de Novidades como página, substituindo o sino flutuante."""
+    """Feed compacto de novidades, mantendo as mesmas RPCs e estados de leitura."""
     st.markdown("## 📰 Novidades")
-    st.caption("Atualizações publicadas pela administração do GM SCORE.")
-    try: rows = gm_list_news() or []
+    st.caption("Atualizações, lançamentos e avisos do GM SCORE.")
+    try:
+        rows = gm_list_news() or []
     except Exception:
-        st.warning("Não foi possível carregar as novidades agora."); return
+        st.warning("Não foi possível carregar as novidades agora.")
+        return
     hidden = set(st.session_state.get("gm_news_hidden_session", []))
     rows = [r for r in rows if str((r or {}).get("id") or "") not in hidden]
     if not rows:
-        st.info("Nenhuma novidade publicada no momento."); return
+        st.info("Nenhuma novidade publicada no momento.")
+        return
+
+    st.markdown('''<style>
+    .gm-news-feed-card{position:relative;background:linear-gradient(145deg,rgba(15,24,32,.96),rgba(9,15,21,.98));border:1px solid rgba(148,163,184,.18);border-radius:16px;padding:13px 14px 12px;margin:.45rem 0 .22rem;overflow:hidden}
+    .gm-news-feed-card.new{border-color:rgba(52,230,129,.42);box-shadow:inset 3px 0 0 #34e681}
+    .gm-news-feed-card.featured{background:linear-gradient(145deg,rgba(12,42,31,.88),rgba(9,18,22,.98))}
+    .gm-news-feed-top{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:7px}
+    .gm-news-feed-category{font-size:.70rem;font-weight:900;letter-spacing:.055em;text-transform:uppercase;color:#34e681}
+    .gm-news-feed-state{font-size:.66rem;font-weight:850;color:#94a3b8;background:rgba(148,163,184,.09);padding:3px 7px;border-radius:999px}
+    .gm-news-feed-title{font-size:1.02rem;font-weight:900;line-height:1.22;color:#f8fafc;margin:0 0 5px}
+    .gm-news-feed-msg{font-size:.84rem;line-height:1.42;color:#c5ced8;margin:0;white-space:pre-wrap}
+    .gm-news-feed-meta{font-size:.68rem;color:#7f8997;margin-top:9px}
+    @media(max-width:768px){.gm-news-feed-card{padding:12px 12px 11px;border-radius:14px}.gm-news-feed-title{font-size:.96rem}.gm-news-feed-msg{font-size:.80rem}}
+    </style>''', unsafe_allow_html=True)
+
     for row in rows:
-        news_id = str(row.get("id") or ""); title = str(row.get("title") or "Novidade"); message = str(row.get("message") or ""); category = str(row.get("category") or "novidade")
-        icon = str(GM_NEWS_CATEGORIES.get(category, "🆕 Novidade")).split(" ", 1)[0]; is_read = bool(row.get("is_read"))
-        st.markdown(f"### {icon} {title}")
-        if message: st.write(message)
-        st.caption(gm_news_format_datetime(row.get("published_at")) + (" · lida" if is_read else " · nova"))
-        c1, c2 = st.columns(2)
+        news_id = str(row.get("id") or "")
+        title = str(row.get("title") or "Novidade")
+        message = str(row.get("message") or "")
+        category = str(row.get("category") or "novidade")
+        category_label = str(GM_NEWS_CATEGORIES.get(category, "🆕 Novidade"))
+        is_read = bool(row.get("is_read"))
+        featured = bool(row.get("is_featured"))
+        classes = "gm-news-feed-card" + (" new" if not is_read else "") + (" featured" if featured else "")
+        state = "NOVA" if not is_read else "LIDA"
+        feature_badge = " • DESTAQUE" if featured else ""
+        card = f'''<div class="{classes}"><div class="gm-news-feed-top"><div class="gm-news-feed-category">{html.escape(category_label)}</div><div class="gm-news-feed-state">{state}{feature_badge}</div></div><div class="gm-news-feed-title">{html.escape(title)}</div><div class="gm-news-feed-msg">{html.escape(message)}</div><div class="gm-news-feed-meta">{html.escape(gm_news_format_datetime(row.get("published_at")))}</div></div>'''
+        st.markdown(card, unsafe_allow_html=True)
+        c1, c2, _ = st.columns([1.1, 1, 2.8])
         with c1:
-            if not is_read and news_id and st.button("✓ Marcar como lida", use_container_width=True, key=f"gm_news_page_read_{news_id}"):
-                try: gm_news_rpc("gm_mark_news_read", {"p_news_id": news_id}); st.rerun()
-                except Exception: st.warning("Não foi possível atualizar a leitura agora.")
+            if not is_read and news_id and st.button("✓ Lida", key=f"gm_news_page_read_{news_id}"):
+                try:
+                    gm_news_rpc("gm_mark_news_read", {"p_news_id": news_id}); st.rerun()
+                except Exception:
+                    st.warning("Não foi possível atualizar a leitura agora.")
         with c2:
-            if news_id and st.button("Ocultar", use_container_width=True, key=f"gm_news_page_hide_{news_id}"):
+            if news_id and st.button("Ocultar", key=f"gm_news_page_hide_{news_id}"):
                 hidden_now = set(st.session_state.get("gm_news_hidden_session", [])); hidden_now.add(news_id); st.session_state["gm_news_hidden_session"] = list(hidden_now); st.rerun()
-        st.divider()
 
 
 def gm_render_account_page(profile):
@@ -12592,8 +12619,8 @@ button[kind="secondary"]:has(+ div),button[kind="primary"]:has(+ div){}
 @media (max-width:768px){
 [data-testid="stSidebar"]{display:none!important}
 [data-testid="collapsedControl"]{display:none!important}
-[data-testid="stAppViewContainer"] .main .block-container{padding-bottom:10.4rem!important}
-.gm-mobile-nav-shell{display:flex!important;position:fixed!important;left:.45rem!important;right:.45rem!important;bottom:calc(5.35rem + env(safe-area-inset-bottom))!important;z-index:99999!important;height:4.05rem!important;background:rgba(7,16,15,.985)!important;border:1px solid rgba(52,230,129,.22)!important;border-radius:16px!important;padding:.25rem .18rem!important;box-shadow:0 10px 28px rgba(0,0,0,.46)!important;align-items:stretch!important;justify-content:space-between!important;gap:.06rem!important;box-sizing:border-box!important}
+[data-testid="stAppViewContainer"] .main .block-container{padding-bottom:7.2rem!important}
+.gm-mobile-nav-shell{display:flex!important;position:fixed!important;left:.45rem!important;right:.45rem!important;bottom:calc(.45rem + env(safe-area-inset-bottom))!important;z-index:99999!important;height:4.05rem!important;background:rgba(7,16,15,.985)!important;border:1px solid rgba(52,230,129,.22)!important;border-radius:16px!important;padding:.25rem .18rem!important;box-shadow:0 10px 28px rgba(0,0,0,.46)!important;align-items:stretch!important;justify-content:space-between!important;gap:.06rem!important;box-sizing:border-box!important}
 .gm-mobile-nav-item{display:flex!important;flex:1 1 20%!important;min-width:0!important;height:3.45rem!important;align-items:center!important;justify-content:center!important;flex-direction:column!important;gap:.12rem!important;border-radius:11px!important;text-decoration:none!important;color:#9aa7b6!important;background:transparent!important;-webkit-tap-highlight-color:transparent!important}
 .gm-mobile-nav-item:visited{color:#9aa7b6!important}.gm-mobile-nav-item:hover{color:#eafbf2!important;background:rgba(52,230,129,.06)!important;text-decoration:none!important}
 .gm-mobile-nav-item.gm-mobile-nav-active{color:#34e681!important;background:rgba(52,230,129,.10)!important}
