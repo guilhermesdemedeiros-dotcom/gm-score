@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-15-v92-games-fixture-identity-routing"
+GM_BUILD = "2026-09-15-v93-share-badges-expanded"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -202,6 +202,27 @@ def gm_team_visual(team_name, competition=None, team_id=None):
     except Exception:
         pass
     return {"id": str(team_id or ""), "name": str(team_name or ""), "badge": ""}
+
+
+def gm_current_match_team_id(team_name, side=None):
+    """ID visual da equipe no confronto aberto; não participa dos cálculos."""
+    try:
+        payload = st.session_state.get("gm_games_direct_match") or {}
+        if st.session_state.get("gm_analysis_origin") != "games" or not payload:
+            return ""
+        wanted = _gm_api_norm(team_name)
+        candidates = []
+        if side in ("home", "away"):
+            candidates = [side]
+        else:
+            candidates = ["home", "away"]
+        for key in candidates:
+            raw = str(payload.get(key) or "").strip()
+            if raw and (_gm_api_norm(raw) == wanted or _gm_team_name_match(team_name, raw)):
+                return str(payload.get(f"{key}_team_id") or "").strip()
+    except Exception:
+        pass
+    return ""
 
 
 def gm_team_badge_html(team_name, competition=None, team_id=None, size=24, show_name=True):
@@ -2943,8 +2964,8 @@ def gm_render_match_hero(team_a, team_b, league_name, season_text, probs=None, u
     """Cabeçalho visual da partida real, sem alterar nenhum cálculo do modelo."""
     team_a_html = _gm_safe_html(team_a)
     team_b_html = _gm_safe_html(team_b)
-    team_a_visual = gm_team_badge_html(team_a, league_name, size=38)
-    team_b_visual = gm_team_badge_html(team_b, league_name, size=38)
+    team_a_visual = gm_team_badge_html(team_a, league_name, team_id=gm_current_match_team_id(team_a, "home"), size=38)
+    team_b_visual = gm_team_badge_html(team_b, league_name, team_id=gm_current_match_team_id(team_b, "away"), size=38)
     league_html = _gm_safe_html(league_name)
     season_html = _gm_safe_html(season_text)
     meta = f"{league_html} • {season_html}"
@@ -10446,7 +10467,7 @@ def gm_share_market_sections(team_a, team_b, probs, expectations, a, b, df, samp
 
 
 def _gm_share_highlights(team_a, team_b, probs, opportunities, expectations):
-    """V88: resumo visual, sem alterar probabilidades do motor. Somente 80%–95%."""
+    """V93: resumo visual ampliado, sem alterar probabilidades do motor. Somente 70%–95%."""
     items = []
 
     def add(label, chance, base=""):
@@ -10454,7 +10475,7 @@ def _gm_share_highlights(team_a, team_b, probs, opportunities, expectations):
             pct = float(chance)
         except Exception:
             return
-        if 80.0 <= pct <= 95.0:
+        if 70.0 <= pct <= 95.0:
             items.append({"label": str(label), "chance": pct, "base": str(base or "")})
 
     # Oportunidades já aprovadas pelo próprio motor/evidência.
@@ -10492,16 +10513,16 @@ def _gm_share_highlights(team_a, team_b, probs, opportunities, expectations):
             continue
         if k not in unique or item["chance"] > unique[k]["chance"]:
             unique[k] = item
-    return sorted(unique.values(), key=lambda x: (-x["chance"], x["label"]))[:5]
+    return sorted(unique.values(), key=lambda x: (-x["chance"], x["label"]))[:8]
 
 
 def render_share_button(team_a, team_b, league_name, probs, opportunities, expectations, a, b, df=None, sample_games=0):
-    """V88: arte compacta com brasões e até 5 probabilidades entre 80% e 95%."""
+    """V93: arte com brasões oficiais do confronto e até 8 probabilidades entre 70% e 95%."""
     import json as _json
 
     highlights = _gm_share_highlights(team_a, team_b, probs, opportunities, expectations)
-    home_visual = gm_team_visual(team_a, league_name)
-    away_visual = gm_team_visual(team_b, league_name)
+    home_visual = gm_team_visual(team_a, league_name, gm_current_match_team_id(team_a, "home"))
+    away_visual = gm_team_visual(team_b, league_name, gm_current_match_team_id(team_b, "away"))
     data = _json.dumps({
         "title": f"{team_a} × {team_b}",
         "league": competition_display_name(league_name),
@@ -10512,7 +10533,7 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
         "highlights": highlights,
     }, ensure_ascii=False)
 
-    st.caption("A imagem compartilhada resume até 5 destaques com probabilidade estimada entre 80% e 95%.")
+    st.caption("A imagem compartilhada resume até 8 destaques com probabilidade estimada entre 70% e 95%.")
     html = f"""
     <div style='font-family:Inter,Arial,sans-serif'>
       <button id='shareBtn' style='width:100%;padding:12px 16px;border:1px solid #1fe387;border-radius:12px;background:linear-gradient(90deg,#08783f,#10b865);color:white;font-size:16px;font-weight:800;cursor:pointer'>📲 Compartilhar resumo GM SCORE</button>
@@ -10526,7 +10547,7 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
     function wrap(c,v,x,y,maxW,lineH,size=22,weight='700',color=C.text){{c.save();c.fillStyle=color;c.font=`${{weight}} ${{size}}px Arial`;let line='',yy=y;for(const w of String(v).split(' ')){{const t=line+w+' ';if(c.measureText(t).width>maxW&&line){{c.fillText(line.trim(),x,yy);yy+=lineH;line=w+' ';}}else line=t;}}if(line)c.fillText(line.trim(),x,yy);c.restore();return yy;}}
     function loadImg(src){{return new Promise(resolve=>{{if(!src)return resolve(null);const i=new Image();i.crossOrigin='anonymous';i.onload=()=>resolve(i);i.onerror=()=>resolve(null);i.src=src;}});}}
     document.getElementById('shareBtn').onclick=async()=>{{
-      const W=1080,H=1180+Math.max(0,D.highlights.length-3)*95,scale=2;
+      const W=1080,H=1180+Math.max(0,D.highlights.length-3)*128,scale=2;
       const canvas=document.createElement('canvas');canvas.width=W*scale;canvas.height=H*scale;const c=canvas.getContext('2d');c.scale(scale,scale);c.fillStyle=C.bg;c.fillRect(0,0,W,H);
       tx(c,'GM',70,82,50,'900','#fff');tx(c,'SCORE',165,82,50,'900',C.green);tx(c,'ANÁLISE • ESTATÍSTICAS • PROBABILIDADES',70,118,18,'700','#93e9bc');
       rr(c,60,160,960,260,22,C.panel,C.border,2);tx(c,D.league.toUpperCase(),540,205,20,'800',C.muted,'center');
@@ -10534,8 +10555,8 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
       if(hi)c.drawImage(hi,175,238,92,92);else tx(c,'⚽',220,305,58,'700',C.muted,'center');
       if(ai)c.drawImage(ai,813,238,92,92);else tx(c,'⚽',858,305,58,'700',C.muted,'center');
       tx(c,D.home,300,365,27,'800',C.text,'center');tx(c,'×',540,315,40,'900',C.green,'center');tx(c,D.away,780,365,27,'800',C.text,'center');
-      let y=475;tx(c,'DESTAQUES DA ANÁLISE',70,y,29,'900',C.text);tx(c,'80%–95%',1010,y,22,'900',C.green,'right');y+=35;
-      if(!D.highlights.length){{rr(c,60,y,960,150,18,C.panel,C.border,1);tx(c,'Nenhum mercado ficou na faixa de 80% a 95%.',540,y+72,24,'700',C.muted,'center');tx(c,'A análise completa continua disponível no GM SCORE.',540,y+108,18,'500',C.muted,'center');y+=180;}}
+      let y=475;tx(c,'DESTAQUES DA ANÁLISE',70,y,29,'900',C.text);tx(c,'70%–95%',1010,y,22,'900',C.green,'right');y+=35;
+      if(!D.highlights.length){{rr(c,60,y,960,150,18,C.panel,C.border,1);tx(c,'Nenhum mercado ficou na faixa de 70% a 95%.',540,y+72,24,'700',C.muted,'center');tx(c,'A análise completa continua disponível no GM SCORE.',540,y+108,18,'500',C.muted,'center');y+=180;}}
       else{{D.highlights.forEach((r,idx)=>{{rr(c,60,y,960,112,18,C.panel,C.border,1);wrap(c,r.label,88,y+42,690,28,23,'800',C.text);if(r.base)tx(c,r.base,88,y+84,16,'600',C.muted);tx(c,`${{Math.round(r.chance)}}%`,980,y+66,34,'900',C.green,'right');y+=128;}});}}
       tx(c,'Probabilidades estatísticas. Não representam garantia de resultado.',70,H-78,17,'500',C.muted);tx(c,'GM SCORE',1010,H-78,22,'900',C.green,'right');
       canvas.toBlob(async blob=>{{const safe=(D.home+'-x-'+D.away).replace(/[^a-z0-9áàãâéêíóôõúç_-]+/gi,'-').replace(/-+/g,'-');const file=new File([blob],`GM-SCORE-${{safe}}.jpg`,{{type:'image/jpeg'}});try{{if(navigator.share&&(!navigator.canShare||navigator.canShare({{files:[file]}}))){{await navigator.share({{title:`GM SCORE — ${{D.title}}`,text:`GM SCORE — ${{D.league}} — ${{D.title}}`,files:[file]}});document.getElementById('msg').innerText='Resumo criado. Escolha onde compartilhar.';}}else{{const dl=document.createElement('a');dl.href=URL.createObjectURL(blob);dl.download=file.name;dl.click();document.getElementById('msg').innerText='Resumo criado e salvo.';}}}}catch(e){{document.getElementById('msg').innerText='Compartilhamento cancelado.';}}}},'image/jpeg',.94);
