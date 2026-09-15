@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-14-v64-share-all-analysis-data"
+GM_BUILD = "2026-09-14-v65-learning-share-cleanup"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -7159,13 +7159,20 @@ def _completed_match_stats(matches):
             continue
         rows.append((hg, ag))
     if not rows:
-        return {"games": 0, "goal_avg": None, "btts": None, "over25": None}
+        return {
+            "games": 0, "goal_avg": None, "btts": None, "over25": None,
+            "home_win_rate": None, "draw_rate": None, "away_win_rate": None,
+        }
     totals = [hg + ag for hg, ag in rows]
+    n = len(rows)
     return {
-        "games": len(rows),
-        "goal_avg": sum(totals) / len(totals),
-        "btts": sum(1 for hg, ag in rows if hg > 0 and ag > 0) / len(rows),
-        "over25": sum(1 for t in totals if t >= 3) / len(rows),
+        "games": n,
+        "goal_avg": sum(totals) / n,
+        "btts": sum(1 for hg, ag in rows if hg > 0 and ag > 0) / n,
+        "over25": sum(1 for t in totals if t >= 3) / n,
+        "home_win_rate": sum(1 for hg, ag in rows if hg > ag) / n,
+        "draw_rate": sum(1 for hg, ag in rows if hg == ag) / n,
+        "away_win_rate": sum(1 for hg, ag in rows if ag > hg) / n,
     }
 
 
@@ -7254,7 +7261,47 @@ def competition_learning_profile(competition_name, competition_df=None):
         "stage": stage,
         "btts": cur.get("btts"),
         "over25": cur.get("over25"),
+        "home_win_rate": cur.get("home_win_rate"),
+        "draw_rate": cur.get("draw_rate"),
+        "away_win_rate": cur.get("away_win_rate"),
     }
+
+
+def apply_competition_result_learning(probs, competition_name, competition_df=None):
+    """Aprendizado conservador do ambiente 1X2 da competição.
+
+    Só entra com pelo menos 30 resultados reais da temporada. O peso começa em
+    2% e cresce lentamente até no máximo 8%, preservando força das equipes, H2H,
+    qualidade estrutural e mercado. Não usa uma partida isolada nem reduz os
+    limiares estatísticos do restante do motor.
+    """
+    if not probs:
+        return probs
+    learning = competition_learning_profile(competition_name, competition_df)
+    n = int(learning.get("current_games") or 0)
+    rates = [learning.get("home_win_rate"), learning.get("draw_rate"), learning.get("away_win_rate")]
+    if n < 30 or any(v is None for v in rates):
+        return probs
+    try:
+        empirical = [max(0.0, float(v) * 100.0) for v in rates]
+        z = sum(empirical)
+        if z <= 0:
+            return probs
+        empirical = [v / z * 100.0 for v in empirical]
+        base = [float(probs[k]) for k in ("home", "draw", "away")]
+    except Exception:
+        return probs
+
+    # N=30 -> 2%; N=60 -> 5%; N>=90 -> 8%.
+    weight = min(0.08, 0.02 + max(0, n - 30) * 0.001)
+    learned = [base[i] * (1.0 - weight) + empirical[i] * weight for i in range(3)]
+    total = sum(learned) or 100.0
+    out = dict(probs)
+    out["home"], out["draw"], out["away"] = [v / total * 100.0 for v in learned]
+    out["competition_learning_active"] = True
+    out["competition_learning_games"] = n
+    out["competition_learning_weight"] = weight
+    return out
 
 
 def render_data_intelligence_status(competition_name, competition_df):
@@ -10019,28 +10066,6 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
         for x in (opportunities or [])
     ]
 
-    metric_labels = [
-        "Jogos", "Gols pró", "Gols contra", "Escanteios", "Amarelos",
-        "Vermelhos", "Faltas", "Finalizações", "Chutes no alvo",
-        "Posse (%)", "Impedimentos",
-    ]
-    avg_lines = []
-    for metric in metric_labels:
-        if metric not in a.index or metric not in b.index:
-            continue
-        av, bv = a[metric], b[metric]
-        if pd.isna(av) and pd.isna(bv):
-            continue
-
-        def fmt(v):
-            if pd.isna(v):
-                return "N/D"
-            try:
-                return str(int(v)) if metric == "Jogos" else f"{float(v):.2f}"
-            except Exception:
-                return str(v)
-
-        avg_lines.append([metric, fmt(av), fmt(bv)])
 
     competition = competition_display_name(league_name)
     data = _json.dumps(
@@ -10050,7 +10075,6 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
             "results": result_lines,
             "expectations": exp_lines,
             "opportunities": opp_lines,
-            "averages": avg_lines,
             "market_sections": gm_share_market_sections(team_a, team_b, probs, expectations, a, b, df, sample_games),
             "home": team_a,
             "away": team_b,
@@ -10104,12 +10128,11 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
     }}
 
     document.getElementById('shareBtn').onclick = async () => {{
-      const avgH = D.averages.length*42;
       const oppH = D.opportunities.length*88;
       const marketH = (D.market_sections||[]).reduce((sum,s)=>sum + 78 + s.rows.length*34, 0);
       const expRows = Math.ceil(D.expectations.length/5);
       const logicalW=1080;
-      const logicalH=Math.max(1850, 1300 + avgH + oppH + marketH + expRows*120);
+      const logicalH=Math.max(1850, 1300 + oppH + marketH + expRows*120);
       const scale=2; // arquivo final com 2160 px de largura para preservar alta resolução
       const canvas=document.createElement('canvas');
       canvas.width=logicalW*scale; canvas.height=logicalH*scale;
@@ -10201,23 +10224,6 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
         y+=h+25;
       }}
 
-      if(D.averages.length) {{
-        const h=92 + D.averages.length*42;
-        rr(ctx,60,y,960,h,20,C.panel,C.border,2);
-        sectionTitle(ctx,'📊 Médias usadas na análise',y+40);
-        let ty=y+74;
-        text(ctx,'Dado',92,ty,17,'800',C.muted);
-        text(ctx,D.home,635,ty,17,'800',C.muted,'center');
-        text(ctx,D.away,870,ty,17,'800',C.muted,'center');
-        ty+=18; ctx.strokeStyle=C.line;ctx.beginPath();ctx.moveTo(85,ty);ctx.lineTo(995,ty);ctx.stroke();ty+=28;
-        D.averages.forEach(r=>{{
-          text(ctx,r[0],92,ty,18,'500',C.text);
-          text(ctx,r[1],635,ty,18,'700',C.text,'center');
-          text(ctx,r[2],870,ty,18,'700',C.text,'center');
-          ty+=42;
-        }});
-        y+=h+28;
-      }}
 
       text(ctx,'Estimativas estatísticas; não garantem resultado.',65,logicalH-66,17,'400',C.muted);
 
@@ -10520,6 +10526,12 @@ def render_analysis():
         base_market_weight = 0.34 if comp_sample < 6 else 0.22
         market_weight = adaptive_market_weight(probs, moneyline, base_market_weight)
         probs = calibrate_result_with_market(probs, moneyline, market_weight)
+
+    # v65: aprende gradualmente o ambiente real de resultado da própria competição.
+    # A camada só é ativada após 30 jogos concluídos e nunca supera 8% do 1X2 final.
+    # O guardrail estrutural abaixo continua sendo a última proteção contra inversões.
+    if probs:
+        probs = apply_competition_result_learning(probs, league_name, df)
 
     # Checagem final orientada por evidências independentes. Só atua quando pelo
     # menos dois sinais fortes concordam (ex.: H2H + nível da liga; Elo + mercado).
@@ -11408,8 +11420,8 @@ def gm_render_calibration_dashboard():
         return
     with st.expander("🧠 Calibração automática — previsão × realizado (admin)", expanded=False):
         st.caption(
-            "O GM SCORE já atualiza as médias conforme chegam jogos novos. Esta camada guarda a previsão pré-jogo e compara com o realizado. "
-            "Ela mede erro e viés; não muda pesos automaticamente por causa de poucos jogos."
+            "O GM SCORE aprende gradualmente com resultados novos: atualiza médias, ambiente de gols e, após amostra suficiente, o perfil 1X2 da competição. "
+            "Esta calibração também guarda previsão pré-jogo e compara com o realizado para medir erro e viés sem reagir a poucos jogos."
         )
         c1, c2 = st.columns(2)
         if c1.button("🔄 Sincronizar resultados pendentes", use_container_width=True, key="gm_calibration_sync_now"):
@@ -11495,7 +11507,7 @@ def gm_render_calibration_dashboard():
             comp_rows.append({"Competição": comp, "N": d["N"], "Viés gols": mb("g"), "Viés esc.": mb("c"), "Viés cartões": mb("k")})
         st.markdown("**Monitoramento por competição**")
         st.dataframe(pd.DataFrame(comp_rows), hide_index=True, use_container_width=True)
-        st.caption("Regra operacional: N < 30 continua em formação. Alertas de viés servem para investigação; nenhum peso do modelo é alterado automaticamente sem amostra suficiente.")
+        st.caption("Regra operacional: N < 30 continua em formação. A adaptação automática do ambiente 1X2 só começa em N ≥ 30, com peso de 2% a no máximo 8%; alertas de viés continuam servindo para investigação, sem correções agressivas.")
 
 
 
