@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-15-v84-games-direct-analysis-return-position"
+GM_BUILD = "2026-09-15-v85-games-analysis-top-visible-return"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -12810,6 +12810,7 @@ def gm_render_games_page():
             st.session_state["gm_games_return_date"] = target_date
             st.session_state["gm_games_return_label"] = _agenda_date_label(target_date)
             st.session_state["gm_games_return_index"] = i
+            st.session_state["gm_analysis_origin"] = "games"
             # V83: cada abertura de uma partida é uma nova navegação. O Streamlit
             # pode preservar o scroll da agenda anterior; este sinal força a análise
             # a começar no topo sem perder a data usada no botão de retorno.
@@ -13000,33 +13001,40 @@ def gm_render_app_navigation(profile):
     st.markdown('<nav class="gm-mobile-nav-shell">' + "".join(links) + '</nav>', unsafe_allow_html=True)
 
 
-def gm_force_analysis_scroll_top():
-    """Força uma análise aberta pela agenda a iniciar no topo da página."""
+def gm_render_analysis_top_anchor():
+    """Marca o início visual da análise quando a origem foi a aba Jogos."""
+    if st.session_state.get("gm_analysis_origin") != "games":
+        return
+    st.markdown('<div id="gm-analysis-top-anchor"></div>', unsafe_allow_html=True)
+
+
+def gm_force_analysis_scroll_top_after_render():
+    """Após a análise terminar de renderizar, leva a viewport ao início real do confronto."""
+    if st.session_state.get("gm_analysis_origin") != "games":
+        return
     if not st.session_state.pop("gm_analysis_scroll_top", False):
         return
-    # O app do Streamlit mantém a posição vertical entre reruns. O componente
-    # executa após a troca de view e zera tanto o contêiner principal quanto a
-    # janela pai. Repetições curtas cobrem a renderização progressiva no mobile.
     components.html(
         """
         <script>
         (() => {
-          const goTop = () => {
+          const go = () => {
             try {
               const doc = window.parent.document;
+              const anchor = doc.getElementById('gm-analysis-top-anchor');
+              if (anchor) {
+                anchor.scrollIntoView({block: 'start', inline: 'nearest', behavior: 'instant'});
+                return;
+              }
               const main = doc.querySelector('[data-testid="stAppViewContainer"] .main');
               if (main) main.scrollTo({top: 0, left: 0, behavior: 'instant'});
-              const section = doc.querySelector('section.main');
-              if (section) section.scrollTo({top: 0, left: 0, behavior: 'instant'});
               window.parent.scrollTo(0, 0);
-              doc.documentElement.scrollTop = 0;
-              doc.body.scrollTop = 0;
             } catch (e) {}
           };
-          goTop();
-          setTimeout(goTop, 80);
-          setTimeout(goTop, 250);
-          setTimeout(goTop, 600);
+          go();
+          setTimeout(go, 120);
+          setTimeout(go, 350);
+          setTimeout(go, 800);
         })();
         </script>
         """,
@@ -13037,6 +13045,8 @@ def gm_force_analysis_scroll_top():
 
 def gm_render_games_return_button():
     """Retorno rápido à mesma data da agenda após abrir uma análise pela aba Jogos."""
+    if st.session_state.get("gm_analysis_origin") != "games":
+        return
     return_date = st.session_state.get("gm_games_return_date")
     if return_date is None:
         return
@@ -13048,6 +13058,7 @@ def gm_render_games_return_button():
         st.session_state["gm_games_page_date"] = return_date
         st.session_state["gm_games_restore_index"] = st.session_state.get("gm_games_return_index")
         st.session_state["gm_main_view"] = "games"
+        st.session_state.pop("gm_analysis_origin", None)
         try:
             st.query_params["gm_view"] = "games"
         except Exception:
@@ -13126,7 +13137,7 @@ else:
     # Início preserva integralmente o seletor Data → Liga → Partida/equipes e o motor atual.
     # Se a análise foi aberta pela agenda geral, inicia no topo e oferece retorno
     # imediato ao mesmo dia para consultar o próximo jogo com poucos toques.
-    gm_force_analysis_scroll_top()
+    gm_render_analysis_top_anchor()
     gm_render_games_return_button()
     gm_render_admin_bets_home()
     gm_render_main_shortcuts()
@@ -13134,6 +13145,7 @@ else:
     gm_render_apifootball_stat_audit()
     gm_render_calibration_dashboard()
     render_analysis()
+    gm_force_analysis_scroll_top_after_render()
 
 st.markdown("---")
 if _gm_main_view != "account":
