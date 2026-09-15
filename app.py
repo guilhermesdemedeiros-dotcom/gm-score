@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-15-v91-games-direct-analysis-hydration"
+GM_BUILD = "2026-09-15-v92-games-fixture-identity-routing"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -10545,6 +10545,101 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
     components.html(html, height=74)
 
 
+def gm_resolve_direct_fixture_team(payload, side, teams):
+    """Resolve a equipe clicada na agenda sem adivinhar outro clube.
+
+    V92: ID oficial da APIfootball é a primeira referência. O nome exibido na
+    agenda fica como fallback através do resolvedor já usado pelo GM SCORE.
+    Esta função só escolhe a linha/equipe correta; não participa dos cálculos.
+    """
+    payload = payload or {}
+    raw_name = str(payload.get(side) or "").strip()
+    team_id = str(payload.get(f"{side}_team_id") or "").strip()
+    competition = str(payload.get("competition") or "").strip()
+
+    # 1) ID oficial -> nome oficial da liga -> nome existente na base.
+    if team_id and competition:
+        try:
+            official = gm_team_visual(raw_name, competition, team_id)
+            official_name = str((official or {}).get("name") or "").strip()
+            if official_name:
+                resolved = resolve_team_name(official_name, teams)
+                if resolved:
+                    return resolved
+        except Exception:
+            pass
+
+    # 2) Nome transportado pela própria partida.
+    resolved = resolve_team_name(raw_name, teams)
+    if resolved:
+        return resolved
+
+    # 3) Aliases auditados da APIfootball, ainda restritos à mesma equipe.
+    try:
+        variants = [raw_name]
+        variants.extend(GM_APIFOOTBALL_TEAM_ALIASES.get(raw_name, []) or [])
+        raw_norm = _gm_api_norm(raw_name)
+        for canonical, aliases in (GM_APIFOOTBALL_TEAM_ALIASES or {}).items():
+            group = [str(canonical)] + [str(x) for x in (aliases or [])]
+            if raw_norm and raw_norm in {_gm_api_norm(x) for x in group}:
+                variants.extend(group)
+        found = []
+        for variant in variants:
+            r = resolve_team_name(variant, teams)
+            if r and r not in found:
+                found.append(r)
+        if len(found) == 1:
+            return found[0]
+    except Exception:
+        pass
+    return None
+
+
+def gm_hydrate_direct_fixture_rows(df, payload):
+    """Completa somente linhas ausentes da partida aberta pela agenda.
+
+    Usa a mesma fonte APIfootball que o motor já consulta em todas as análises.
+    Não muda fórmulas nem substitui linhas existentes; apenas evita que um clube
+    oficial futuro, ainda ausente na tabela-base, torne o caminho Jogos inútil.
+    """
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return df
+    payload = payload or {}
+    competition = str(payload.get("competition") or "").strip()
+    home = str(payload.get("home") or "").strip()
+    away = str(payload.get("away") or "").strip()
+    if not competition or not home or not away or "Time" not in df.columns:
+        return df
+    teams = df["Time"].dropna().astype(str).tolist()
+    if gm_resolve_direct_fixture_team(payload, "home", teams) and gm_resolve_direct_fixture_team(payload, "away", teams):
+        return df
+    try:
+        profiles = gm_apifootball_pair_profiles(home, away, competition_name=competition, limit_per_team=20, lookback_days=520)
+    except Exception:
+        return df
+    if not isinstance(profiles, dict):
+        return df
+    out = df.copy()
+    attrs = dict(getattr(df, "attrs", {}))
+    for side, display_name in (("home", home), ("away", away)):
+        current = out["Time"].dropna().astype(str).tolist()
+        if gm_resolve_direct_fixture_team(payload, side, current):
+            continue
+        profile = profiles.get(display_name)
+        row = (profile or {}).get("row") if isinstance(profile, dict) else None
+        if not isinstance(row, dict):
+            continue
+        row = dict(row)
+        row["Time"] = display_name
+        # Alinha apenas colunas já conhecidas pela base; metadados _n_* usados
+        # pelo motor são preservados quando presentes no perfil recuperado.
+        for col in out.columns:
+            row.setdefault(col, None)
+        out = pd.concat([out, pd.DataFrame([row])], ignore_index=True, sort=False)
+    out.attrs.update(attrs)
+    return out
+
+
 def render_analysis():
     global period
     # V91: antes de qualquer validação/carregamento, reidrata atomicamente o
@@ -10608,6 +10703,12 @@ def render_analysis():
             st.caption(f"Detalhe: {exc}")
             st.info("Esta competição não usa temporada antiga como substituta.")
             return
+
+    # V92: se a agenda abriu um clube oficial que ainda não existe na tabela
+    # principal da competição, completa somente essa linha pela APIfootball — a
+    # mesma fonte estatística já usada pelo motor. Fórmulas permanecem intactas.
+    if _games_direct_view and _pre_direct:
+        df = gm_hydrate_direct_fixture_rows(df, _pre_direct)
 
     updated_until = df.attrs.get("updated_until")
     teams = df["Time"].dropna().tolist()
@@ -10809,8 +10910,8 @@ def render_analysis():
         _direct = st.session_state.get("gm_games_direct_match") or {}
         _direct_comp = str(_direct.get("competition") or "")
         if _direct_comp == league_name:
-            _dh = resolve_team_name(_direct.get("home"), teams)
-            _da = resolve_team_name(_direct.get("away"), teams)
+            _dh = gm_resolve_direct_fixture_team(_direct, "home", teams)
+            _da = gm_resolve_direct_fixture_team(_direct, "away", teams)
             if _dh and _da:
                 st.session_state.selected_home = _dh
                 st.session_state.selected_away = _da
@@ -10820,8 +10921,12 @@ def render_analysis():
                 st.session_state["_main_games_hidden_competition"] = league_name
                 st.session_state["_synced_loaded_signature"] = f"{league_name}|{_dh}|{_da}"
 
-    loaded_home = resolve_team_name(st.session_state.get("loaded_home"), teams)
-    loaded_away = resolve_team_name(st.session_state.get("loaded_away"), teams)
+    if _games_direct_view and _pre_direct:
+        loaded_home = gm_resolve_direct_fixture_team(_pre_direct, "home", teams)
+        loaded_away = gm_resolve_direct_fixture_team(_pre_direct, "away", teams)
+    else:
+        loaded_home = resolve_team_name(st.session_state.get("loaded_home"), teams)
+        loaded_away = resolve_team_name(st.session_state.get("loaded_away"), teams)
 
     if loaded_home and loaded_away:
         st.caption(f"✅ Jogo carregado: {loaded_home} × {loaded_away}")
@@ -12831,6 +12936,13 @@ def gm_render_games_page():
                 "home": home,
                 "away": away,
                 "date": target_date.isoformat() if hasattr(target_date, "isoformat") else str(target_date),
+                # V92: identidade oficial da partida viaja junto com a navegação.
+                # Estes IDs servem apenas para resolver o confronto correto; não
+                # alteram fórmulas, probabilidades ou critérios estatísticos.
+                "match_id": str(f.get("match_id") or "").strip(),
+                "league_id": str(f.get("league_id") or "").strip(),
+                "home_team_id": str(f.get("home_team_id") or "").strip(),
+                "away_team_id": str(f.get("away_team_id") or "").strip(),
             }
             # V91: hidrata imediatamente o mesmo estado usado pela análise normal.
             # O payload continua como fonte persistente, mas a abertura não depende
