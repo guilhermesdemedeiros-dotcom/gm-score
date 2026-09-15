@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-15-v71-account-vip-days-nav-clearance"
+GM_BUILD = "2026-09-15-v72-scotland-flag"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -2401,7 +2401,7 @@ GM_PUBLIC_COMPETITIONS = [
     "🇫🇷 França - Ligue 1",
     "🇵🇹 Portugal - Liga Portugal",
     "🇳🇱 Holanda - Eredivisie",
-    "🏴 Escócia - Premiership",
+    "🏴󠁧󠁢󠁳󠁣󠁴󠁿 Escócia - Premiership",
     "🇹🇷 Turquia - Süper Lig",
     "🇧🇷 Brasil - Série A",
     "🇧🇷 Brasil - Série B",
@@ -3341,7 +3341,7 @@ COMPETITION_ICONS = {
     "Inglaterra - Premier League": "🏴󠁧󠁢󠁥󠁮󠁧󠁿", "Espanha - La Liga": "🇪🇸",
     "Itália - Serie A": "🇮🇹", "Alemanha - Bundesliga": "🇩🇪",
     "França - Ligue 1": "🇫🇷", "Portugal - Liga Portugal": "🇵🇹",
-    "Holanda - Eredivisie": "🇳🇱", "Escócia - Premiership": "🏴",
+    "Holanda - Eredivisie": "🇳🇱", "Escócia - Premiership": "🏴󠁧󠁢󠁳󠁣󠁴󠁿",
     "Turquia - Süper Lig": "🇹🇷", "Brasil - Série A": "🇧🇷",
     "Brasil - Série B": "🇧🇷", "Arábia Saudita - Saudi Pro League": "🇸🇦",
     "Estados Unidos - MLS": "🇺🇸", "Argentina - Liga Profesional": "🇦🇷",
