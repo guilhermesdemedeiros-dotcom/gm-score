@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-15-v88-share-highlights-team-badges"
+GM_BUILD = "2026-09-15-v89-games-dedicated-match-view"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -10547,12 +10547,24 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
 
 def render_analysis():
     global period
-    period = st.selectbox(
-        "📊 Período da análise", [5, 10, 20, 0],
-        index=[5, 10, 20, 0].index(int(st.session_state.get("analysis_period", 10))) if int(st.session_state.get("analysis_period", 10)) in [5, 10, 20, 0] else 1,
-        format_func=lambda n: "Temporada" if n == 0 else f"Últimos {n} jogos",
-        key="analysis_period",
-    )
+    # V89: quando o confronto veio da aba Jogos, a análise vira uma tela dedicada.
+    # O período continua sendo exatamente o já escolhido pelo usuário (10 por padrão),
+    # mas os controles da Home não são renderizados neste fluxo.
+    _games_direct_view = st.session_state.get("gm_analysis_origin") == "games"
+    if _games_direct_view:
+        try:
+            period = int(st.session_state.get("analysis_period", 10))
+        except Exception:
+            period = 10
+        if period not in [5, 10, 20, 0]:
+            period = 10
+    else:
+        period = st.selectbox(
+            "📊 Período da análise", [5, 10, 20, 0],
+            index=[5, 10, 20, 0].index(int(st.session_state.get("analysis_period", 10))) if int(st.session_state.get("analysis_period", 10)) in [5, 10, 20, 0] else 1,
+            format_func=lambda n: "Temporada" if n == 0 else f"Últimos {n} jogos",
+            key="analysis_period",
+        )
     # Não reaproveita uma partida carregada de outra competição.
     if st.session_state.get("loaded_competition") != league_name:
         st.session_state.loaded_home = None
@@ -10587,13 +10599,16 @@ def render_analysis():
     if st.session_state.get("main_league_widget") != league_name:
         st.session_state["main_league_widget"] = league_name
 
-    main_league_name = st.selectbox(
-        "🏆 Competição",
-        list(COMPETITIONS.keys()),
-        key="main_league_widget",
-        format_func=competition_display_name,
-        on_change=_on_main_competition_change,
-    )
+    if _games_direct_view:
+        main_league_name = league_name
+    else:
+        main_league_name = st.selectbox(
+            "🏆 Competição",
+            list(COMPETITIONS.keys()),
+            key="main_league_widget",
+            format_func=competition_display_name,
+            on_change=_on_main_competition_change,
+        )
 
     # O confronto pode ser escolhido de duas formas logo após a competição:
     # 1) pelos jogos oficiais da data; 2) manualmente entre as equipes da liga.
@@ -13102,22 +13117,29 @@ elif _gm_main_view == "news":
 elif _gm_main_view == "account":
     gm_render_account_page(_gm_profile_after_gate)
 else:
-    # Início preserva integralmente o seletor Data → Liga → Partida/equipes e o motor atual.
-    # Se a análise foi aberta pela agenda geral, inicia no topo e oferece retorno
-    # imediato ao mesmo dia para consultar o próximo jogo com poucos toques.
+    # V89: análises abertas pela aba Jogos usam uma tela dedicada ao confronto.
+    # Nada da Home (Apostas do ADM, atalhos, auditorias ou seletores) é exibido.
+    # A Home normal permanece integralmente igual quando a origem não é Jogos.
+    _gm_games_direct_analysis = st.session_state.get("gm_analysis_origin") == "games"
     gm_render_analysis_top_anchor()
     gm_render_games_return_button()
-    gm_render_admin_bets_home()
-    gm_render_main_shortcuts()
-    gm_render_apifootball_league_audit()
-    gm_render_apifootball_stat_audit()
-    gm_render_calibration_dashboard()
+    if not _gm_games_direct_analysis:
+        gm_render_admin_bets_home()
+        gm_render_main_shortcuts()
+        gm_render_apifootball_league_audit()
+        gm_render_apifootball_stat_audit()
+        gm_render_calibration_dashboard()
     render_analysis()
     gm_force_analysis_scroll_top_after_render()
 
-st.markdown("---")
-if _gm_main_view != "account":
-    st.link_button("✈️ Suporte pelo Telegram", "https://t.me/suport_gm", use_container_width=True)
+_gm_games_direct_analysis = (
+    _gm_main_view == "analysis"
+    and st.session_state.get("gm_analysis_origin") == "games"
+)
+if not _gm_games_direct_analysis:
+    st.markdown("---")
+    if _gm_main_view != "account":
+        st.link_button("✈️ Suporte pelo Telegram", "https://t.me/suport_gm", use_container_width=True)
 
-st.caption("As chances são estimativas estatísticas e não garantem resultado. Use como apoio à análise e aposte com responsabilidade.")
+    st.caption("As chances são estimativas estatísticas e não garantem resultado. Use como apoio à análise e aposte com responsabilidade.")
 
