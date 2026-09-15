@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-15-v79-news-order-unread-badge"
+GM_BUILD = "2026-09-15-v80-news-unread-priority"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -12602,16 +12602,16 @@ def gm_render_news_page():
     hidden = set(st.session_state.get("gm_news_hidden_session", []))
     rows = [r for r in rows if str((r or {}).get("id") or "") not in hidden]
 
-    # V79: ordem visual sempre da publicação mais recente para a mais antiga,
-    # independentemente da ordenação devolvida pela RPC gm_list_news.
+    # V80: novidades não lidas têm prioridade visual. Dentro de cada grupo,
+    # a ordem permanece cronológica da publicação mais recente para a mais antiga.
     def _gm_news_sort_key(row):
         try:
             ts = pd.to_datetime((row or {}).get("published_at"), utc=True, errors="coerce")
-            if pd.isna(ts):
-                return float("-inf")
-            return float(ts.timestamp())
+            published_ts = float(ts.timestamp()) if not pd.isna(ts) else float("-inf")
         except Exception:
-            return float("-inf")
+            published_ts = float("-inf")
+        is_unread = 0 if bool((row or {}).get("is_read")) else 1
+        return (is_unread, published_ts)
 
     rows = sorted(rows, key=_gm_news_sort_key, reverse=True)
     if not rows:
