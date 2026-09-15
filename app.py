@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-15-v76-bet-links-dicas-only"
+GM_BUILD = "2026-09-15-v77-gm-score-direct-bet-link"
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -1788,86 +1788,65 @@ def gm_admin_status_label(row):
     return "⏳ Pendente"
 
 
-GM_DAILY_PICK_BOOKMAKERS = {
-    "Betano": {"icon": "🟠", "host_token": "betano"},
-    "bet365": {"icon": "🟢", "host_token": "bet365"},
-    "Superbet": {"icon": "🔴", "host_token": "superbet"},
-}
-
-
-def _gm_daily_valid_bet_url(bookmaker, value):
-    """Aceita apenas HTTPS e um domínio compatível com a casa selecionada."""
+def _gm_daily_valid_direct_bet_url(value):
+    """Valida o link direto informado pelo ADM sem vincular a uma casa específica."""
     value = str(value or "").strip()
     if not value:
         return None
     try:
         from urllib.parse import urlparse
         parsed = urlparse(value)
-        host = str(parsed.hostname or "").lower()
-        token = GM_DAILY_PICK_BOOKMAKERS.get(str(bookmaker), {}).get("host_token")
-        if parsed.scheme.lower() != "https" or not host or not token or token not in host:
+        if parsed.scheme.lower() != "https" or not parsed.hostname:
             return None
         return value
     except Exception:
         return None
 
 
-def gm_daily_pick_admin_bet_links(kind, idx, key_prefix):
-    """Campos opcionais de links que o ADM anexa somente à opção aprovada."""
-    st.markdown("**🔗 Links para apostar (opcional)**")
-    selected = st.multiselect(
-        "Casas de apostas",
-        list(GM_DAILY_PICK_BOOKMAKERS.keys()),
-        key=f"{key_prefix}_houses_{kind}_{idx}",
-        placeholder="Selecione uma ou mais casas",
-    )
-    links = []
-    invalid = []
-    for bookmaker in selected:
-        icon = GM_DAILY_PICK_BOOKMAKERS[bookmaker]["icon"]
-        value = st.text_input(
-            f"{icon} Link direto — {bookmaker}",
-            key=f"{key_prefix}_url_{kind}_{idx}_{bookmaker}",
-            placeholder=f"https://...{bookmaker.lower()}...",
-        ).strip()
-        if value:
-            valid = _gm_daily_valid_bet_url(bookmaker, value)
-            if valid:
-                links.append({"bookmaker": bookmaker, "url": valid})
-            else:
-                invalid.append(bookmaker)
-    if invalid:
-        st.warning("Confira o link HTTPS de: " + ", ".join(invalid) + ".")
-    return links, bool(invalid)
+def gm_daily_pick_admin_bet_link(kind, idx, key_prefix):
+    """Um único link HTTPS opcional, definido pelo ADM para a dica aprovada."""
+    st.markdown("**🔗 Link direto da aposta (opcional)**")
+    value = st.text_input(
+        "Link da aposta",
+        key=f"{key_prefix}_direct_bet_url_{kind}_{idx}",
+        placeholder="https://...",
+        help="Cole o link direto da aposta na casa que você escolher. O cliente verá apenas o botão oficial do GM SCORE.",
+        label_visibility="collapsed",
+    ).strip()
+    if not value:
+        return None, False
+    valid = _gm_daily_valid_direct_bet_url(value)
+    if not valid:
+        st.warning("Informe um link HTTPS válido para a aposta.")
+        return None, True
+    st.caption("O cliente verá: 🎯 Ir para a aposta · GM SCORE")
+    return valid, False
 
 
-def _gm_daily_row_bet_links(row):
-    """Lê links persistidos no model_meta; mantém compatibilidade com bookmaker_url antigo."""
+def _gm_daily_row_direct_bet_url(row):
+    """Lê o link atual e mantém compatibilidade com dicas publicadas no formato V74/V76."""
     if not isinstance(row, dict):
-        return []
+        return None
+    direct = _gm_daily_valid_direct_bet_url(row.get("bookmaker_url"))
+    if direct:
+        return direct
     meta = row.get("model_meta") or {}
     if isinstance(meta, str):
         try:
             meta = json.loads(meta)
         except Exception:
             meta = {}
-    raw = meta.get("bet_links") if isinstance(meta, dict) else None
-    out = []
-    seen = set()
-    for item in raw or []:
-        if not isinstance(item, dict):
-            continue
-        bookmaker = str(item.get("bookmaker") or "").strip()
-        url = _gm_daily_valid_bet_url(bookmaker, item.get("url"))
-        if bookmaker in GM_DAILY_PICK_BOOKMAKERS and url and (bookmaker, url) not in seen:
-            out.append({"bookmaker": bookmaker, "url": url})
-            seen.add((bookmaker, url))
-    if not out:
-        bookmaker = str(row.get("bookmaker") or "").strip()
-        url = _gm_daily_valid_bet_url(bookmaker, row.get("bookmaker_url"))
-        if bookmaker in GM_DAILY_PICK_BOOKMAKERS and url:
-            out.append({"bookmaker": bookmaker, "url": url})
-    return out
+    if isinstance(meta, dict):
+        direct = _gm_daily_valid_direct_bet_url(meta.get("direct_bet_url"))
+        if direct:
+            return direct
+        # Compatibilidade com o antigo array bet_links: usa o primeiro link válido.
+        for item in meta.get("bet_links") or []:
+            if isinstance(item, dict):
+                direct = _gm_daily_valid_direct_bet_url(item.get("url"))
+                if direct:
+                    return direct
+    return None
 
 
 def gm_render_admin_daily_pick_approval():
@@ -1941,11 +1920,11 @@ def gm_render_admin_daily_pick_approval():
                 st.caption(f"Probabilidade combinada estimada: {model_prob:.1f}% · todas as pernas ≥ 75%")
                 for leg in legs:
                     st.markdown(f"- **{leg.get('market')}** @ {(_gm_daily_num(leg.get('odd')) or 0):.2f} · {(_gm_daily_num(leg.get('probability')) or 0):.0f}% · {leg.get('home')} × {leg.get('away')} · {_gm_daily_time_label(leg.get('time'))}")
-                bet_links, bet_links_invalid = gm_daily_pick_admin_bet_links(kind, idx, "gm_admin")
-                if st.button("✅ Aprovar e publicar", use_container_width=True, type="primary", key=f"gm_admin_approve_{kind}_{idx}", disabled=bet_links_invalid):
+                direct_bet_url, bet_link_invalid = gm_daily_pick_admin_bet_link(kind, idx, "gm_admin")
+                if st.button("✅ Aprovar e publicar", use_container_width=True, type="primary", key=f"gm_admin_approve_{kind}_{idx}", disabled=bet_link_invalid):
                     try:
                         publish_opt = dict(opt)
-                        publish_opt["bet_links"] = bet_links
+                        publish_opt["direct_bet_url"] = direct_bet_url
                         result = gm_daily_pick_publish_selected(publish_opt)
                         if result.get("ok"):
                             st.session_state.pop(cache_key, None)
@@ -12217,26 +12196,17 @@ def gm_daily_pick_publish_selected(choice):
     for row in gm_daily_pick_recent(20):
         if str(row.get("pick_date") or "") == today.isoformat() and str(row.get("pick_kind") or "dica") == pick_kind:
             return {"ok": False, "reason": "already_published", "row": row}
-    bet_links = []
-    for item in choice.get("bet_links") or []:
-        if not isinstance(item, dict):
-            continue
-        bookmaker = str(item.get("bookmaker") or "").strip()
-        url = _gm_daily_valid_bet_url(bookmaker, item.get("url"))
-        if bookmaker not in GM_DAILY_PICK_BOOKMAKERS or not url:
-            return {"ok": False, "reason": "invalid_bet_link"}
-        if not any(x.get("bookmaker") == bookmaker for x in bet_links):
-            bet_links.append({"bookmaker": bookmaker, "url": url})
-    bookmaker_names = ", ".join(x["bookmaker"] for x in bet_links) or choice.get("bookmaker")
-    first_bet_url = bet_links[0]["url"] if bet_links else None
+    direct_bet_url = _gm_daily_valid_direct_bet_url(choice.get("direct_bet_url"))
+    if choice.get("direct_bet_url") and not direct_bet_url:
+        return {"ok": False, "reason": "invalid_bet_link"}
     payload = {
         "p_pick_date": today.isoformat(),
         "p_pick_kind": pick_kind,
         "p_status": "pending",
         "p_bet_type": str(choice.get("bet_type") or "none"),
         "p_total_odd": choice.get("total_odd"),
-        "p_bookmaker": bookmaker_names,
-        "p_bookmaker_url": first_bet_url,
+        "p_bookmaker": None,
+        "p_bookmaker_url": direct_bet_url,
         "p_legs": legs,
         "p_model_meta": {
             "build": GM_BUILD,
@@ -12245,7 +12215,7 @@ def gm_daily_pick_publish_selected(choice):
             "approved_at": datetime.now(BRASILIA_TZ).isoformat(),
             "model_probability": choice.get("model_probability"),
             "score": choice.get("score"),
-            "bet_links": bet_links,
+            "direct_bet_url": direct_bet_url,
             **(choice.get("model_meta_bingo") or {}),
         },
     }
@@ -12392,9 +12362,10 @@ def _gm_daily_pick_card(row, target_date, pick_kind, is_admin=False):
         prob_txt=(f" • prob. estimada {prob:.0f}% • {html.escape(conf)}" if prob is not None else "")
         card.append(f'<div class="gm-pick-leg"><div class="gm-pick-market">{html.escape(str(leg.get("market") or ""))}<span style="float:right">{leg_odd:.2f}</span></div><div class="gm-pick-muted">🕒 {html.escape(time_label)} • {html.escape(game)} • {html.escape(str(leg.get("competition") or ""))}{prob_txt}</div></div>')
     card.append('</div>'); st.markdown("".join(card),unsafe_allow_html=True)
-    direct_url=str(row.get("bookmaker_url") or "").strip()
+    direct_url = _gm_daily_row_direct_bet_url(row)
     if direct_url:
-        st.link_button("🎟️ Abrir aposta pronta",direct_url,use_container_width=True,key=f"gm_direct_{pick_kind}_{target_date}"); st.caption("O botão só aparece quando existir um link direto real para o bilhete. Links genéricos não são exibidos.")
+        safe_url = html.escape(direct_url, quote=True)
+        st.markdown(f'''<a class="gm-score-bet-cta" href="{safe_url}" target="_blank" rel="noopener noreferrer"><span class="gm-score-bet-target">🎯</span><span><strong>Ir para a aposta</strong><small>GM SCORE</small></span><span class="gm-score-bet-arrow">›</span></a>''', unsafe_allow_html=True)
 
 
 def gm_render_daily_pick_page():
@@ -12480,11 +12451,11 @@ def gm_render_daily_pick_page():
                         st.caption(f"Probabilidade combinada estimada: {model_prob:.1f}% · todas as pernas ≥ 75%")
                         for leg in legs:
                             st.markdown(f"- **{leg.get('market')}** @ {(_gm_daily_num(leg.get('odd')) or 0):.2f} · {(_gm_daily_num(leg.get('probability')) or 0):.0f}% · {leg.get('home')} × {leg.get('away')} · {_gm_daily_time_label(leg.get('time'))}")
-                        bet_links, bet_links_invalid = gm_daily_pick_admin_bet_links(kind, idx, "gm_daily")
-                        if st.button("✅ Aprovar e publicar",use_container_width=True,type="primary",key=f"gm_approve_{kind}_{idx}",disabled=bet_links_invalid):
+                        direct_bet_url, bet_link_invalid = gm_daily_pick_admin_bet_link(kind, idx, "gm_daily")
+                        if st.button("✅ Aprovar e publicar",use_container_width=True,type="primary",key=f"gm_approve_{kind}_{idx}",disabled=bet_link_invalid):
                             try:
                                 publish_opt=dict(opt)
-                                publish_opt["bet_links"]=bet_links
+                                publish_opt["direct_bet_url"]=direct_bet_url
                                 result=gm_daily_pick_publish_selected(publish_opt)
                                 if result.get("ok"):
                                     st.session_state.pop(cache_key,None)
@@ -12503,7 +12474,7 @@ def gm_render_daily_pick_page():
     <style>
     .gm-risk-rule{display:flex;justify-content:center;align-items:center;gap:12px;flex-wrap:wrap;background:#0e151d;border:1px solid rgba(148,163,184,.20);border-radius:14px;padding:12px 14px;margin:.55rem 0 1rem;font-weight:950;letter-spacing:.02em;text-align:center}.gm-risk-green{color:#34e681}.gm-risk-red{color:#fb7185}.gm-risk-arrow{color:#94a3b8}
     .gm-pick-card{background:linear-gradient(145deg,#0d1718,#0b1118);border:1px solid rgba(34,197,94,.62);border-radius:18px;padding:16px;margin:.65rem 0 1rem;box-shadow:0 12px 30px rgba(0,0,0,.18)}.gm-kind-matadeira{border-color:rgba(52,230,129,.72)}.gm-kind-dica{border-color:rgba(250,204,21,.55)}.gm-kind-bingo{border-color:rgba(251,113,133,.58)}
-    .gm-pick-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.gm-pick-title{font-weight:950;font-size:1.1rem;color:#34e681}.gm-pick-odd{font-size:1.6rem;font-weight:950;color:#34e681}.gm-pick-leg{background:#111b25;border:1px solid rgba(148,163,184,.12);border-radius:12px;padding:10px 12px;margin-top:8px}.gm-pick-muted{color:#94a3b8;font-size:.76rem}.gm-pick-market{color:#f8fafc;font-weight:850}.gm-pick-history{display:flex;gap:7px;flex-wrap:wrap;margin-top:8px}.gm-pick-dot{padding:7px 9px;border-radius:10px;background:#101923;border:1px solid rgba(148,163,184,.12);font-size:.75rem;font-weight:800}
+    .gm-pick-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.gm-pick-title{font-weight:950;font-size:1.1rem;color:#34e681}.gm-pick-odd{font-size:1.6rem;font-weight:950;color:#34e681}.gm-pick-leg{background:#111b25;border:1px solid rgba(148,163,184,.12);border-radius:12px;padding:10px 12px;margin-top:8px}.gm-pick-muted{color:#94a3b8;font-size:.76rem}.gm-pick-market{color:#f8fafc;font-weight:850}.gm-pick-history{display:flex;gap:7px;flex-wrap:wrap;margin-top:8px}.gm-pick-dot{padding:7px 9px;border-radius:10px;background:#101923;border:1px solid rgba(148,163,184,.12);font-size:.75rem;font-weight:800}.gm-score-bet-cta{display:flex;align-items:center;justify-content:center;gap:9px;width:min(100%,360px);min-height:44px;margin:.45rem auto .9rem;padding:7px 14px;border:1px solid rgba(52,230,129,.72);border-radius:13px;background:#0d1419;color:#f8fafc!important;text-decoration:none!important;box-shadow:none}.gm-score-bet-cta:hover{background:#101b1c;border-color:#34e681}.gm-score-bet-target{color:#34e681;font-size:1rem}.gm-score-bet-cta strong{display:block;font-size:.88rem;line-height:1.05}.gm-score-bet-cta small{display:block;margin-top:3px;color:#34e681;font-size:.57rem;font-weight:900;letter-spacing:.16em}.gm-score-bet-arrow{margin-left:4px;color:#34e681;font-size:1.25rem;font-weight:900}
     </style>''',unsafe_allow_html=True)
 
     if is_admin:
