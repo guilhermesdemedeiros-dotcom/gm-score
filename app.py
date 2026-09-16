@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-15-v106-admin-results-rls-fix"
+GM_BUILD = "2026-09-16-v107-fixture-dedup-canonical"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -9532,8 +9532,20 @@ def _fixture_compare_tokens(name):
         "internazionale": "inter",
         "munchen": "muenchen",
         "muenchen": "muenchen",
+        # V107: abreviações reais observadas entre as fontes da agenda.
+        # São usadas SOMENTE para deduplicação visual; não alteram o nome
+        # exibido, IDs oficiais, vínculo do confronto ou motor estatístico.
+        "din": "dinamo",
+        "ldu": "liga",
+        "lp": "plata",
+        "atl": "atletico",
     }
-    return [aliases.get(tok, tok) for tok in key.split("_") if tok]
+    tokens = [aliases.get(tok, tok) for tok in key.split("_") if tok]
+    # Prefixos/sufixos institucionais que variam entre provedores e não
+    # identificam outro clube quando o restante do nome coincide.
+    noise = {"sk", "stade", "hapoel", "fr", "rj"}
+    compact = [tok for tok in tokens if tok not in noise]
+    return compact or tokens
 
 
 def _fixture_names_equivalent(a, b):
@@ -9548,10 +9560,13 @@ def _fixture_names_equivalent(a, b):
         return True
     ta, tb = set(ta_list), set(tb_list)
     inter = len(ta & tb)
-    # Exige cobertura forte do nome menor. Depois da expansão Utd->United,
-    # Manchester Utd e Manchester United passam a ser o mesmo clube sem tornar
-    # Manchester City e Manchester United equivalentes.
-    return inter >= 1 and inter / min(len(ta), len(tb)) >= 0.67
+    # V107: exige cobertura forte do nome menor. Além do limite anterior,
+    # aceita a forma abreviada quando TODOS os tokens do nome menor estão no
+    # maior. Isso consolida H. Beer Sheva/Hapoel Beer Sheva, Din./Dinamo Zagreb,
+    # Sturm Graz/SK Sturm Graz, Rennes/Stade Rennais (via forma canônica da
+    # fonte), LDU/Liga de Quito, Botafogo FR/RJ e Estudiantes L.P./La Plata.
+    coverage = inter / min(len(ta), len(tb))
+    return inter >= 1 and (coverage >= 0.67 or ta.issubset(tb) or tb.issubset(ta))
 
 
 def _fixture_source_priority(f):
@@ -13259,7 +13274,13 @@ def gm_render_games_page():
         if not valid_daily_fixture(f) or not fixture_matches_selected_date(f, target_date): continue
         if not gm_fixture_matches_official_league_roster(f): continue
         _merge_fixture_unique(safe, dict(f))
-    safe = sorted(safe, key=lambda f: (str(f.get("time") or "99:99"), str(f.get("competition") or ""), str(f.get("home") or "")))
+    # V107: segunda passagem defensiva imediatamente antes da renderização.
+    # Impede que variantes nominais vindas de fontes diferentes sobrevivam à
+    # composição da agenda mesmo que tenham entrado por rotas/cache distintos.
+    _safe_unique = []
+    for _fixture in safe:
+        _merge_fixture_unique(_safe_unique, _fixture)
+    safe = sorted(_safe_unique, key=lambda f: (str(f.get("time") or "99:99"), str(f.get("competition") or ""), str(f.get("home") or "")))
     if not safe:
         st.info("Nenhum jogo das competições GM SCORE foi localizado para esta data.")
         return
