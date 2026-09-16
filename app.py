@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-16-v108-official-team-name-dedup"
+GM_BUILD = "2026-09-16-v109-fixture-identity-hard-dedup"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -9534,11 +9534,26 @@ GM_FIXTURE_CANONICAL_TEAM_ALIASES = {
     "Estudiantes de La Plata": ["Estudiantes", "Estudiantes L.P.", "Estudiantes LP"],
     "Internacional de Bogotá": ["Inter Bogotá", "Internacional de Bogota", "La Equidad", "CD La Equidad"],
     "Atlético Nacional": ["Atl. Nacional", "Atletico Nacional"],
+    "Deportivo La Coruña": ["Dep. A Coruna", "Dep. La Coruna", "Deportivo", "Deportivo A Coruna", "Deportivo La Coruna", "RC Deportivo", "RC Deportivo La Coruna"],
 }
 
 
 def _fixture_alias_key(name):
-    return fixture_team_key(name)
+    """Chave forte de identidade para aliases da agenda.
+
+    Diferente de ``fixture_team_key``, remove pontuação interna antes de comparar.
+    Assim, grafias como ``Be'er``/``Beer`` e ``L.P.``/``LP`` caem na mesma
+    identidade sem depender do texto exibido pela fonte.
+    """
+    raw = unicodedata.normalize("NFKD", str(name or ""))
+    raw = "".join(ch for ch in raw if not unicodedata.combining(ch)).lower()
+    raw = re.sub(r"[^a-z0-9]+", " ", raw)
+    noise = {
+        "fc", "cf", "ec", "ac", "sc", "afc", "fbpa", "club", "clube",
+        "football", "futebol", "calcio", "soccer", "cd", "ud", "ad", "se", "aa"
+    }
+    tokens = [tok for tok in raw.split() if tok and tok not in noise]
+    return "".join(tokens)
 
 
 def gm_fixture_canonical_team_name(name):
@@ -9580,11 +9595,16 @@ def _fixture_compare_tokens(name):
     return compact or tokens
 
 
+def _fixture_identity_key(name):
+    """Identidade final usada para impedir duplicatas na tela Jogos."""
+    return _fixture_alias_key(gm_fixture_canonical_team_name(name))
+
+
 def _fixture_names_equivalent(a, b):
     # Primeiro resolve aliases confirmados. Isto evita depender de heurística
     # para casos como LDU/Liga de Quito, Athletic Bilbao/Athletic Club etc.
     ca, cb = gm_fixture_canonical_team_name(a), gm_fixture_canonical_team_name(b)
-    if fixture_team_key(ca) == fixture_team_key(cb):
+    if _fixture_identity_key(ca) == _fixture_identity_key(cb):
         return True
     ta_list, tb_list = _fixture_compare_tokens(ca), _fixture_compare_tokens(cb)
     if not ta_list or not tb_list:
@@ -13310,13 +13330,18 @@ def gm_render_games_page():
         if not valid_daily_fixture(f) or not fixture_matches_selected_date(f, target_date): continue
         if not gm_fixture_matches_official_league_roster(f): continue
         _merge_fixture_unique(safe, dict(f))
-    # V107: segunda passagem defensiva imediatamente antes da renderização.
-    # Impede que variantes nominais vindas de fontes diferentes sobrevivam à
-    # composição da agenda mesmo que tenham entrado por rotas/cache distintos.
+    # V109: barreira final de identidade imediatamente antes da renderização.
+    # A tela nunca usa o texto bruto da fonte como identidade do jogo. Primeiro
+    # converte os clubes para nomes canônicos e depois mescla por competição +
+    # mandante + visitante. Isso elimina duplicatas causadas por abreviações,
+    # pontuação e nomes comerciais diferentes sem deduplicar apenas por horário.
     _safe_unique = []
     for _fixture in safe:
-        _merge_fixture_unique(_safe_unique, _fixture)
-    safe = sorted(_safe_unique, key=lambda f: (str(f.get("time") or "99:99"), str(f.get("competition") or ""), str(f.get("home") or "")))
+        _ff = dict(_fixture)
+        _ff["home"] = gm_fixture_canonical_team_name(_ff.get("home"))
+        _ff["away"] = gm_fixture_canonical_team_name(_ff.get("away"))
+        _merge_fixture_unique(_safe_unique, _ff)
+    safe = sorted(_safe_unique, key=lambda f: (str(f.get("time") or "99:99"), str(f.get("competition") or ""), _fixture_identity_key(f.get("home")), _fixture_identity_key(f.get("away"))))
     if not safe:
         st.info("Nenhum jogo das competições GM SCORE foi localizado para esta data.")
         return
