@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-16-v110-official-team-id-fixture-identity"
+GM_BUILD = "2026-09-16-v111-fixture-event-reconciliation"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -9732,11 +9732,28 @@ def _merge_fixture_unique(best_list, candidate):
         old_hid, old_aid = str(old.get("home_team_id") or "").strip(), str(old.get("away_team_id") or "").strip()
         new_hid, new_aid = str(candidate.get("home_team_id") or "").strip(), str(candidate.get("away_team_id") or "").strip()
         same_team_ids = bool(old_hid and old_aid and new_hid and new_aid and old_hid == new_hid and old_aid == new_aid)
-        same_names = (
-            _fixture_names_equivalent(old.get("home"), candidate.get("home"))
-            and _fixture_names_equivalent(old.get("away"), candidate.get("away"))
+        home_same = bool(old_hid and new_hid and old_hid == new_hid) or _fixture_names_equivalent(old.get("home"), candidate.get("home"))
+        away_same = bool(old_aid and new_aid and old_aid == new_aid) or _fixture_names_equivalent(old.get("away"), candidate.get("away"))
+        same_names = home_same and away_same
+
+        # V111 — reconciliação por EVENTO, não por grafia.
+        # A raiz das duplicatas entre provedores é que um mesmo jogo pode chegar
+        # com IDs incompatíveis/ausentes e nomes comerciais diferentes. Se duas
+        # entradas são da mesma competição, no MESMO horário, e um dos lados já
+        # foi identificado como o mesmo clube, elas representam o mesmo evento:
+        # um clube não disputa dois jogos da mesma competição no mesmo instante.
+        # O outro lado é então reconciliado pelo próprio evento, sem exigir uma
+        # lista infinita de aliases (Prague/Praha, Be'er/Beer-Sheva etc.).
+        old_time = str(old.get("time") or "").strip()
+        new_time = str(candidate.get("time") or "").strip()
+        same_kickoff = bool(
+            re.fullmatch(r"\d{2}:\d{2}", old_time)
+            and re.fullmatch(r"\d{2}:\d{2}", new_time)
+            and old_time == new_time
         )
-        if not (same_match_id or same_team_ids or same_names):
+        same_event_by_anchor = bool(same_kickoff and (home_same or away_same))
+
+        if not (same_match_id or same_team_ids or same_names or same_event_by_anchor):
             continue
 
         # Horário/status vêm da fonte mais confiável. Se a fonte escolhida usa
@@ -13403,7 +13420,7 @@ def gm_render_games_page():
         if not valid_daily_fixture(f) or not fixture_matches_selected_date(f, target_date): continue
         if not gm_fixture_matches_official_league_roster(f): continue
         _merge_fixture_unique(safe, dict(f))
-    # V109: barreira final de identidade imediatamente antes da renderização.
+    # V111: barreira final de reconciliação de evento imediatamente antes da renderização.
     # A tela nunca usa o texto bruto da fonte como identidade do jogo. Primeiro
     # converte os clubes para nomes canônicos e depois mescla por competição +
     # mandante + visitante. Isso elimina duplicatas causadas por abreviações,
