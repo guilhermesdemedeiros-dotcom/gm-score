@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-16-v115-desktop-games-return-button"
+GM_BUILD = "2026-09-16-v116-canonical-display-over-official-id"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -9631,6 +9631,12 @@ def gm_fixture_official_team_identity(name, competition, team_id=None):
     Agora a agenda tenta converter CADA nome para o ``team_id`` oficial da APIfootball
     antes da deduplicação. O texto passa a ser apenas fallback. Uma aproximação só é
     aceita quando existe um único candidato forte no catálogo da própria competição.
+
+    V116: o ID oficial continua sendo a identidade estrutural, mas o nome devolvido
+    pelo provedor também passa pela camada canônica de exibição. Isso evita que um
+    cadastro oficial com nome comercial antigo (ex.: clube renomeado) sobrescreva o
+    nome atual já auditado pelo GM SCORE. A correção vale para qualquer data/tela que
+    reutilize este resolvedor e não altera o ID, fixture_id nem cálculos estatísticos.
     """
     raw = str(name or "").strip()
     tid = str(team_id or "").strip()
@@ -9644,16 +9650,16 @@ def gm_fixture_official_team_identity(name, competition, team_id=None):
         # IDs trazidos pela fonte oficial têm precedência absoluta.
         if tid and tid in by_id:
             item = by_id[tid]
-            return {"id": str(item.get("id") or tid), "name": str(item.get("name") or raw), "resolved": True}
+            return {"id": str(item.get("id") or tid), "name": gm_fixture_canonical_team_name(str(item.get("name") or raw)), "resolved": True}
 
         exact = by_name.get(_gm_api_norm(raw))
         if exact:
-            return {"id": str(exact.get("id") or ""), "name": str(exact.get("name") or raw), "resolved": True}
+            return {"id": str(exact.get("id") or ""), "name": gm_fixture_canonical_team_name(str(exact.get("name") or raw)), "resolved": True}
 
         canonical = gm_fixture_canonical_team_name(raw)
         exact = by_name.get(_gm_api_norm(canonical))
         if exact:
-            return {"id": str(exact.get("id") or ""), "name": str(exact.get("name") or canonical), "resolved": True}
+            return {"id": str(exact.get("id") or ""), "name": gm_fixture_canonical_team_name(str(exact.get("name") or canonical)), "resolved": True}
 
         ranked = []
         for item in by_id.values():
@@ -9674,7 +9680,7 @@ def gm_fixture_official_team_identity(name, competition, team_id=None):
             # 0.92 cobre abreviações/subconjuntos como Hapoel Be'er ->
             # Hapoel Beer-Sheva. A margem impede escolher entre clubes ambíguos.
             if best[0] >= 0.92 and (best[0] - second >= 0.06 or best[0] >= 0.985):
-                return {"id": best[2], "name": best[1], "resolved": bool(best[2])}
+                return {"id": best[2], "name": gm_fixture_canonical_team_name(best[1]), "resolved": bool(best[2])}
     except Exception:
         pass
     return {"id": tid, "name": canonical if 'canonical' in locals() else raw, "resolved": False}
