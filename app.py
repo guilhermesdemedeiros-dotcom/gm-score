@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-16-v112-daily-picks-source-diagnostics"
+GM_BUILD = "2026-09-16-v113-daily-picks-market-coverage"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -12624,6 +12624,13 @@ def _gm_daily_market_specs():
         ("12", "Sem empate", "prob_HW_AW", "odd_12"),
         ("O0.5", "Mais de 0,5 gol", "__derived_o05__", "o+0.5"),
         ("O1.5", "Mais de 1,5 gols", "prob_O_1", "o+1.5"),
+        ("U1.5", "Menos de 1,5 gols", "prob_U_1", "u+1.5"),
+        ("O2.5", "Mais de 2,5 gols", "prob_O", "o+2.5"),
+        ("U2.5", "Menos de 2,5 gols", "prob_U", "u+2.5"),
+        ("O3.5", "Mais de 3,5 gols", "prob_O_3", "o+3.5"),
+        ("U3.5", "Menos de 3,5 gols", "prob_U_3", "u+3.5"),
+        ("BTTS_Y", "Ambas marcam — Sim", "prob_bts", "bts_yes"),
+        ("BTTS_N", "Ambas marcam — Não", "prob_ots", "bts_no"),
     ]
 
 
@@ -12633,8 +12640,10 @@ def _gm_daily_market_family(code):
         return "resultado"
     if code in {"1X", "X2", "12"}:
         return "dupla_chance"
-    if code in {"O0.5", "O1.5"}:
+    if code in {"O0.5", "O1.5", "U1.5", "O2.5", "U2.5", "O3.5", "U3.5"}:
         return "gols"
+    if code in {"BTTS_Y", "BTTS_N"}:
+        return "ambas_marcam"
     return "outro"
 
 
@@ -12661,6 +12670,24 @@ def _gm_daily_best_odd_row(rows):
         pref = 3 if "betano" in b else 2 if "bet365" in b else 1
         return (pref, str(row.get("odd_date") or row.get("updated") or ""))
     return max(rows, key=rank)
+
+
+def _gm_daily_best_odd_row_for_market(rows, odd_key):
+    """V113: escolhe a casa por MERCADO, não uma única linha para a partida inteira.
+
+    Uma casa pode ter 1X2 e não ter O/U/BTTS (ou vice-versa). A lógica antiga
+    elegia primeiro uma linha do bookmaker e depois procurava todos os mercados
+    nela, descartando preços reais existentes em outras linhas do mesmo jogo.
+    """
+    available = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        odd = _gm_daily_num(row.get(odd_key))
+        if odd is None or odd <= 1.01:
+            continue
+        available.append(row)
+    return _gm_daily_best_odd_row(available)
 
 
 def _gm_daily_kickoff_at(target_date, time_value):
@@ -12738,11 +12765,17 @@ def gm_daily_pick_candidates(target_date, cutoff_at=None):
                 excluded_past += 1
                 continue
 
-        odd_row = _gm_daily_best_odd_row(odd_map.get(mid) or [])
-        if not odd_row:
+        match_odd_rows = odd_map.get(mid) or []
+        if not match_odd_rows:
             continue
-        bookmaker = str(odd_row.get("odd_bookmakers") or odd_row.get("bookmaker") or "Mercado").strip()
         for code, label, pkey, okey in _gm_daily_market_specs():
+            # V113: procura o preço real deste mercado em todas as casas disponíveis.
+            # Não descarta mais O/U, dupla chance ou BTTS só porque a casa preferida
+            # para 1X2 não publicou aquele campo.
+            odd_row = _gm_daily_best_odd_row_for_market(match_odd_rows, okey)
+            if not odd_row:
+                continue
+            bookmaker = str(odd_row.get("odd_bookmakers") or odd_row.get("bookmaker") or "Mercado").strip()
             if pkey == "__derived_o05__":
                 p = _gm_daily_prob_over_05_from_over15(pred.get("prob_O_1"))
             else:
@@ -12796,7 +12829,7 @@ def _gm_daily_high_margin_candidate(candidate, pick_kind, simple_mode=False):
     except Exception:
         return False
     code = str(candidate.get("market_code") or "").upper().strip()
-    if code not in {"1", "2", "1X", "X2", "12", "O0.5", "O1.5"}:
+    if code not in {"1", "2", "1X", "X2", "12", "O0.5", "O1.5", "U1.5", "O2.5", "U2.5", "O3.5", "U3.5", "BTTS_Y", "BTTS_N"}:
         return False
 
     # Matadeira e Dica mantêm faixas conservadoras. No Bingo v52 não existe
@@ -12815,7 +12848,7 @@ def _gm_daily_high_margin_candidate(candidate, pick_kind, simple_mode=False):
 
     # Não exige edge positivo nos mercados mais protegidos, mas evita aceitar uma
     # perna em que o modelo esteja muito abaixo da probabilidade implícita da casa.
-    min_edge = -5.0 if code in {"O0.5", "1X", "X2", "12"} else -3.0
+    min_edge = -5.0 if code in {"O0.5", "1X", "X2", "12", "U1.5", "U2.5", "U3.5", "BTTS_N"} else -3.0
     if pick_kind == "bingo" and odd >= 1.70:
         min_edge = -2.0
     if pick_kind == "bingo" and odd >= 2.00:
@@ -12824,9 +12857,9 @@ def _gm_daily_high_margin_candidate(candidate, pick_kind, simple_mode=False):
         return False
 
     thresholds = {
-        "matadeira": {"O0.5": 88.0, "O1.5": 78.0, "1X": 82.0, "X2": 82.0, "12": 80.0, "1": 72.0, "2": 72.0},
-        "dica":      {"O0.5": 86.0, "O1.5": 76.0, "1X": 80.0, "X2": 80.0, "12": 78.0, "1": 68.0, "2": 68.0},
-        "bingo":     {"O0.5": 82.0, "O1.5": 72.0, "1X": 76.0, "X2": 76.0, "12": 74.0, "1": 70.0, "2": 70.0},
+        "matadeira": {"O0.5": 88.0, "O1.5": 78.0, "U1.5": 82.0, "O2.5": 80.0, "U2.5": 80.0, "O3.5": 82.0, "U3.5": 80.0, "BTTS_Y": 80.0, "BTTS_N": 80.0, "1X": 82.0, "X2": 82.0, "12": 80.0, "1": 75.0, "2": 75.0},
+        "dica":      {"O0.5": 86.0, "O1.5": 76.0, "U1.5": 80.0, "O2.5": 78.0, "U2.5": 78.0, "O3.5": 80.0, "U3.5": 78.0, "BTTS_Y": 78.0, "BTTS_N": 78.0, "1X": 80.0, "X2": 80.0, "12": 78.0, "1": 75.0, "2": 75.0},
+        "bingo":     {"O0.5": 82.0, "O1.5": 75.0, "U1.5": 76.0, "O2.5": 75.0, "U2.5": 75.0, "O3.5": 76.0, "U3.5": 75.0, "BTTS_Y": 75.0, "BTTS_N": 75.0, "1X": 76.0, "X2": 76.0, "12": 75.0, "1": 75.0, "2": 75.0},
     }
     needed = thresholds.get(pick_kind, thresholds["dica"]).get(code, 101.0)
 
