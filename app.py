@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-16-v113-daily-picks-market-coverage"
+GM_BUILD = "2026-09-16-v114-daily-picks-fixture-driven-search"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -2068,9 +2068,12 @@ def gm_render_admin_daily_pick_approval():
         st.warning("Nenhuma aprovação foi formada nesta atualização sem violar os critérios oficiais.")
         st.caption(
             "Fonte: "
+            f"{int(meta.get('fixtures') or 0)} partidas oficiais · "
             f"{int(meta.get('predictions') or 0)} previsões · "
             f"{int(meta.get('odds') or 0)} linhas de odds · "
             f"{int(meta.get('candidates') or 0)} mercados candidatos. "
+            f"Busca direta recuperou {int(meta.get('direct_prediction_hits') or 0)} previsão(ões) e "
+            f"{int(meta.get('direct_odds_hits') or 0)} conjunto(s) de odds. "
             f"Excluídos: {int(meta.get('excluded_past') or 0)} por horário/status e "
             f"{int(meta.get('excluded_unknown_time') or 0)} sem horário confiável. "
             "O piso de 75% permanece inalterado."
@@ -12556,34 +12559,111 @@ def _gm_daily_sort_legs(legs):
 
 @st.cache_data(ttl=600, show_spinner=False)
 def gm_daily_pick_source_payload(target_date_iso):
-    """Fonte oficial das aprovações do dia.
+    """Fonte das aprovações dirigida pela grade oficial de partidas.
 
-    V112: usa o mesmo cliente APIfootball validado pelo restante do app. Antes,
-    este módulo fazia requests paralelos e uma resposta HTTP 200 contendo objeto
-    de erro podia virar silenciosamente uma lista vazia; o ADM via simplesmente
-    "nenhuma opção". Agora erro de API, payload inválido e ausência real de
-    dados são estados distintos e diagnosticáveis, sem reduzir o piso de 75%.
+    V114: a busca deixa de depender apenas dos endpoints globais por data. Primeiro
+    identifica as partidas oficiais das 21 competições suportadas e, para cada
+    ``match_id`` que não veio no lote global, consulta previsão/odd diretamente pelo
+    evento. Isso evita que uma resposta parcial por data faça uma partida existente
+    na aba Jogos desaparecer do funil das Dicas do Dia. Os critérios estatísticos
+    permanecem inalterados.
     """
     if not gm_apifootball_api_key():
-        return {"predictions": [], "odds": [], "error": "secret_missing"}
+        return {"predictions": [], "odds": [], "fixtures": [], "error": "secret_missing"}
 
+    try:
+        target_day = pd.to_datetime(target_date_iso).date()
+    except Exception:
+        return {"predictions": [], "odds": [], "fixtures": [], "error": "invalid_date"}
+
+    # 1) Grade oficial: é ela que define O QUE precisa ser pesquisado.
+    try:
+        fixtures = load_apifootball_all_competitions_fixtures_for_date(target_day) or []
+    except Exception:
+        try:
+            fixtures = load_apifootball_fixtures_for_date(target_day) or []
+        except Exception:
+            fixtures = []
+
+    allowed_ids = {str(v) for v in (GM_APIFOOTBALL_FIXED_LEAGUE_IDS or {}).values()}
+    official_match_ids = []
+    seen_fixture_ids = set()
+    for fx in fixtures:
+        if not isinstance(fx, dict):
+            continue
+        league_id = str(fx.get("league_id") or "").strip()
+        mid = str(fx.get("match_id") or "").strip()
+        if mid and league_id in allowed_ids and mid not in seen_fixture_ids:
+            seen_fixture_ids.add(mid)
+            official_match_ids.append(mid)
+
+    # 2) Lotes globais continuam sendo o caminho rápido.
     predictions, pred_err = gm_apifootball_request(
         "get_predictions", **{"from": target_date_iso, "to": target_date_iso}
     )
-    if pred_err:
-        return {"predictions": [], "odds": [], "error": f"predictions:{pred_err}"}
-    if not isinstance(predictions, list):
-        return {"predictions": [], "odds": [], "error": "predictions:invalid_payload"}
+    if pred_err or not isinstance(predictions, list):
+        predictions = []
 
     odds, odds_err = gm_apifootball_request(
         "get_odds", **{"from": target_date_iso, "to": target_date_iso}
     )
-    if odds_err:
-        return {"predictions": predictions, "odds": [], "error": f"odds:{odds_err}"}
-    if not isinstance(odds, list):
-        return {"predictions": predictions, "odds": [], "error": "odds:invalid_payload"}
+    if odds_err or not isinstance(odds, list):
+        odds = []
 
-    return {"predictions": predictions, "odds": odds, "error": None}
+    # 3) Completa SOMENTE os eventos oficiais ausentes dos lotes globais.
+    pred_by_match = {
+        str(r.get("match_id") or "").strip(): r
+        for r in predictions if isinstance(r, dict) and str(r.get("match_id") or "").strip()
+    }
+    odds_by_match = {}
+    for row in odds:
+        if isinstance(row, dict):
+            mid = str(row.get("match_id") or "").strip()
+            if mid:
+                odds_by_match.setdefault(mid, []).append(row)
+
+    direct_prediction_hits = 0
+    direct_odds_hits = 0
+    for mid in official_match_ids:
+        if mid not in pred_by_match:
+            rows, err = gm_apifootball_request("get_predictions", match_id=mid)
+            if not err and isinstance(rows, list):
+                for row in rows:
+                    if isinstance(row, dict) and str(row.get("match_id") or "").strip() == mid:
+                        pred_by_match[mid] = row
+                        direct_prediction_hits += 1
+                        break
+        if mid not in odds_by_match:
+            rows, err = gm_apifootball_request("get_odds", match_id=mid)
+            if not err and isinstance(rows, list):
+                valid = [r for r in rows if isinstance(r, dict) and str(r.get("match_id") or "").strip() == mid]
+                if valid:
+                    odds_by_match[mid] = valid
+                    direct_odds_hits += 1
+
+    merged_predictions = list(pred_by_match.values())
+    merged_odds = [row for rows in odds_by_match.values() for row in rows]
+
+    # Só é erro de fonte quando nem os lotes nem a pesquisa dirigida produziram
+    # dados. Ter fixture sem previsão/odd é um diagnóstico, não uma falsa ausência.
+    source_error = None
+    if not merged_predictions and not merged_odds:
+        if pred_err:
+            source_error = f"predictions:{pred_err}"
+        elif odds_err:
+            source_error = f"odds:{odds_err}"
+        else:
+            source_error = "no_prediction_or_odds_data"
+
+    return {
+        "predictions": merged_predictions,
+        "odds": merged_odds,
+        "fixtures": fixtures,
+        "official_fixture_ids": official_match_ids,
+        "direct_prediction_hits": direct_prediction_hits,
+        "direct_odds_hits": direct_odds_hits,
+        "error": source_error,
+    }
 
 
 def _gm_daily_prob_over_05_from_over15(prob_over15):
@@ -12718,7 +12798,7 @@ def gm_daily_pick_candidates(target_date, cutoff_at=None):
     target_iso = target_date.isoformat() if hasattr(target_date, "isoformat") else str(target_date)
     payload = gm_daily_pick_source_payload(target_iso)
     if payload.get("error"):
-        return [], {"error": payload.get("error"), "predictions": len(payload.get("predictions") or []), "odds": len(payload.get("odds") or [])}
+        return [], {"error": payload.get("error"), "fixtures": len(payload.get("official_fixture_ids") or []), "predictions": len(payload.get("predictions") or []), "odds": len(payload.get("odds") or []), "direct_prediction_hits": int(payload.get("direct_prediction_hits") or 0), "direct_odds_hits": int(payload.get("direct_odds_hits") or 0)}
     allowed_ids = {str(v) for v in (GM_APIFOOTBALL_FIXED_LEAGUE_IDS or {}).values()}
     odd_map = _gm_daily_pick_bookmaker_rows(payload.get("odds") or [])
     fixture_map = {}
@@ -12796,8 +12876,11 @@ def gm_daily_pick_candidates(target_date, cutoff_at=None):
                 "confidence_band": _gm_daily_confidence_band(p),
             })
     return candidates, {
-        "error": None, "predictions": len(payload.get("predictions") or []),
+        "error": None, "fixtures": len(payload.get("official_fixture_ids") or []),
+        "predictions": len(payload.get("predictions") or []),
         "odds": len(payload.get("odds") or []), "candidates": len(candidates),
+        "direct_prediction_hits": int(payload.get("direct_prediction_hits") or 0),
+        "direct_odds_hits": int(payload.get("direct_odds_hits") or 0),
         "excluded_past": excluded_past, "excluded_status": excluded_status,
         "excluded_unknown_time": excluded_unknown_time,
         "cutoff_at": cutoff_at.isoformat() if cutoff_at is not None else None,
