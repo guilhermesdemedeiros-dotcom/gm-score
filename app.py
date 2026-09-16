@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-16-v111-fixture-event-reconciliation"
+GM_BUILD = "2026-09-16-v112-daily-picks-source-diagnostics"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -2050,10 +2050,31 @@ def gm_render_admin_daily_pick_approval():
 
     prepared = st.session_state.get(cache_key) or {}
     if not prepared.get("ok"):
+        reason = str(prepared.get("reason") or "indisponivel")
+        meta = prepared.get("meta") or {}
         st.info("As opções privadas ainda não puderam ser preparadas.")
+        if reason == "source_error":
+            st.warning("A fonte oficial de probabilidades/odds não respondeu corretamente. Use Atualizar opções; o sistema não publica dica sem dados reais.")
+            if meta.get("error"):
+                st.caption(f"Diagnóstico da fonte: {meta.get('error')}")
+        else:
+            st.caption(f"Diagnóstico: {reason}")
         return
 
     option_map = prepared.get("options") or {}
+    meta = prepared.get("meta") or {}
+    total_options = sum(len(v or []) for v in option_map.values())
+    if total_options == 0:
+        st.warning("Nenhuma aprovação foi formada nesta atualização sem violar os critérios oficiais.")
+        st.caption(
+            "Fonte: "
+            f"{int(meta.get('predictions') or 0)} previsões · "
+            f"{int(meta.get('odds') or 0)} linhas de odds · "
+            f"{int(meta.get('candidates') or 0)} mercados candidatos. "
+            f"Excluídos: {int(meta.get('excluded_past') or 0)} por horário/status e "
+            f"{int(meta.get('excluded_unknown_time') or 0)} sem horário confiável. "
+            "O piso de 75% permanece inalterado."
+        )
     for kind in ("matadeira", "dica", "bingo"):
         label = GM_DAILY_PICK_PROFILES[kind]["label"]
         if lookup(kind) is not None:
@@ -12535,20 +12556,34 @@ def _gm_daily_sort_legs(legs):
 
 @st.cache_data(ttl=600, show_spinner=False)
 def gm_daily_pick_source_payload(target_date_iso):
-    key = gm_apifootball_api_key()
-    if not key:
+    """Fonte oficial das aprovações do dia.
+
+    V112: usa o mesmo cliente APIfootball validado pelo restante do app. Antes,
+    este módulo fazia requests paralelos e uma resposta HTTP 200 contendo objeto
+    de erro podia virar silenciosamente uma lista vazia; o ADM via simplesmente
+    "nenhuma opção". Agora erro de API, payload inválido e ausência real de
+    dados são estados distintos e diagnosticáveis, sem reduzir o piso de 75%.
+    """
+    if not gm_apifootball_api_key():
         return {"predictions": [], "odds": [], "error": "secret_missing"}
-    try:
-        pred_resp = requests.get(APIFOOTBALL_BASE_URL, params={"action": "get_predictions", "from": target_date_iso, "to": target_date_iso, "APIkey": key}, timeout=22)
-        pred_resp.raise_for_status(); predictions = pred_resp.json()
-    except Exception as exc:
-        return {"predictions": [], "odds": [], "error": f"predictions:{type(exc).__name__}"}
-    try:
-        odd_resp = requests.get(APIFOOTBALL_BASE_URL, params={"action": "get_odds", "from": target_date_iso, "to": target_date_iso, "APIkey": key}, timeout=22)
-        odd_resp.raise_for_status(); odds = odd_resp.json()
-    except Exception as exc:
-        return {"predictions": predictions if isinstance(predictions, list) else [], "odds": [], "error": f"odds:{type(exc).__name__}"}
-    return {"predictions": predictions if isinstance(predictions, list) else [], "odds": odds if isinstance(odds, list) else [], "error": None}
+
+    predictions, pred_err = gm_apifootball_request(
+        "get_predictions", **{"from": target_date_iso, "to": target_date_iso}
+    )
+    if pred_err:
+        return {"predictions": [], "odds": [], "error": f"predictions:{pred_err}"}
+    if not isinstance(predictions, list):
+        return {"predictions": [], "odds": [], "error": "predictions:invalid_payload"}
+
+    odds, odds_err = gm_apifootball_request(
+        "get_odds", **{"from": target_date_iso, "to": target_date_iso}
+    )
+    if odds_err:
+        return {"predictions": predictions, "odds": [], "error": f"odds:{odds_err}"}
+    if not isinstance(odds, list):
+        return {"predictions": predictions, "odds": [], "error": "odds:invalid_payload"}
+
+    return {"predictions": predictions, "odds": odds, "error": None}
 
 
 def _gm_daily_prob_over_05_from_over15(prob_over15):
