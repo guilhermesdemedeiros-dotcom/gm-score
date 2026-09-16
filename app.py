@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-16-v109-fixture-identity-hard-dedup"
+GM_BUILD = "2026-09-16-v110-official-team-id-fixture-identity"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -9596,13 +9596,68 @@ def _fixture_compare_tokens(name):
 
 
 def _fixture_identity_key(name):
-    """Identidade final usada para impedir duplicatas na tela Jogos."""
+    """Identidade textual de fallback quando não existe ID oficial resolvido."""
     return _fixture_alias_key(gm_fixture_canonical_team_name(name))
 
 
-def _fixture_names_equivalent(a, b):
-    # Primeiro resolve aliases confirmados. Isto evita depender de heurística
-    # para casos como LDU/Liga de Quito, Athletic Bilbao/Athletic Club etc.
+def gm_fixture_official_team_identity(name, competition, team_id=None):
+    """Resolve a identidade do clube contra o cadastro oficial da competição.
+
+    V110: a raiz das duplicatas era comparar textos vindos de provedores diferentes.
+    Agora a agenda tenta converter CADA nome para o ``team_id`` oficial da APIfootball
+    antes da deduplicação. O texto passa a ser apenas fallback. Uma aproximação só é
+    aceita quando existe um único candidato forte no catálogo da própria competição.
+    """
+    raw = str(name or "").strip()
+    tid = str(team_id or "").strip()
+    if not raw and not tid:
+        return {"id": "", "name": raw, "resolved": False}
+    try:
+        catalog = gm_team_visual_catalog(competition) if competition else {"by_id": {}, "by_name": {}}
+        by_id = catalog.get("by_id", {}) or {}
+        by_name = catalog.get("by_name", {}) or {}
+
+        # IDs trazidos pela fonte oficial têm precedência absoluta.
+        if tid and tid in by_id:
+            item = by_id[tid]
+            return {"id": str(item.get("id") or tid), "name": str(item.get("name") or raw), "resolved": True}
+
+        exact = by_name.get(_gm_api_norm(raw))
+        if exact:
+            return {"id": str(exact.get("id") or ""), "name": str(exact.get("name") or raw), "resolved": True}
+
+        canonical = gm_fixture_canonical_team_name(raw)
+        exact = by_name.get(_gm_api_norm(canonical))
+        if exact:
+            return {"id": str(exact.get("id") or ""), "name": str(exact.get("name") or canonical), "resolved": True}
+
+        ranked = []
+        for item in by_id.values():
+            official = str(item.get("name") or "").strip()
+            if not official:
+                continue
+            score = max(
+                _gm_recovery_team_similarity(raw, official),
+                _gm_recovery_team_similarity(canonical, official),
+            )
+            if _fixture_names_equivalent_text_only(canonical, official):
+                score = max(score, 0.96)
+            ranked.append((score, official, str(item.get("id") or "")))
+        ranked.sort(key=lambda x: x[0], reverse=True)
+        if ranked:
+            best = ranked[0]
+            second = ranked[1][0] if len(ranked) > 1 else 0.0
+            # 0.92 cobre abreviações/subconjuntos como Hapoel Be'er ->
+            # Hapoel Beer-Sheva. A margem impede escolher entre clubes ambíguos.
+            if best[0] >= 0.92 and (best[0] - second >= 0.06 or best[0] >= 0.985):
+                return {"id": best[2], "name": best[1], "resolved": bool(best[2])}
+    except Exception:
+        pass
+    return {"id": tid, "name": canonical if 'canonical' in locals() else raw, "resolved": False}
+
+
+def _fixture_names_equivalent_text_only(a, b):
+    """Equivalência textual sem consultar catálogo; evita recursão no resolvedor V110."""
     ca, cb = gm_fixture_canonical_team_name(a), gm_fixture_canonical_team_name(b)
     if _fixture_identity_key(ca) == _fixture_identity_key(cb):
         return True
@@ -9618,6 +9673,10 @@ def _fixture_names_equivalent(a, b):
     inter = len(ta & tb)
     coverage = inter / min(len(ta), len(tb))
     return inter >= 1 and (coverage >= 0.80 or ta.issubset(tb) or tb.issubset(ta))
+
+
+def _fixture_names_equivalent(a, b):
+    return _fixture_names_equivalent_text_only(a, b)
 
 
 def _fixture_source_priority(f):
@@ -9649,21 +9708,35 @@ def _merge_fixture_unique(best_list, candidate):
     if not valid_daily_fixture(candidate):
         return
     candidate = dict(candidate)
-    candidate["home"] = gm_fixture_canonical_team_name(candidate.get("home"))
-    candidate["away"] = gm_fixture_canonical_team_name(candidate.get("away"))
+    comp = str(candidate.get("competition") or "")
+    ch = gm_fixture_official_team_identity(candidate.get("home"), comp, candidate.get("home_team_id"))
+    ca = gm_fixture_official_team_identity(candidate.get("away"), comp, candidate.get("away_team_id"))
+    candidate["home"] = ch.get("name") or gm_fixture_canonical_team_name(candidate.get("home"))
+    candidate["away"] = ca.get("name") or gm_fixture_canonical_team_name(candidate.get("away"))
+    if ch.get("id"): candidate["home_team_id"] = ch.get("id")
+    if ca.get("id"): candidate["away_team_id"] = ca.get("id")
     for i, old in enumerate(best_list):
-        old["home"] = gm_fixture_canonical_team_name(old.get("home"))
-        old["away"] = gm_fixture_canonical_team_name(old.get("away"))
-        if old.get("competition") != candidate.get("competition"):
+        old_comp = str(old.get("competition") or "")
+        if old_comp != comp:
             continue
+        oh = gm_fixture_official_team_identity(old.get("home"), old_comp, old.get("home_team_id"))
+        oa = gm_fixture_official_team_identity(old.get("away"), old_comp, old.get("away_team_id"))
+        old["home"] = oh.get("name") or gm_fixture_canonical_team_name(old.get("home"))
+        old["away"] = oa.get("name") or gm_fixture_canonical_team_name(old.get("away"))
+        if oh.get("id"): old["home_team_id"] = oh.get("id")
+        if oa.get("id"): old["away_team_id"] = oa.get("id")
+
         old_mid = str(old.get("match_id") or "").strip()
         new_mid = str(candidate.get("match_id") or "").strip()
-        same_id = bool(old_mid and new_mid and old_mid == new_mid)
+        same_match_id = bool(old_mid and new_mid and old_mid == new_mid)
+        old_hid, old_aid = str(old.get("home_team_id") or "").strip(), str(old.get("away_team_id") or "").strip()
+        new_hid, new_aid = str(candidate.get("home_team_id") or "").strip(), str(candidate.get("away_team_id") or "").strip()
+        same_team_ids = bool(old_hid and old_aid and new_hid and new_aid and old_hid == new_hid and old_aid == new_aid)
         same_names = (
             _fixture_names_equivalent(old.get("home"), candidate.get("home"))
             and _fixture_names_equivalent(old.get("away"), candidate.get("away"))
         )
-        if not (same_id or same_names):
+        if not (same_match_id or same_team_ids or same_names):
             continue
 
         # Horário/status vêm da fonte mais confiável. Se a fonte escolhida usa
@@ -13338,8 +13411,13 @@ def gm_render_games_page():
     _safe_unique = []
     for _fixture in safe:
         _ff = dict(_fixture)
-        _ff["home"] = gm_fixture_canonical_team_name(_ff.get("home"))
-        _ff["away"] = gm_fixture_canonical_team_name(_ff.get("away"))
+        _comp = str(_ff.get("competition") or "")
+        _home_identity = gm_fixture_official_team_identity(_ff.get("home"), _comp, _ff.get("home_team_id"))
+        _away_identity = gm_fixture_official_team_identity(_ff.get("away"), _comp, _ff.get("away_team_id"))
+        _ff["home"] = _home_identity.get("name") or gm_fixture_canonical_team_name(_ff.get("home"))
+        _ff["away"] = _away_identity.get("name") or gm_fixture_canonical_team_name(_ff.get("away"))
+        if _home_identity.get("id"): _ff["home_team_id"] = _home_identity.get("id")
+        if _away_identity.get("id"): _ff["away_team_id"] = _away_identity.get("id")
         _merge_fixture_unique(_safe_unique, _ff)
     safe = sorted(_safe_unique, key=lambda f: (str(f.get("time") or "99:99"), str(f.get("competition") or ""), _fixture_identity_key(f.get("home")), _fixture_identity_key(f.get("away"))))
     if not safe:
