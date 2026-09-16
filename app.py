@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-16-v107-fixture-dedup-canonical"
+GM_BUILD = "2026-09-16-v108-official-team-name-dedup"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -9516,57 +9516,88 @@ def load_thesportsdb_fixtures_for_date(target_date):
     return out
 
 
-def _fixture_compare_tokens(name):
-    """Tokens canônicos SOMENTE para comparar nomes de clubes entre agendas.
+# V108: identidade canônica de clubes na AGENDA. As fontes públicas usam nomes,
+# abreviações e grafias diferentes para o mesmo clube. Esta tabela não cria
+# partidas e não participa do motor estatístico: ela somente converte variantes
+# confirmadas para um único nome de exibição antes da deduplicação.
+GM_FIXTURE_CANONICAL_TEAM_ALIASES = {
+    "Hapoel Beer-Sheva": ["Hapoel Be'er Sheva", "Hapoel Beer Sheva", "H. Beer Sheva", "H Beer Sheva"],
+    "Dinamo Zagreb": ["GNK Dinamo", "GNK Dinamo Zagreb", "Din. Zagreb"],
+    "Sturm Graz": ["SK Sturm Graz"],
+    "Rennes": ["Stade Rennais", "Stade Rennes", "Stade Rennais FC"],
+    "Olympiacos": ["Olympiacos Piraeus", "Olympiakos Piraeus", "Olympiacos FC"],
+    "Jagiellonia Białystok": ["Jagiellonia", "Jagiellonia Bialystok"],
+    "Athletic Club": ["Ath Bilbao", "Athletic Bilbao", "Ath. Bilbao"],
+    "LDU Quito": ["Ldu De Quito", "Liga de Quito", "Liga Deportiva Universitaria de Quito"],
+    "Botafogo": ["Botafogo FR", "Botafogo RJ", "Botafogo de Futebol e Regatas"],
+    "Grêmio": ["Grêmio FBPA", "Gremio FBPA", "Gremio"],
+    "Estudiantes de La Plata": ["Estudiantes", "Estudiantes L.P.", "Estudiantes LP"],
+    "Internacional de Bogotá": ["Inter Bogotá", "Internacional de Bogota", "La Equidad", "CD La Equidad"],
+    "Atlético Nacional": ["Atl. Nacional", "Atletico Nacional"],
+}
 
-    Não altera nomes exibidos, estatísticas ou IDs. Expande abreviações muito
-    comuns que faziam o mesmo jogo entrar duas vezes (ex.: Utd x United).
-    """
+
+def _fixture_alias_key(name):
+    return fixture_team_key(name)
+
+
+def gm_fixture_canonical_team_name(name):
+    """Retorna um único nome de exibição para variantes confirmadas do mesmo clube."""
+    raw = str(name or "").strip()
+    if not raw:
+        return raw
+    key = _fixture_alias_key(raw)
+    for canonical, variants in GM_FIXTURE_CANONICAL_TEAM_ALIASES.items():
+        if key == _fixture_alias_key(canonical):
+            return canonical
+        for variant in variants:
+            if key == _fixture_alias_key(variant):
+                return canonical
+    # Reaproveita aliases oficiais já auditados no projeto quando houver
+    # correspondência EXATA normalizada; nunca usa aproximação para renomear.
+    for canonical, variants in (globals().get("GM_APIFOOTBALL_TEAM_ALIASES") or {}).items():
+        if key == _fixture_alias_key(canonical):
+            return canonical
+        if any(key == _fixture_alias_key(v) for v in (variants or [])):
+            return canonical
+    return raw
+
+
+def _fixture_compare_tokens(name):
+    """Tokens canônicos SOMENTE para comparar nomes de clubes entre agendas."""
+    name = gm_fixture_canonical_team_name(name)
     key = fixture_team_key(name)
     if not key:
         return []
     aliases = {
-        "utd": "united",
-        "man": "manchester",
-        "intl": "internacional",
-        "internazionale": "inter",
-        "munchen": "muenchen",
-        "muenchen": "muenchen",
-        # V107: abreviações reais observadas entre as fontes da agenda.
-        # São usadas SOMENTE para deduplicação visual; não alteram o nome
-        # exibido, IDs oficiais, vínculo do confronto ou motor estatístico.
-        "din": "dinamo",
-        "ldu": "liga",
-        "lp": "plata",
-        "atl": "atletico",
+        "utd": "united", "man": "manchester", "intl": "internacional",
+        "internazionale": "inter", "munchen": "muenchen", "muenchen": "muenchen",
+        "din": "dinamo", "ldu": "liga", "lp": "plata", "atl": "atletico",
     }
     tokens = [aliases.get(tok, tok) for tok in key.split("_") if tok]
-    # Prefixos/sufixos institucionais que variam entre provedores e não
-    # identificam outro clube quando o restante do nome coincide.
-    noise = {"sk", "stade", "hapoel", "fr", "rj"}
+    noise = {"sk", "stade", "fr", "rj", "fc", "cf"}
     compact = [tok for tok in tokens if tok not in noise]
     return compact or tokens
 
 
 def _fixture_names_equivalent(a, b):
-    ta_list, tb_list = _fixture_compare_tokens(a), _fixture_compare_tokens(b)
+    # Primeiro resolve aliases confirmados. Isto evita depender de heurística
+    # para casos como LDU/Liga de Quito, Athletic Bilbao/Athletic Club etc.
+    ca, cb = gm_fixture_canonical_team_name(a), gm_fixture_canonical_team_name(b)
+    if fixture_team_key(ca) == fixture_team_key(cb):
+        return True
+    ta_list, tb_list = _fixture_compare_tokens(ca), _fixture_compare_tokens(cb)
     if not ta_list or not tb_list:
         return False
     ka, kb = "_".join(ta_list), "_".join(tb_list)
     if ka == kb:
         return True
-    # Nome curto x oficial (Coventry x Coventry City; Brighton x Brighton Hove Albion).
     if min(len(ka), len(kb)) >= 5 and (ka in kb or kb in ka):
         return True
     ta, tb = set(ta_list), set(tb_list)
     inter = len(ta & tb)
-    # V107: exige cobertura forte do nome menor. Além do limite anterior,
-    # aceita a forma abreviada quando TODOS os tokens do nome menor estão no
-    # maior. Isso consolida H. Beer Sheva/Hapoel Beer Sheva, Din./Dinamo Zagreb,
-    # Sturm Graz/SK Sturm Graz, Rennes/Stade Rennais (via forma canônica da
-    # fonte), LDU/Liga de Quito, Botafogo FR/RJ e Estudiantes L.P./La Plata.
     coverage = inter / min(len(ta), len(tb))
-    return inter >= 1 and (coverage >= 0.67 or ta.issubset(tb) or tb.issubset(ta))
+    return inter >= 1 and (coverage >= 0.80 or ta.issubset(tb) or tb.issubset(ta))
 
 
 def _fixture_source_priority(f):
@@ -9594,10 +9625,15 @@ def _fixture_merge_score(f):
 
 
 def _merge_fixture_unique(best_list, candidate):
-    """Mescla a mesma partida entre fontes para qualquer competição suportada."""
+    """Mescla a mesma partida entre fontes e normaliza o nome oficial exibido."""
     if not valid_daily_fixture(candidate):
         return
+    candidate = dict(candidate)
+    candidate["home"] = gm_fixture_canonical_team_name(candidate.get("home"))
+    candidate["away"] = gm_fixture_canonical_team_name(candidate.get("away"))
     for i, old in enumerate(best_list):
+        old["home"] = gm_fixture_canonical_team_name(old.get("home"))
+        old["away"] = gm_fixture_canonical_team_name(old.get("away"))
         if old.get("competition") != candidate.get("competition"):
             continue
         old_mid = str(old.get("match_id") or "").strip()
