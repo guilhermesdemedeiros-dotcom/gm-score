@@ -38,7 +38,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-16-v114-daily-picks-fixture-driven-search"
+GM_BUILD = "2026-09-16-v115-desktop-games-return-button"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -13937,7 +13937,7 @@ div[class*="st-key-gm_back_to_games_context"] button{width:auto!important;min-he
 div[class*="st-key-gm_games_analyze_"] [data-testid="stButton"]{display:flex!important;justify-content:flex-end!important;margin:0 0 .72rem!important}
 div[class*="st-key-gm_games_analyze_"] button{width:auto!important;min-width:7.8rem!important;min-height:2.35rem!important;padding:.3rem .85rem!important;border-radius:10px!important;border:1px solid rgba(52,230,129,.48)!important;background:rgba(52,230,129,.10)!important;color:#34e681!important;font-size:.82rem!important;font-weight:850!important}
 }
-@media (min-width:769px){div[class*="st-key-gm_games_analyze_"] [data-testid="stButton"]{display:flex;justify-content:flex-end;margin-bottom:.65rem}div[class*="st-key-gm_games_analyze_"] button{width:auto!important;min-width:8.5rem}div[class*="st-key-gm_back_to_games_context"]{position:fixed!important;left:1rem!important;top:4.4rem!important;z-index:100001!important;width:auto!important}div[class*="st-key-gm_back_to_games_context"] button{width:auto!important;min-height:2.2rem!important;padding:.3rem .72rem!important;border-radius:999px!important;border:1px solid rgba(52,230,129,.46)!important;background:rgba(7,16,15,.94)!important;color:#eafbf2!important;font-size:.76rem!important;font-weight:850!important;box-shadow:0 5px 16px rgba(0,0,0,.28)!important}}
+@media (min-width:769px){div[class*="st-key-gm_games_analyze_"] [data-testid="stButton"]{display:flex;justify-content:flex-end;margin-bottom:.65rem}div[class*="st-key-gm_games_analyze_"] button{width:auto!important;min-width:8.5rem}/* V115: no desktop o botão contextual fica dentro da área principal. O posicionamento fixo anterior em left:1rem podia ficar escondido atrás da sidebar. */div[class*="st-key-gm_back_to_games_context"]{position:sticky!important;left:auto!important;top:.75rem!important;z-index:100001!important;width:max-content!important;max-width:100%!important;margin:.15rem 0 .7rem!important}div[class*="st-key-gm_back_to_games_context"] [data-testid="stButton"]{width:auto!important;margin:0!important}div[class*="st-key-gm_back_to_games_context"] button{width:auto!important;min-height:2.2rem!important;padding:.3rem .72rem!important;border-radius:999px!important;border:1px solid rgba(52,230,129,.46)!important;background:rgba(7,16,15,.94)!important;color:#eafbf2!important;font-size:.76rem!important;font-weight:850!important;box-shadow:0 5px 16px rgba(0,0,0,.28)!important}}
 </style>
 """, unsafe_allow_html=True)
 
