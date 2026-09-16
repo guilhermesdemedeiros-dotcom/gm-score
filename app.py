@@ -11,6 +11,7 @@ import secrets
 import inspect
 import itertools
 import unicodedata
+from functools import lru_cache
 from html.parser import HTMLParser
 from urllib.parse import quote, urlencode
 from datetime import datetime, date, timedelta, timezone
@@ -38,7 +39,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-16-v116-canonical-display-over-official-id"
+GM_BUILD = "2026-09-16-v117-performance-optimization"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -151,10 +152,17 @@ def gm_apifootball_healthcheck():
     return {"ok": False, "error": "unexpected_payload", "countries": 0}
 
 
-def _gm_api_norm(value):
-    text = unicodedata.normalize("NFKD", str(value or ""))
+@lru_cache(maxsize=32768)
+def _gm_api_norm_cached(text):
+    text = unicodedata.normalize("NFKD", text)
     text = "".join(ch for ch in text if not unicodedata.combining(ch))
     return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
+
+def _gm_api_norm(value):
+    # V117: normalização é uma operação pura e extremamente recorrente em agenda,
+    # aliases e auditorias. Cache local evita repetir Unicode/regex sem alterar saída.
+    return _gm_api_norm_cached(str(value or ""))
 
 
 # V87 — identidade visual das equipes. A APIfootball é a fonte de verdade dos
@@ -1374,14 +1382,32 @@ def gm_list_news():
     return [row for row in rows if isinstance(row, dict)]
 
 
+def gm_invalidate_unread_news_cache():
+    st.session_state.pop("_gm_unread_news_count_cache", None)
+    st.session_state.pop("_gm_unread_news_count_tick", None)
+
+
 def gm_unread_news_count():
+    # V117: a navegação é renderizada em todo rerun. Evita um RPC ao Supabase a
+    # cada clique/widget mantendo uma janela curta de 30 s; ações de leitura
+    # invalidam explicitamente o valor para o badge continuar imediato.
+    now = time.monotonic()
+    tick = st.session_state.get("_gm_unread_news_count_tick")
+    if isinstance(tick, (int, float)) and now - float(tick) < 30:
+        try:
+            return max(0, int(st.session_state.get("_gm_unread_news_count_cache") or 0))
+        except Exception:
+            pass
     data = gm_news_rpc("gm_unread_news_count")
     if isinstance(data, list):
         data = data[0] if data else 0
     try:
-        return max(0, int(data or 0))
+        count = max(0, int(data or 0))
     except Exception:
-        return 0
+        count = 0
+    st.session_state["_gm_unread_news_count_cache"] = count
+    st.session_state["_gm_unread_news_count_tick"] = now
+    return count
 
 
 def gm_news_format_datetime(value):
@@ -1496,6 +1522,7 @@ def gm_render_news_center():
         for news_id in hidden_unread_ids:
             try:
                 gm_news_rpc("gm_mark_news_read", {"p_news_id": news_id})
+                gm_invalidate_unread_news_cache()
             except Exception:
                 sync_ok = False
                 break
@@ -1575,6 +1602,7 @@ def gm_render_news_center():
                         if st.button("👁 Ler", use_container_width=True, key=f"gm_news_modal_read_{news_id}"):
                             try:
                                 gm_news_rpc("gm_mark_news_read", {"p_news_id": news_id})
+                                gm_invalidate_unread_news_cache()
                                 st.rerun()
                             except Exception:
                                 st.error("Não foi possível marcar como lida agora.")
@@ -1588,6 +1616,7 @@ def gm_render_news_center():
                             # sincronizado com o que o usuário realmente consegue ver.
                             if not is_read:
                                 gm_news_rpc("gm_mark_news_read", {"p_news_id": news_id})
+                                gm_invalidate_unread_news_cache()
                             hidden_now = set(st.session_state.get("gm_news_hidden_session", []))
                             hidden_now.add(news_id)
                             st.session_state["gm_news_hidden_session"] = list(hidden_now)
@@ -1599,6 +1628,7 @@ def gm_render_news_center():
             if st.button("✓ Marcar todas como lidas", use_container_width=True, key="gm_news_modal_mark_all"):
                 try:
                     gm_news_rpc("gm_mark_all_news_read")
+                    gm_invalidate_unread_news_cache()
                     st.rerun()
                 except Exception:
                     st.error("Não foi possível atualizar as leituras agora.")
@@ -4160,10 +4190,16 @@ def read_csv_bytes(content):
     raise RuntimeError(f"não foi possível ler o arquivo: {last}")
 
 
-def clean_col(text):
-    text = str(text).strip().lower()
+@lru_cache(maxsize=16384)
+def _clean_col_cached(text):
+    text = text.strip().lower()
     text = "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
     return re.sub(r"[^a-z0-9]+", "_", text).strip("_")
+
+
+def clean_col(text):
+    # V117: chaves de widgets e colunas repetem os mesmos nomes em cada rerun.
+    return _clean_col_cached(str(text))
 
 
 
@@ -9562,7 +9598,8 @@ GM_FIXTURE_CANONICAL_TEAM_ALIASES = {
 }
 
 
-def _fixture_alias_key(name):
+@lru_cache(maxsize=16384)
+def _fixture_alias_key_cached(name):
     """Chave forte de identidade para aliases da agenda.
 
     Diferente de ``fixture_team_key``, remove pontuação interna antes de comparar.
@@ -9580,6 +9617,11 @@ def _fixture_alias_key(name):
     return "".join(tokens)
 
 
+def _fixture_alias_key(name):
+    return _fixture_alias_key_cached(str(name or ""))
+
+
+@lru_cache(maxsize=16384)
 def gm_fixture_canonical_team_name(name):
     """Retorna um único nome de exibição para variantes confirmadas do mesmo clube."""
     raw = str(name or "").strip()
@@ -9624,6 +9666,7 @@ def _fixture_identity_key(name):
     return _fixture_alias_key(gm_fixture_canonical_team_name(name))
 
 
+@st.cache_data(ttl=21600, show_spinner=False)
 def gm_fixture_official_team_identity(name, competition, team_id=None):
     """Resolve a identidade do clube contra o cadastro oficial da competição.
 
@@ -11818,7 +11861,8 @@ def _gm_api_league_candidates(leagues, countries, names, limit=12):
     ranked.sort(key=lambda x: x[0], reverse=True)
     return [item for _, item in ranked[:max(1, int(limit))]]
 
-def _gm_team_name_match(a, b):
+@lru_cache(maxsize=32768)
+def _gm_team_name_match_cached(a, b):
     def variants(value):
         raw = str(value or "").strip()
         vals = [raw]
@@ -11844,6 +11888,12 @@ def _gm_team_name_match(a, b):
         return bool(sa and sb and len(sa & sb) / max(len(sa | sb), 1) >= 0.72)
 
     return any(basic(x, y) for x in variants(a) for y in variants(b))
+
+
+def _gm_team_name_match(a, b):
+    # V117: comparação de nomes é pura; a mesma dupla é consultada dezenas de
+    # vezes durante merge de fontes e auditorias. Mantém exatamente a regra atual.
+    return _gm_team_name_match_cached(str(a or ""), str(b or ""))
 
 def gm_render_apifootball_league_audit():
     try:
@@ -13745,7 +13795,7 @@ def gm_render_news_page():
         with c1:
             if not is_read and news_id and st.button("✓ Lida", key=f"gm_news_page_read_{news_id}"):
                 try:
-                    gm_news_rpc("gm_mark_news_read", {"p_news_id": news_id}); st.rerun()
+                    gm_news_rpc("gm_mark_news_read", {"p_news_id": news_id}); gm_invalidate_unread_news_cache(); st.rerun()
                 except Exception:
                     st.warning("Não foi possível atualizar a leitura agora.")
         with c2:
