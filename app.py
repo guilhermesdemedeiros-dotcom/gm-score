@@ -39,7 +39,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-16-v117-performance-optimization"
+GM_BUILD = "2026-09-17-v118-strict-fixture-date-barrier"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -8954,7 +8954,10 @@ def parse_today_from_openfootball_text(text, target_date, competition):
         br_time, br_date = fixture_time_brasilia(mm.group(1) or "", competition, current)
         if br_date not in (None, target_date):
             continue
-        found.append({"competition":competition,"home":home,"away":away,"time":br_time})
+        if br_date is None:
+            # Sem horário, o calendário ainda fornece a data explícita do bloco.
+            br_date = current
+        found.append({"competition":competition,"home":home,"away":away,"time":br_time,"br_date":br_date,"source":"OpenFootball"})
     return found
 
 
@@ -9250,9 +9253,10 @@ def fixture_matches_selected_date(f, target_date):
     """Validação final da agenda usando a data local de Brasília.
 
     As fontes chamadas nesta etapa já são consultadas pela data selecionada.
-    Quando uma fonte entrega ``br_date`` usamos a data como validação forte.
-    Quando ela omite a data local, não descartamos o jogo apenas por isso — essa
-    era a causa de partidas válidas desaparecerem depois da mesclagem das fontes.
+    V118: a data local de Brasília passa a ser obrigatória na barreira final.
+    A raiz dos jogos de ontem reaparecendo em Hoje era aceitar ``br_date`` ausente
+    em fallbacks antigos. Cada coletor deve provar a data antes da renderização;
+    registro sem data válida é rejeitado em vez de ser encaixado no dia solicitado.
     Partidas encerradas continuam bloqueadas da agenda pré-jogo.
     """
     if isinstance(target_date, pd.Timestamp):
@@ -9265,7 +9269,7 @@ def fixture_matches_selected_date(f, target_date):
 
     br_date = f.get("br_date")
     if br_date in (None, ""):
-        return True
+        return False
     if isinstance(br_date, pd.Timestamp):
         br_date = br_date.date()
     if isinstance(br_date, datetime):
@@ -9277,9 +9281,8 @@ def fixture_matches_selected_date(f, target_date):
         except Exception:
             br_date = None
 
-    # Se a fonte enviou uma data ilegível, como a chamada já foi feita para a
-    # data selecionada, preservamos o jogo em vez de produzir um falso negativo.
-    return True if br_date is None else br_date == target_date
+    # Data ausente/ilegível não é evidência suficiente para pertencer ao dia.
+    return False if br_date is None else br_date == target_date
 
 
 # Fonte principal complementar da agenda: calendário público do SofaScore.
@@ -10413,7 +10416,7 @@ def load_fixtures_for_date(target_date):
                     br_time, br_date = fixture_time_brasilia(str(g.get("Time", "")), comp, fixture_date, source_tz="UTC")
                     if br_date not in (None, today):
                         continue
-                    fixtures.append({"competition": comp, "home": str(g["HomeTeam"]), "away": str(g["AwayTeam"]), "time": br_time})
+                    fixtures.append({"competition": comp, "home": str(g["HomeTeam"]), "away": str(g["AwayTeam"]), "time": br_time, "br_date": br_date or fixture_date, "source": "football-data fixtures"})
     except Exception:
         pass
 
@@ -10445,7 +10448,7 @@ def load_fixtures_for_date(target_date):
                 br_time, br_date = fixture_time_brasilia(m.get("time", ""), comp, d.date())
                 if br_date not in (None, today):
                     continue
-                fixtures.append({"competition": comp, "home": m.get("team1"), "away": m.get("team2"), "time": br_time})
+                fixtures.append({"competition": comp, "home": m.get("team1"), "away": m.get("team2"), "time": br_time, "br_date": br_date or d.date(), "source": "OpenFootball JSON"})
         except Exception:
             pass
 
