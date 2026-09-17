@@ -39,7 +39,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-17-v118-strict-fixture-date-barrier"
+GM_BUILD = "2026-09-17-v119-no-invented-fixture-dates"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -10083,12 +10083,17 @@ def load_apifootball_prediction_fixtures_for_date(target_date, competition=None)
         away = str(ev.get("match_awayteam_name") or "").strip()
         if not home or not away:
             continue
-        raw_date = str(ev.get("match_date") or target_date.isoformat()).strip()
+        # V119: nunca inventar a data de uma previsão. O endpoint de predictions
+        # pode devolver registros antigos/incompletos mesmo numa consulta por intervalo.
+        # Sem match_date explícito e válido, o registro NÃO pode descobrir um jogo do dia.
+        raw_date = str(ev.get("match_date") or "").strip()
+        if not raw_date:
+            continue
         try:
             event_date = pd.to_datetime(raw_date, errors="coerce")
-            br_date = target_date if pd.isna(event_date) else event_date.date()
+            br_date = None if pd.isna(event_date) else event_date.date()
         except Exception:
-            br_date = target_date
+            br_date = None
         if br_date != target_date:
             continue
         fixtures.append({
@@ -10101,7 +10106,7 @@ def load_apifootball_prediction_fixtures_for_date(target_date, competition=None)
             # Guardamos o valor bruto apenas para diagnóstico interno.
             "time": "",
             "prediction_time_raw": str(ev.get("match_time") or "").strip(),
-            "br_date": target_date,
+            "br_date": br_date,
             "match_id": str(ev.get("match_id") or "").strip(),
             "league_id": lid,
             "home_team_id": str(ev.get("match_hometeam_id") or "").strip(),
@@ -10218,11 +10223,14 @@ def load_apifootball_fixtures_for_date(target_date):
         away = str(ev.get("match_awayteam_name") or "").strip()
         if not home or not away:
             continue
-        match_date = str(ev.get("match_date") or target_date.isoformat()).strip()
+        match_date = str(ev.get("match_date") or "").strip()
+        if not match_date:
+            continue
         try:
-            br_date = pd.to_datetime(match_date, errors="coerce").date()
+            parsed_match_date = pd.to_datetime(match_date, errors="coerce")
+            br_date = None if pd.isna(parsed_match_date) else parsed_match_date.date()
         except Exception:
-            br_date = target_date
+            br_date = None
         if br_date != target_date:
             continue
         time_txt = str(ev.get("match_time") or "").strip()
@@ -10286,11 +10294,14 @@ def load_apifootball_competition_fixtures_for_date(competition, target_date):
         away = str(ev.get("match_awayteam_name") or "").strip()
         if not home or not away:
             continue
-        match_date = str(ev.get("match_date") or target_date.isoformat()).strip()
+        match_date = str(ev.get("match_date") or "").strip()
+        if not match_date:
+            continue
         try:
-            event_date = pd.to_datetime(match_date, errors="coerce").date()
+            parsed_match_date = pd.to_datetime(match_date, errors="coerce")
+            event_date = None if pd.isna(parsed_match_date) else parsed_match_date.date()
         except Exception:
-            event_date = target_date
+            event_date = None
         if event_date != target_date:
             continue
         fixtures.append({
@@ -10298,7 +10309,7 @@ def load_apifootball_competition_fixtures_for_date(competition, target_date):
             "home": home,
             "away": away,
             "time": str(ev.get("match_time") or "").strip(),
-            "br_date": target_date,
+            "br_date": event_date,
             "match_id": str(ev.get("match_id") or "").strip(),
             "league_id": str(ev.get("league_id") or "").strip(),
             "home_team_id": str(ev.get("match_hometeam_id") or "").strip(),
