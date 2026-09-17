@@ -39,7 +39,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-17-v119-no-invented-fixture-dates"
+GM_BUILD = "2026-09-17-v120-authoritative-fixture-consensus"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -9444,7 +9444,7 @@ def load_sofascore_fixtures_for_date(target_date):
             if not home or not away:
                 continue
 
-            br_date = source_date
+            br_date = None
             br_time = ""
             ts = ev.get("startTimestamp")
             if ts is not None:
@@ -9561,7 +9561,7 @@ def load_thesportsdb_fixtures_for_date(target_date):
         if not comp or comp not in COMPETITIONS: continue
         home=str(ev.get("strHomeTeam") or "").strip(); away=str(ev.get("strAwayTeam") or "").strip()
         if not home or not away: continue
-        br_date=target_date; br_time=""
+        br_date=None; br_time=""
         raw_ts=str(ev.get("strTimestamp") or "").strip()
         if raw_ts:
             try:
@@ -9958,7 +9958,7 @@ def _fixtures_from_espn_payload(data, target_date, fallback_competition=None):
 
         raw_dt = event.get("date") or contest.get("date")
         br_time = ""
-        br_date = target_date
+        br_date = None
         if raw_dt:
             try:
                 dt = pd.to_datetime(raw_dt, utc=True, errors="coerce")
@@ -10494,6 +10494,61 @@ def load_fixtures_for_date(target_date):
             fixtures.extend(parse_today_from_openfootball_text(txt, today, comp))
         except Exception:
             pass
+
+    # V120 — BARREIRA AUTORITATIVA DE EVENTO POR DATA.
+    # A causa estrutural dos jogos de dias errados era permitir que um calendário
+    # secundário/fallback criasse sozinho um evento, mesmo quando a APIfootball
+    # oficial daquela competição/data já fornecia a grade. A data declarada pelo
+    # fallback podia estar stale/incorreta e ainda assim passar pelas barreiras.
+    #
+    # Regra: quando existe ao menos um fixture APIfootball oficial para a competição
+    # na data selecionada, fontes secundárias SOMENTE podem complementar um desses
+    # fixtures (nomes/horário/metadados); nunca podem criar um confronto adicional.
+    # Se a fonte oficial estiver totalmente vazia para a competição, mantemos os
+    # fallbacks para não destruir a cobertura histórica do app. Assim não há
+    # correções pontuais por clube/data e a regra vale para qualquer dia consultado.
+    official_by_comp = {}
+    for _of in fixtures:
+        _src = _gm_api_norm((_of or {}).get("source"))
+        _comp = str((_of or {}).get("competition") or "")
+        _lid = str((_of or {}).get("league_id") or "").strip()
+        _expected_lid = str((GM_APIFOOTBALL_FIXED_LEAGUE_IDS or {}).get(_comp) or "").strip()
+        if _comp and "apifootball" in _src and "prediction" not in _src and _lid and _lid == _expected_lid:
+            if fixture_matches_selected_date(_of, today):
+                official_by_comp.setdefault(_comp, []).append(_of)
+
+    def _gm_matches_authoritative_fixture(_f, _official):
+        _comp = str((_f or {}).get("competition") or "")
+        if _comp != str((_official or {}).get("competition") or ""):
+            return False
+        _fh = gm_fixture_official_team_identity(_f.get("home"), _comp, _f.get("home_team_id"))
+        _fa = gm_fixture_official_team_identity(_f.get("away"), _comp, _f.get("away_team_id"))
+        _oh = gm_fixture_official_team_identity(_official.get("home"), _comp, _official.get("home_team_id"))
+        _oa = gm_fixture_official_team_identity(_official.get("away"), _comp, _official.get("away_team_id"))
+        _fhid, _faid = str(_fh.get("id") or ""), str(_fa.get("id") or "")
+        _ohid, _oaid = str(_oh.get("id") or ""), str(_oa.get("id") or "")
+        if _fhid and _faid and _ohid and _oaid:
+            return _fhid == _ohid and _faid == _oaid
+        return bool(
+            _fixture_names_equivalent(_fh.get("name") or _f.get("home"), _oh.get("name") or _official.get("home"))
+            and _fixture_names_equivalent(_fa.get("name") or _f.get("away"), _oa.get("name") or _official.get("away"))
+        )
+
+    if official_by_comp:
+        _validated_fixtures = []
+        for _f in fixtures:
+            _comp = str((_f or {}).get("competition") or "")
+            _officials = official_by_comp.get(_comp)
+            if not _officials:
+                _validated_fixtures.append(_f)
+                continue
+            _src = _gm_api_norm((_f or {}).get("source"))
+            if "apifootball" in _src and "prediction" not in _src:
+                _validated_fixtures.append(_f)
+                continue
+            if any(_gm_matches_authoritative_fixture(_f, _of) for _of in _officials):
+                _validated_fixtures.append(_f)
+        fixtures = _validated_fixtures
 
     # Remove duplicados mesmo quando as fontes usam nomes diferentes
     # (ex.: "Vitoria" x "EC Vitória"; "Gremio" x "Grêmio FBPA").
