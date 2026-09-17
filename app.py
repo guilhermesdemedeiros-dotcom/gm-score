@@ -11,6 +11,7 @@ import secrets
 import inspect
 import itertools
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 from html.parser import HTMLParser
 from urllib.parse import quote, urlencode
@@ -39,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-17-v120-authoritative-fixture-consensus"
+GM_BUILD = "2026-09-17-v121-performance-turbo"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -1389,11 +1390,11 @@ def gm_invalidate_unread_news_cache():
 
 def gm_unread_news_count():
     # V117: a navegação é renderizada em todo rerun. Evita um RPC ao Supabase a
-    # cada clique/widget mantendo uma janela curta de 30 s; ações de leitura
+    # cada clique/widget mantendo uma janela curta de 120 s; ações de leitura
     # invalidam explicitamente o valor para o badge continuar imediato.
     now = time.monotonic()
     tick = st.session_state.get("_gm_unread_news_count_tick")
-    if isinstance(tick, (int, float)) and now - float(tick) < 30:
+    if isinstance(tick, (int, float)) and now - float(tick) < 120:
         try:
             return max(0, int(st.session_state.get("_gm_unread_news_count_cache") or 0))
         except Exception:
@@ -10339,16 +10340,24 @@ def load_apifootball_all_competitions_fixtures_for_date(target_date):
         except Exception:
             return []
 
+    # V121: as 21 consultas independentes eram executadas em série e eram o maior
+    # gargalo da aba Jogos. Mantemos exatamente as mesmas fontes e respostas, mas
+    # fazemos I/O em paralelo com um limite conservador de workers. O cache de cada
+    # competição continua intacto; nenhuma regra de agenda ou cálculo é alterada.
     fixtures = []
-    for competition in GM_APIFOOTBALL_FIXED_LEAGUE_IDS.keys():
+    competitions = list(GM_APIFOOTBALL_FIXED_LEAGUE_IDS.keys())
+    def _load_one(_competition):
         try:
-            fixtures.extend(
-                load_apifootball_competition_fixtures_for_date(competition, target_date) or []
-            )
+            return load_apifootball_competition_fixtures_for_date(_competition, target_date) or []
         except Exception:
-            # Falha aberta por competição: as demais fontes da agenda continuam
-            # disponíveis e uma liga indisponível não derruba o calendário todo.
-            continue
+            return []
+    with ThreadPoolExecutor(max_workers=min(8, max(1, len(competitions)))) as pool:
+        futures = [pool.submit(_load_one, competition) for competition in competitions]
+        for future in as_completed(futures):
+            try:
+                fixtures.extend(future.result() or [])
+            except Exception:
+                pass
     return fixtures
 
 
@@ -13674,45 +13683,57 @@ def gm_render_daily_pick_page():
             st.caption("Quanto maior a odd, menor tende a ser a probabilidade conjunta. Odds e probabilidades são estimativas pré-jogo, não garantia de retorno. Aposte com responsabilidade.")
 
 
+
+@st.cache_data(ttl=900, show_spinner=False)
+def gm_games_prepared_fixtures(target_date):
+    """Agenda já validada/deduplicada para renderização rápida.
+
+    V121: a V120 recalculava identidade oficial, roster e deduplicação em TODO
+    rerun do Streamlit, inclusive ao tocar em widgets sem relação com a agenda.
+    Esta camada memoriza somente o resultado visual da mesma pipeline existente.
+    O botão Atualizar jogos invalida explicitamente este cache.
+    """
+    fixtures = load_fixtures_for_date(target_date) or []
+    safe = []
+    for f in fixtures:
+        comp = str((f or {}).get("competition") or "")
+        if comp not in COMPETITIONS:
+            continue
+        if not valid_daily_fixture(f) or not fixture_matches_selected_date(f, target_date):
+            continue
+        if not gm_fixture_matches_official_league_roster(f):
+            continue
+        _merge_fixture_unique(safe, dict(f))
+    unique = []
+    for fixture in safe:
+        ff = dict(fixture)
+        comp = str(ff.get("competition") or "")
+        home_identity = gm_fixture_official_team_identity(ff.get("home"), comp, ff.get("home_team_id"))
+        away_identity = gm_fixture_official_team_identity(ff.get("away"), comp, ff.get("away_team_id"))
+        ff["home"] = home_identity.get("name") or gm_fixture_canonical_team_name(ff.get("home"))
+        ff["away"] = away_identity.get("name") or gm_fixture_canonical_team_name(ff.get("away"))
+        if home_identity.get("id"):
+            ff["home_team_id"] = home_identity.get("id")
+        if away_identity.get("id"):
+            ff["away_team_id"] = away_identity.get("id")
+        _merge_fixture_unique(unique, ff)
+    return sorted(unique, key=lambda f: (str(f.get("time") or "99:99"), str(f.get("competition") or ""), _fixture_identity_key(f.get("home")), _fixture_identity_key(f.get("away"))))
+
 def gm_render_games_page():
     """Agenda única das competições GM SCORE, sem alterar fontes ou cálculos."""
     st.markdown("## ⚽ Jogos")
     st.caption("Todos os jogos das competições GM SCORE em ordem de horário de Brasília.")
     target_date = st.selectbox("📅 Data dos jogos", _date_options, key="gm_games_page_date", format_func=_agenda_date_label)
     if st.button("🔄 Atualizar jogos", use_container_width=True, key=f"gm_games_refresh_{target_date}"):
-        for _fn in (load_apifootball_prediction_fixtures_for_date, load_apifootball_competition_fixtures_for_date, load_apifootball_all_competitions_fixtures_for_date, load_apifootball_fixtures_for_date, load_sofascore_fixtures_for_date, load_espn_fixtures_for_date, load_thesportsdb_fixtures_for_date, load_fixtures_for_date):
+        for _fn in (load_apifootball_prediction_fixtures_for_date, load_apifootball_competition_fixtures_for_date, load_apifootball_all_competitions_fixtures_for_date, load_apifootball_fixtures_for_date, load_sofascore_fixtures_for_date, load_espn_fixtures_for_date, load_thesportsdb_fixtures_for_date, load_fixtures_for_date, gm_games_prepared_fixtures):
             try: _fn.clear()
             except Exception: pass
         st.rerun()
     try:
         with st.spinner("Carregando jogos do dia..."):
-            fixtures = load_fixtures_for_date(target_date) or []
+            safe = gm_games_prepared_fixtures(target_date) or []
     except Exception:
-        fixtures = []
-    safe = []
-    for f in fixtures:
-        comp = str((f or {}).get("competition") or "")
-        if comp not in COMPETITIONS: continue
-        if not valid_daily_fixture(f) or not fixture_matches_selected_date(f, target_date): continue
-        if not gm_fixture_matches_official_league_roster(f): continue
-        _merge_fixture_unique(safe, dict(f))
-    # V111: barreira final de reconciliação de evento imediatamente antes da renderização.
-    # A tela nunca usa o texto bruto da fonte como identidade do jogo. Primeiro
-    # converte os clubes para nomes canônicos e depois mescla por competição +
-    # mandante + visitante. Isso elimina duplicatas causadas por abreviações,
-    # pontuação e nomes comerciais diferentes sem deduplicar apenas por horário.
-    _safe_unique = []
-    for _fixture in safe:
-        _ff = dict(_fixture)
-        _comp = str(_ff.get("competition") or "")
-        _home_identity = gm_fixture_official_team_identity(_ff.get("home"), _comp, _ff.get("home_team_id"))
-        _away_identity = gm_fixture_official_team_identity(_ff.get("away"), _comp, _ff.get("away_team_id"))
-        _ff["home"] = _home_identity.get("name") or gm_fixture_canonical_team_name(_ff.get("home"))
-        _ff["away"] = _away_identity.get("name") or gm_fixture_canonical_team_name(_ff.get("away"))
-        if _home_identity.get("id"): _ff["home_team_id"] = _home_identity.get("id")
-        if _away_identity.get("id"): _ff["away_team_id"] = _away_identity.get("id")
-        _merge_fixture_unique(_safe_unique, _ff)
-    safe = sorted(_safe_unique, key=lambda f: (str(f.get("time") or "99:99"), str(f.get("competition") or ""), _fixture_identity_key(f.get("home")), _fixture_identity_key(f.get("away"))))
+        safe = []
     if not safe:
         st.info("Nenhum jogo das competições GM SCORE foi localizado para esta data.")
         return
