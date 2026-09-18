@@ -1,51 +1,80 @@
-"""GM SCORE — launcher ASGI/Streamlit (V135).
+# ============================================================
+# CONFIGURAÇÃO
+# ============================================================
+GM_BUILD = "2026-09-18-v133-admin-fixture-rebuild-diagnostics"
+GM_BUILD = "2026-09-18-v134-news-publication-hub"
+GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
-Este arquivo é o entrypoint do Streamlit Community Cloud. A interface completa
-permanece em ``gm_score_app.py``. O launcher usa ``st.App`` para manter a UI
-Streamlit em ``/`` e expor o Service Worker do OneSignal na raiz da mesma origem.
-"""
-from pathlib import Path
-
-import streamlit as st
-from starlette.responses import Response
-from starlette.routing import Route
-
-GM_BUILD = "2026-09-18-v135-onesignal-worker-route"
-_BASE_DIR = Path(__file__).resolve().parent
-_WORKER_PATH = _BASE_DIR / "OneSignalSDKWorker.js"
+# IDs auditados das 21 competições.
+@@ -1498,6 +1498,37 @@ def gm_list_news():
+return [row for row in rows if isinstance(row, dict)]
 
 
-async def onesignal_service_worker(request):
-    """Entrega o worker oficial do OneSignal com MIME e escopo corretos."""
-    try:
-        worker_source = _WORKER_PATH.read_text(encoding="utf-8")
-    except OSError:
-        return Response(
-            "OneSignalSDKWorker.js não encontrado no deploy.",
-            status_code=404,
-            media_type="text/plain",
-            headers={"Cache-Control": "no-store"},
-        )
+def gm_publish_system_news(title, message, category="novidade", featured=True):
+    """Publica uma Novidade automática usando a mesma central das publicações manuais.
 
-    return Response(
-        worker_source,
-        media_type="application/javascript",
-        headers={
-            "Cache-Control": "no-cache, no-store, must-revalidate",
-            "Service-Worker-Allowed": "/",
-            "X-Content-Type-Options": "nosniff",
-        },
+    V134: Dicas do Dia e Apostas do ADM passam pelo mesmo ponto de entrada,
+    preparando a Central de Novidades para notificações push sem duplicar regras.
+    """
+    data = gm_admin_rpc("gm_admin_publish_news", {
+        "p_title": str(title or "").strip(),
+        "p_message": str(message or "").strip(),
+        "p_category": str(category or "novidade"),
+        "p_is_featured": bool(featured),
+    })
+    gm_invalidate_unread_news_cache()
+    return data
+
+
+def gm_daily_pick_publish_news(kind, opt):
+    labels = {"matadeira": "Matadeira", "dica": "Dica do Dia", "bingo": "Bingo"}
+    label = labels.get(str(kind or "dica"), "Dica do Dia")
+    legs = list((opt or {}).get("legs") or [])
+    odd = _gm_daily_num((opt or {}).get("total_odd")) or 0.0
+    count = len(legs)
+    detail = f"{count} seleção(ões) · odd {odd:.2f}" if count else f"odd {odd:.2f}"
+    return gm_publish_system_news(
+        f"💡 Nova {label} disponível",
+        f"Uma nova {label} foi publicada · {detail}. Confira em Dicas do Dia.",
+        category="novidade",
+        featured=True,
     )
 
 
-app = st.App(
-    "gm_score_app.py",
-    routes=[
-        Route(
-            "/OneSignalSDKWorker.js",
-            endpoint=onesignal_service_worker,
-            methods=["GET"],
-            name="onesignal-service-worker",
-        )
-    ],
-)
+def gm_invalidate_unread_news_cache():
+st.session_state.pop("_gm_unread_news_count_cache", None)
+st.session_state.pop("_gm_unread_news_count_tick", None)
+@@ -2316,7 +2347,14 @@ def published_for(kind):
+result = gm_daily_pick_publish_selected(publish_opt)
+if result.get("ok"):
+_gm_daily_pick_remove_cached_option(cache_key, kind, opt)
+                            news_ok = True
+                            try:
+                                gm_daily_pick_publish_news(kind, publish_opt)
+                            except Exception:
+                                news_ok = False
+st.toast("Dica publicada com sucesso.", icon="✅")
+                            if not news_ok:
+                                st.warning("A dica foi publicada, mas a Novidade automática não pôde ser criada.")
+st.rerun()
+else:
+st.warning("Esta alternativa não pôde ser publicada pelos critérios de segurança.")
+@@ -2684,12 +2722,12 @@ def gm_render_admin_bets_manager():
+gm_admin_bet_publish(title, description, odd, clean_url, valid_until)
+news_ok = True
+try:
+                        gm_admin_rpc("gm_admin_publish_news", {
+                            "p_title": "⭐ Nova Aposta do ADM disponível",
+                            "p_message": f"{str(title).strip()} · Odd {float(odd):.2f}. Confira a publicação na página Início.",
+                            "p_category": "novidade",
+                            "p_is_featured": True,
+                        })
+                        gm_publish_system_news(
+                            "⭐ Nova Aposta do ADM disponível",
+                            f"{str(title).strip()} · Odd {float(odd):.2f}. Confira a publicação na página Início.",
+                            category="novidade",
+                            featured=True,
+                        )
+except Exception:
+news_ok = False
+st.success("Aposta do ADM publicada com sucesso.")
