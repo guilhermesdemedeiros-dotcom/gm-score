@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-18-v136-onesignal-auto-push"
+GM_BUILD = "2026-09-18-v138-session-24h-rolling"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -726,7 +726,8 @@ GM_AUTH_SESSION_KEYS = (
     "gm_auth_email",
 )
 GM_AUTH_RESUME_PARAM = "gm_resume"
-GM_AUTH_RESUME_DAYS = 30
+GM_AUTH_RESUME_HOURS = 24
+GM_AUTH_RESUME_RENEW_SECONDS = 300  # renova a janela após atividade, no máximo a cada 5 min
 
 
 def gm_auth_persistence_secret():
@@ -776,7 +777,12 @@ def gm_auth_persist_current_session():
         existing = str(st.query_params.get(GM_AUTH_RESUME_PARAM, "") or "").strip()
     except Exception:
         existing = ""
-    if existing and st.session_state.get("_gm_auth_persist_signature") == signature:
+    last_persisted_at = float(st.session_state.get("_gm_auth_persisted_at") or 0)
+    if (
+        existing
+        and st.session_state.get("_gm_auth_persist_signature") == signature
+        and (time.time() - last_persisted_at) < GM_AUTH_RESUME_RENEW_SECONDS
+    ):
         return True
     payload = {
         "a": access,
@@ -784,13 +790,14 @@ def gm_auth_persist_current_session():
         "u": user_id,
         "e": str(st.session_state.get("gm_auth_email") or ""),
         "d": device_token,
-        "exp": int(time.time()) + (GM_AUTH_RESUME_DAYS * 86400),
+        "exp": int(time.time()) + (GM_AUTH_RESUME_HOURS * 3600),
     }
     encrypted = fernet.encrypt(json.dumps(payload, separators=(",", ":")).encode("utf-8")).decode("ascii")
     try:
         if str(st.query_params.get(GM_AUTH_RESUME_PARAM, "") or "") != encrypted:
             st.query_params[GM_AUTH_RESUME_PARAM] = encrypted
         st.session_state["_gm_auth_persist_signature"] = signature
+        st.session_state["_gm_auth_persisted_at"] = time.time()
     except Exception:
         return False
     return True
@@ -834,6 +841,8 @@ def gm_auth_try_restore_persistent_session():
         st.session_state["_gm_auth_persist_signature"] = hashlib.sha256(
             f"{access}|{refresh}|{user_id}|{device_token}".encode("utf-8")
         ).hexdigest()
+        # Força uma renovação imediata após restaurar: a abertura do app conta como atividade.
+        st.session_state["_gm_auth_persisted_at"] = 0.0
         client = gm_auth_client_from_session()
         if client is None:
             raise ValueError("persistent_session_rejected")
@@ -895,6 +904,7 @@ def gm_auth_clear_local_session():
         st.session_state.pop(key, None)
     st.session_state.pop("gm_auth_profile", None)
     st.session_state.pop("_gm_auth_persist_signature", None)
+    st.session_state.pop("_gm_auth_persisted_at", None)
 
 
 def gm_auth_store_session(access_token, refresh_token, user_id, email=""):
