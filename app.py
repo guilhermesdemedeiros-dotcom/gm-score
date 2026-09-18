@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-18-v125-fast-publish-discard-daily-picks"
+GM_BUILD = "2026-09-18-v126-pro-suspension-daily-history-control"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -1081,10 +1081,37 @@ def gm_auth_access_state(profile=None):
     return "vip"
 
 
+def gm_pro_suspended(profile=None, force=False):
+    """Suspensão administrativa do acesso PRO, independente da validade/pagamento."""
+    profile = profile or gm_auth_get_profile()
+    if not profile or profile.get("role") == "admin":
+        return False
+    now = time.time()
+    cached_at = float(st.session_state.get("gm_pro_suspended_checked_at") or 0)
+    if not force and "gm_pro_suspended" in st.session_state and (now - cached_at) < 60:
+        return bool(st.session_state.get("gm_pro_suspended"))
+    try:
+        data = gm_admin_rpc("gm_my_pro_suspension")
+        if isinstance(data, list):
+            value = bool(data[0]) if data else False
+        elif isinstance(data, dict):
+            value = bool(data.get("pro_suspended"))
+        else:
+            value = bool(data)
+        st.session_state["gm_pro_suspended"] = value
+        st.session_state["gm_pro_suspended_checked_at"] = now
+        return value
+    except Exception:
+        # Compatibilidade antes da migração SQL: nunca derruba login nem acesso existente.
+        return False
+
+
 def gm_product_tier(profile=None):
     """Camada comercial Free/Pro preservando vip_status/vip_until do banco."""
     state = gm_auth_access_state(profile)
-    if state in {"admin", "vip"}:
+    if state == "admin":
+        return "pro"
+    if state == "vip" and not gm_pro_suspended(profile):
         return "pro"
     if state in {"blocked", "anonymous"}:
         return state
@@ -1394,6 +1421,30 @@ def gm_admin_rpc(function_name, params=None):
 def gm_admin_list_users():
     rows = gm_admin_rpc("gm_admin_list_users") or []
     return [row for row in rows if isinstance(row, dict)]
+
+
+def gm_admin_pro_suspensions():
+    """Mapa de suspensões PRO para o painel, carregado em uma única RPC."""
+    try:
+        rows = gm_admin_rpc("gm_admin_list_pro_suspensions") or []
+        return {str(r.get("user_id")): bool(r.get("pro_suspended")) for r in rows if isinstance(r, dict)}
+    except Exception:
+        return {}
+
+
+def gm_admin_set_pro_suspension(user_id, suspended):
+    return gm_admin_rpc("gm_admin_set_pro_suspension", {"p_user_id": str(user_id), "p_suspended": bool(suspended)})
+
+
+def gm_daily_pick_delete_history(row):
+    """Exclui uma dica encerrada específica; exige ADM no RPC do banco."""
+    return gm_daily_pick_rpc("gm_admin_delete_daily_pick", {
+        "p_pick_date": str(row.get("pick_date") or ""),
+        "p_pick_kind": str(row.get("pick_kind") or "dica"),
+        "p_status": str(row.get("status") or ""),
+        "p_total_odd": _gm_daily_num(row.get("total_odd")),
+        "p_legs": row.get("legs") or [],
+    })
 
 
 # ============================================================
@@ -2002,6 +2053,8 @@ def gm_admin_format_datetime(value):
 def gm_admin_status_label(row):
     if bool(row.get("blocked")) or row.get("vip_status") == "blocked":
         return "⛔ Bloqueado"
+    if bool(row.get("pro_suspended")):
+        return "⏸️ PRO suspenso · FREE"
     status = str(row.get("vip_status") or "pending")
     if status == "active":
         return "🟢 VIP ativo"
@@ -2224,6 +2277,33 @@ def gm_render_admin_daily_pick_approval():
                 if idx < len(opts):
                     st.divider()
 
+    st.markdown("### 🗂️ Histórico publicado")
+    st.caption("Dicas encerradas ficam visíveis ao público até você decidir excluí-las. Green e Red podem ser removidos individualmente.")
+    settled_rows = [r for r in rows if str(r.get("status") or "") in {"green", "red", "void"}]
+    settled_rows.sort(key=lambda r: str(r.get("pick_date") or ""), reverse=True)
+    if not settled_rows:
+        st.info("Ainda não há Dicas do Dia encerradas no histórico.")
+    else:
+        for hidx, row in enumerate(settled_rows[:60], 1):
+            kind = str(row.get("pick_kind") or "dica")
+            label = GM_DAILY_PICK_PROFILES.get(kind, {}).get("label", kind.title())
+            day = str(row.get("pick_date") or "—")
+            odd = _gm_daily_num(row.get("total_odd")) or 0.0
+            status = _gm_daily_status_badge(row.get("status"))
+            with st.expander(f"{status} · {label} · {day} · odd {odd:.2f}", expanded=False):
+                for leg in _gm_daily_sort_legs(row.get("legs") or []):
+                    st.caption(f"⚽ {leg.get('home')} × {leg.get('away')} · {leg.get('market')} @ {(_gm_daily_num(leg.get('odd')) or 0):.2f}")
+                st.warning("Excluir remove esta dica do histórico público e das métricas que usam o histórico publicado.")
+                if st.button("🗑️ Excluir do histórico", use_container_width=True, key=f"gm_admin_delete_daily_history_{hidx}_{day}_{kind}"):
+                    try:
+                        gm_daily_pick_delete_history(row)
+                        st.success("Dica excluída do histórico.")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error("Não foi possível excluir esta dica do histórico.")
+                        st.caption(str(exc))
+
+
 
 def gm_render_admin_vip_manager():
     st.markdown("### 👥 Gestão de clientes VIP")
@@ -2235,6 +2315,10 @@ def gm_render_admin_vip_manager():
         st.caption(f"Detalhe técnico: {type(exc).__name__}")
         return
 
+    suspension_map = gm_admin_pro_suspensions()
+    for _row in rows:
+        if isinstance(_row, dict):
+            _row["pro_suspended"] = bool(suspension_map.get(str(_row.get("id") or ""), False))
     clients = [r for r in rows if r.get("role") == "client"]
     pending = sum(1 for r in clients if r.get("vip_status") == "pending" and not r.get("blocked"))
     active = sum(1 for r in clients if r.get("vip_status") == "active" and not r.get("blocked"))
@@ -2253,7 +2337,7 @@ def gm_render_admin_vip_manager():
 
     status_filter = st.selectbox(
         "Filtrar clientes",
-        ["Todos", "Pendentes", "VIP ativos", "Expirados", "Bloqueados"],
+        ["Todos", "Pendentes", "PRO ativos", "PRO suspensos", "Free / Expirados", "Bloqueados"],
         key="gm_admin_status_filter",
     )
     search = st.text_input("Buscar por nome ou e-mail", key="gm_admin_search").strip().lower()
@@ -2267,9 +2351,12 @@ def gm_render_admin_vip_manager():
         status = row.get("vip_status")
         if status_filter == "Pendentes" and not (status == "pending" and not blocked_now):
             return False
-        if status_filter == "VIP ativos" and not (status == "active" and not blocked_now):
+        suspended_now = bool(row.get("pro_suspended"))
+        if status_filter == "PRO ativos" and not (status == "active" and not blocked_now and not suspended_now):
             return False
-        if status_filter == "Expirados" and not (status == "expired" and not blocked_now):
+        if status_filter == "PRO suspensos" and not (suspended_now and not blocked_now):
+            return False
+        if status_filter == "Free / Expirados" and not ((status != "active" or suspended_now) and not blocked_now):
             return False
         if status_filter == "Bloqueados" and not blocked_now:
             return False
@@ -2368,6 +2455,29 @@ def gm_render_admin_vip_manager():
                         st.rerun()
                     except Exception as exc:
                         st.error("Não foi possível alterar o bloqueio.")
+                        st.caption(str(exc))
+
+            st.markdown("#### ⚡ Acesso GM SCORE Pro")
+            suspended_now = bool(row.get("pro_suspended"))
+            if suspended_now:
+                st.warning("Acesso PRO suspenso pelo ADM. Esta conta navega como GM SCORE FREE; pagamento e validade original foram preservados.")
+                if st.button("▶️ Reativar acesso Pro", use_container_width=True, type="primary", key=f"gm_admin_pro_resume_{uid}"):
+                    try:
+                        gm_admin_set_pro_suspension(uid, False)
+                        st.success("Suspensão removida. Se o plano ainda estiver válido, a conta volta a PRO.")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error("Não foi possível reativar o acesso PRO.")
+                        st.caption(str(exc))
+            else:
+                st.caption("Suspender PRO não bloqueia login, não cancela pagamento e não altera a data de validade. A conta passa a usar somente o modo FREE.")
+                if st.button("⏸️ Suspender acesso Pro", use_container_width=True, key=f"gm_admin_pro_suspend_{uid}"):
+                    try:
+                        gm_admin_set_pro_suspension(uid, True)
+                        st.success("Acesso PRO suspenso. A conta passará a funcionar como FREE.")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error("Não foi possível suspender o acesso PRO.")
                         st.caption(str(exc))
 
             if st.button("🔄 Liberar dispositivo / sessão", use_container_width=True, key=f"gm_admin_reset_session_{uid}"):
