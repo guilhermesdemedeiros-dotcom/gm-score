@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-18-v130-persistent-header-access-badge"
+GM_BUILD = "2026-09-18-v131-client-admin-workspaces"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -2844,8 +2844,15 @@ def gm_render_admin_panel(profile):
         st.error("Acesso administrativo não autorizado.")
         return
 
-    st.markdown("## 🛡️ CENTRAL ADMINISTRATIVA · GM SCORE")
-    st.caption(f"Administrador • Sistema operacional • Build {GM_BUILD}")
+    _adm_head, _adm_exit = st.columns([4, 1])
+    with _adm_head:
+        st.markdown("## 🛡️ CENTRAL ADMINISTRATIVA · GM SCORE")
+        st.caption(f"Administrador • Sistema operacional • Build {GM_BUILD}")
+    with _adm_exit:
+        if st.button("👤 Cliente", use_container_width=True, key="gm_admin_back_client"):
+            st.session_state["gm_admin_panel_open"] = False
+            st.session_state["gm_main_view"] = "analysis"
+            st.rerun()
 
     # V66: visão operacional rica, calculada apenas com dados administrativos já existentes.
     try:
@@ -3950,9 +3957,16 @@ def gm_render_public_portal():
                         st.session_state["gm_reviews_open"] = True
                         st.rerun()
                 if state == "admin":
-                    if st.button("🛠 Painel Administrativo", use_container_width=True, key="gm_sidebar_admin_panel"):
-                        st.session_state["gm_admin_panel_open"] = True
-                        st.rerun()
+                    st.markdown("### 🛡️ Ambiente")
+                    _adm_c1, _adm_c2 = st.columns(2)
+                    with _adm_c1:
+                        if st.button("👤 Cliente", use_container_width=True, key="gm_sidebar_client_mode"):
+                            st.session_state["gm_admin_panel_open"] = False
+                            st.rerun()
+                    with _adm_c2:
+                        if st.button("🛡️ ADM", use_container_width=True, type="primary", key="gm_sidebar_admin_panel"):
+                            st.session_state["gm_admin_panel_open"] = True
+                            st.rerun()
                 if st.button("🚪 Sair", use_container_width=True, key="gm_sidebar_logout"):
                     gm_auth_sign_out()
                     st.session_state.pop("gm_admin_panel_open", None)
@@ -14261,6 +14275,23 @@ def gm_render_account_page(profile):
         gm_auth_sign_out(); st.session_state.pop("gm_admin_panel_open", None); st.rerun()
 
 
+def gm_render_admin_mobile_workspace_switch(profile, admin_mode=False):
+    """Alternância compacta Cliente/ADM no mobile, sem misturar o backoffice à navegação do cliente."""
+    if not profile or profile.get("role") != "admin":
+        return
+    try:
+        params = dict(st.query_params)
+    except Exception:
+        params = {}
+    params["gm_admin_mode"] = "0" if admin_mode else "1"
+    href = "?" + urlencode(params, doseq=True)
+    label = "👤 Cliente" if admin_mode else "🛡️ ADM"
+    st.markdown(
+        f'<a class="gm-admin-mobile-switch" href="{html.escape(href, quote=True)}" target="_self">{label}</a>',
+        unsafe_allow_html=True,
+    )
+
+
 def gm_render_app_navigation(profile):
     """Navegação mobile própria em HTML; desktop continua usando a sidebar existente."""
     current = str(st.session_state.get("gm_main_view") or "analysis")
@@ -14380,8 +14411,10 @@ st.markdown(r"""
 <style>
 .gm-game-card{display:flex;align-items:center;gap:14px;background:linear-gradient(145deg,#0d1718,#0b1118);border:1px solid rgba(52,230,129,.22);border-radius:16px;padding:13px 14px;margin:.55rem 0 .28rem}.gm-game-time{font-weight:950;color:#34e681;min-width:54px;font-size:1rem}.gm-game-body{min-width:0;flex:1}.gm-game-league{color:#94a3b8;font-size:.76rem;font-weight:750}.gm-game-teams{color:#f8fafc;font-size:1rem;font-weight:900;margin-top:2px}.gm-game-teams span{color:#34e681;padding:0 4px}
 .gm-mobile-nav-shell{display:none}
+.gm-admin-mobile-switch{display:none}
 button[kind="secondary"]:has(+ div),button[kind="primary"]:has(+ div){}
 @media (max-width:768px){
+.gm-admin-mobile-switch{display:flex!important;position:fixed!important;right:.75rem!important;top:4.15rem!important;z-index:100002!important;align-items:center!important;justify-content:center!important;padding:.38rem .68rem!important;border-radius:999px!important;border:1px solid rgba(52,230,129,.42)!important;background:rgba(7,16,15,.95)!important;color:#eafbf2!important;text-decoration:none!important;font-size:.72rem!important;font-weight:900!important;box-shadow:0 5px 16px rgba(0,0,0,.28)!important;backdrop-filter:blur(8px)!important}
 [data-testid="stSidebar"]{display:none!important}
 [data-testid="collapsedControl"]{display:none!important}
 [data-testid="stAppViewContainer"] .main .block-container{padding-bottom:8.9rem!important}
@@ -14413,15 +14446,21 @@ try:
 except Exception:
     pass
 
-# V75: Central Administrativa isolada. O ADM navega pelo mesmo app dos clientes e
-# entra nesta central exclusivamente por Minha Conta → Abrir Central Administrativa.
-if (
-    _gm_profile_after_gate
-    and _gm_profile_after_gate.get("role") == "admin"
-    and st.session_state.get("gm_admin_panel_open")
-):
-    gm_render_admin_panel(_gm_profile_after_gate)
-    st.stop()
+# V131: Cliente e Administração são ambientes separados. No desktop a troca fica
+# na sidebar; no mobile há um seletor compacto e persistente para o administrador.
+if _gm_profile_after_gate and _gm_profile_after_gate.get("role") == "admin":
+    _gm_admin_mode_cmd = str(st.query_params.get("gm_admin_mode", "") or "").strip()
+    if _gm_admin_mode_cmd in {"0", "1"}:
+        st.session_state["gm_admin_panel_open"] = (_gm_admin_mode_cmd == "1")
+        try:
+            del st.query_params["gm_admin_mode"]
+        except Exception:
+            pass
+    _gm_admin_mode_active = bool(st.session_state.get("gm_admin_panel_open"))
+    gm_render_admin_mobile_workspace_switch(_gm_profile_after_gate, admin_mode=_gm_admin_mode_active)
+    if _gm_admin_mode_active:
+        gm_render_admin_panel(_gm_profile_after_gate)
+        st.stop()
 
 _gm_requested_view = str(st.query_params.get("gm_view", "") or "").strip()
 if _gm_requested_view in {"analysis", "games", "daily_pick", "news", "account", "admin_results"}:
