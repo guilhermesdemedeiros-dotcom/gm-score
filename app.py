@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-18-v128-compact-admin-client-profile"
+GM_BUILD = "2026-09-18-v129-header-access-badge"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -631,11 +631,25 @@ if GM_MAINTENANCE_MODE:
         gm_render_apifootball_coverage_probe()
     st.stop()
 
-st.markdown("""
+# V129: identificação de acesso integrada à marca. Evita repetir "GM SCORE" em um badge separado.
+_gm_header_profile = st.session_state.get("gm_auth_profile") if isinstance(st.session_state.get("gm_auth_profile"), dict) else None
+_gm_header_access = ""
+_gm_header_access_cls = ""
+if _gm_header_profile:
+    if str(_gm_header_profile.get("role") or "").lower() == "admin":
+        _gm_header_access = "ADM"
+        _gm_header_access_cls = "gm-brand-access-adm"
+    else:
+        _gm_header_is_pro = str(_gm_header_profile.get("vip_status") or "").lower() == "active" and not bool(st.session_state.get("gm_pro_suspended", False))
+        _gm_header_access = "PRO" if _gm_header_is_pro else "FREE"
+        _gm_header_access_cls = "gm-brand-access-pro" if _gm_header_is_pro else "gm-brand-access-free"
+_gm_header_badge = f'<span class="gm-brand-access {_gm_header_access_cls}">{_gm_header_access}</span>' if _gm_header_access else ""
+st.markdown(f"""
 <div class="gm-brand" style="margin:0 0 1.15rem 0">
-  <div style="display:flex;align-items:center;gap:.65rem;line-height:1">
+  <div style="display:flex;align-items:center;gap:.65rem;line-height:1;flex-wrap:wrap">
     <span style="font-size:2.35rem">⚽</span>
     <span class="gm-brand-title"><span class="gm-brand-gm">GM</span><span class="gm-brand-score">SCORE</span></span>
+    {_gm_header_badge}
   </div>
   <div class="gm-brand-subtitle">ANÁLISE • ESTATÍSTICAS • PROBABILIDADES</div>
 </div>
@@ -667,7 +681,7 @@ st.markdown("""
   letter-spacing:.08em;
   color:color-mix(in srgb, var(--text-color) 68%, transparent);
 }
-.gm-plan-badge{display:inline-flex;align-items:center;width:max-content;margin:-.55rem 0 .9rem;padding:.3rem .62rem;border-radius:999px;font-size:.68rem;font-weight:950;letter-spacing:.08em;border:1px solid rgba(148,163,184,.25);background:rgba(148,163,184,.08);color:#cbd5e1}.gm-plan-pro{border-color:rgba(52,230,129,.5);background:rgba(52,230,129,.10);color:#34e681}.gm-plan-free{color:#cbd5e1}.gm-pro-lock{display:flex;align-items:center;gap:12px;padding:16px;margin:.7rem 0;border:1px solid rgba(52,230,129,.24);border-radius:16px;background:linear-gradient(145deg,#0d1718,#0b1118);color:#cbd5e1}.gm-pro-lock b{display:block;color:#f8fafc;margin-bottom:3px}.gm-pro-lock-icon{font-size:1.5rem}
+.gm-brand-access{display:inline-flex;align-items:center;justify-content:center;padding:.26rem .52rem;border-radius:8px;font-size:.66rem;font-weight:950;letter-spacing:.09em;border:1px solid rgba(148,163,184,.30);background:rgba(148,163,184,.08);color:#cbd5e1;transform:translateY(.05rem)}.gm-brand-access-pro{border-color:rgba(52,230,129,.55);background:rgba(52,230,129,.12);color:#34e681}.gm-brand-access-free{color:#cbd5e1}.gm-brand-access-adm{border-color:rgba(250,204,21,.55);background:rgba(250,204,21,.10);color:#fde047}.gm-plan-badge{display:none!important}.gm-plan-pro{display:none!important}.gm-plan-free{display:none!important}.gm-pro-lock{display:flex;align-items:center;gap:12px;padding:16px;margin:.7rem 0;border:1px solid rgba(52,230,129,.24);border-radius:16px;background:linear-gradient(145deg,#0d1718,#0b1118);color:#cbd5e1}.gm-pro-lock b{display:block;color:#f8fafc;margin-bottom:3px}.gm-pro-lock-icon{font-size:1.5rem}
 .gm-brand-credit {
   margin-top:.25rem;
   font-size:.78rem;
@@ -4016,7 +4030,7 @@ try:
 except Exception:
     _gm_profile_after_gate = None
 
-gm_render_plan_badge(_gm_profile_after_gate)
+# V129: plano já aparece integrado ao lado da marca GM SCORE; sem badge duplicado.
 
 # V66: as novidades ficam concentradas na aba própria da navegação.
 # O sino flutuante deixou de ser renderizado; RPCs, leitura e publicações permanecem intactos.
