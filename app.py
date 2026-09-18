@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-18-v126-pro-suspension-daily-history-control"
+GM_BUILD = "2026-09-18-v127-persistent-daily-pick-discard"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -2125,29 +2125,59 @@ def _gm_daily_row_direct_bet_url(row):
 
 
 def _gm_daily_pick_option_signature(opt):
-    """Identidade estável de uma alternativa para publicar/descartar sem recalcular o funil."""
+    """V127: hash estável da bet exata; independe de sessão/cache e pode ser persistido no Supabase."""
     if not isinstance(opt, dict):
         return ""
     legs = []
     for leg in (opt.get("legs") or []):
         if not isinstance(leg, dict):
             continue
-        legs.append((str(leg.get("match_id") or ""), str(leg.get("market_code") or ""), str(leg.get("market") or "")))
-    return repr((str(opt.get("pick_kind") or ""), tuple(sorted(legs)), round(float(_gm_daily_num(opt.get("total_odd")) or 0.0), 4)))
+        legs.append({
+            "match_id": str(leg.get("match_id") or "").strip(),
+            "market_code": str(leg.get("market_code") or "").strip(),
+            "market": str(leg.get("market") or "").strip(),
+        })
+    payload = {
+        "pick_kind": str(opt.get("pick_kind") or "").strip(),
+        "legs": sorted(legs, key=lambda x: (x["match_id"], x["market_code"], x["market"])),
+        "total_odd": round(float(_gm_daily_num(opt.get("total_odd")) or 0.0), 4),
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 def _gm_daily_pick_discard_key(day):
     return f"gm_daily_discarded_{day.isoformat()}"
 
+def _gm_daily_pick_load_discarded(day, force=False):
+    """Carrega uma vez por sessão os descartes persistentes do dia."""
+    key = _gm_daily_pick_discard_key(day)
+    if force or key not in st.session_state:
+        try:
+            data = gm_daily_pick_rpc("gm_admin_daily_pick_discarded", {"p_pick_date": day.isoformat()}) or []
+            st.session_state[key] = {str(x.get("option_signature") or "") for x in data if isinstance(x, dict) and x.get("option_signature")}
+        except Exception:
+            st.session_state.setdefault(key, set())
+    return set(st.session_state.get(key, set()) or set())
+
 def _gm_daily_pick_is_discarded(opt, day):
-    return _gm_daily_pick_option_signature(opt) in set(st.session_state.get(_gm_daily_pick_discard_key(day), set()) or set())
+    return _gm_daily_pick_option_signature(opt) in _gm_daily_pick_load_discarded(day)
 
 def _gm_daily_pick_discard(opt, day):
-    key = _gm_daily_pick_discard_key(day)
-    discarded = set(st.session_state.get(key, set()) or set())
+    """V127: descarte permanente. A mesma bet não volta após refresh, logout ou restart."""
     sig = _gm_daily_pick_option_signature(opt)
-    if sig:
-        discarded.add(sig)
+    if not sig:
+        return False
+    gm_daily_pick_rpc("gm_admin_discard_daily_pick_option", {
+        "p_pick_date": day.isoformat(),
+        "p_pick_kind": str(opt.get("pick_kind") or "dica"),
+        "p_option_signature": sig,
+        "p_option_payload": opt,
+    })
+    key = _gm_daily_pick_discard_key(day)
+    discarded = _gm_daily_pick_load_discarded(day)
+    discarded.add(sig)
     st.session_state[key] = discarded
+    return True
 
 def _gm_daily_pick_remove_cached_option(cache_key, kind, opt):
     """Remove só o card tratado; mantém odds/probabilidades já preparadas para resposta instantânea."""
@@ -2272,7 +2302,7 @@ def gm_render_admin_daily_pick_approval():
                 if discard_col.button("✕ Descartar", use_container_width=True, key=f"gm_admin_discard_{kind}_{idx}"):
                     _gm_daily_pick_discard(opt, today)
                     _gm_daily_pick_remove_cached_option(cache_key, kind, opt)
-                    st.toast("Opção descartada desta avaliação.")
+                    st.toast("Opção descartada permanentemente.", icon="🗑️")
                     st.rerun()
                 if idx < len(opts):
                     st.divider()
@@ -13524,17 +13554,23 @@ def gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=5):
             code = str((leg or {}).get("market_code") or "").strip()
             if mid and code:
                 published_legs.add((mid, code))
+    # V127: descartes são persistentes. Gera uma fila mais profunda para que, ao
+    # descartar uma bet, novas alternativas possam ocupar seu lugar sem ela reaparecer.
+    discarded_signatures = _gm_daily_pick_load_discarded(today, force=force_refresh)
     options = {}
     for kind in missing:
-        options[kind] = gm_daily_pick_candidate_options(
+        discarded_kind_count = sum(1 for sig in discarded_signatures if sig)
+        raw_limit = min(30, max(per_kind, per_kind + discarded_kind_count))
+        generated = gm_daily_pick_candidate_options(
             candidates,
             kind,
-            limit=per_kind,
+            limit=raw_limit,
             history_market_counts=history_market_counts,
             history_family_counts=history_family_counts,
             history_kind_market_counts=history_kind_market_counts,
             initial_avoid_legs=published_legs,
         )
+        options[kind] = [o for o in generated if _gm_daily_pick_option_signature(o) not in discarded_signatures][:per_kind]
     return {"ok": True, "reason": "prepared", "options": options, "meta": meta, "rows": existing_rows}
 
 
@@ -13853,7 +13889,7 @@ def gm_render_daily_pick_page():
                         if discard_col.button("✕ Descartar",use_container_width=True,key=f"gm_discard_{kind}_{idx}"):
                             _gm_daily_pick_discard(opt, today)
                             _gm_daily_pick_remove_cached_option(cache_key, kind, opt)
-                            st.toast("Opção descartada desta avaliação.")
+                            st.toast("Opção descartada permanentemente.", icon="🗑️")
                             st.rerun()
                         if idx < len(opts):
                             st.divider()
