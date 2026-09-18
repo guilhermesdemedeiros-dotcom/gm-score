@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-18-v127-persistent-daily-pick-discard"
+GM_BUILD = "2026-09-18-v128-compact-admin-client-profile"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -2409,10 +2409,16 @@ def gm_render_admin_vip_manager():
         approved = gm_admin_format_datetime(row.get("approved_at"))
 
         with st.expander(f"{status_label} · {nome} · {email}", expanded=(row.get("vip_status") == "pending")):
-            st.write(f"**Pagamento:** `{payment}`")
-            st.write(f"**VIP até:** {vip_until}")
-            st.write(f"**Cadastro:** {created}")
-            st.write(f"**Aprovado em:** {approved}")
+            suspended_now = bool(row.get("pro_suspended"))
+            blocked_now = bool(row.get("blocked")) or row.get("vip_status") == "blocked"
+
+            # V128: resumo compacto do perfil. As ações menos frequentes ficam
+            # agrupadas para reduzir altura e facilitar a leitura no desktop/mobile.
+            info1, info2, info3 = st.columns(3)
+            info1.caption(f"Plano · {('FREE · suspenso' if suspended_now else status_label)}")
+            info2.caption(f"Pagamento · {payment}")
+            info3.caption(f"Validade · {vip_until}")
+            st.caption(f"Cadastro {created} · Aprovação {approved}")
 
             days = st.selectbox(
                 "Período do acesso",
@@ -2421,10 +2427,10 @@ def gm_render_admin_vip_manager():
                 key=f"gm_admin_days_{uid}",
             )
 
-            c1, c2 = st.columns(2)
-            with c1:
+            a1, a2, a3 = st.columns(3)
+            with a1:
                 if row.get("vip_status") == "pending":
-                    if st.button("✅ Aprovar VIP", use_container_width=True, key=f"gm_admin_approve_{uid}"):
+                    if st.button("✅ Aprovar", use_container_width=True, key=f"gm_admin_approve_{uid}"):
                         try:
                             gm_admin_rpc("gm_admin_approve_user", {"p_user_id": uid, "p_days": int(days)})
                             st.success("Cliente aprovado com sucesso.")
@@ -2433,49 +2439,25 @@ def gm_render_admin_vip_manager():
                             st.error("Não foi possível aprovar o cliente.")
                             st.caption(str(exc))
                 else:
-                    st.caption("Aprovação inicial já concluída.")
-            with c2:
-                if st.button("➕ Renovar VIP", use_container_width=True, key=f"gm_admin_renew_{uid}"):
-                    try:
-                        gm_admin_rpc("gm_admin_renew_user", {"p_user_id": uid, "p_days": int(days)})
-                        st.success("VIP renovado com sucesso.")
-                        st.rerun()
-                    except Exception as exc:
-                        st.error("Não foi possível renovar o VIP.")
-                        st.caption(str(exc))
-
-            st.markdown("#### 🎁 Cortesia / liberação manual")
-            st.caption("Use para amigos, testes ou liberações sem pagamento. A operação fica registrada como cortesia, não como venda paga.")
-            courtesy_days = st.selectbox(
-                "Período da cortesia",
-                [30, 90, 180],
-                format_func=lambda d: {30: "30 dias · 1 mês", 90: "90 dias · 3 meses", 180: "180 dias · 6 meses"}[d],
-                key=f"gm_admin_courtesy_days_{uid}",
-            )
-            if st.button("🎁 Liberar cortesia", use_container_width=True, key=f"gm_admin_courtesy_{uid}"):
-                try:
-                    gm_admin_rpc("gm_admin_grant_courtesy", {"p_user_id": uid, "p_days": int(courtesy_days)})
-                    st.success(f"Cortesia de {courtesy_days} dias liberada com sucesso.")
-                    st.rerun()
-                except Exception as exc:
-                    st.error("Não foi possível liberar a cortesia.")
-                    st.caption(str(exc))
-
-            p1, p2 = st.columns(2)
-            with p1:
-                if payment != "paid":
-                    if st.button("💳 Marcar pagamento como pago", use_container_width=True, key=f"gm_admin_paid_{uid}"):
+                    if st.button("➕ Renovar", use_container_width=True, key=f"gm_admin_renew_{uid}"):
                         try:
-                            gm_admin_rpc("gm_admin_set_payment", {"p_user_id": uid, "p_status": "paid"})
-                            st.success("Pagamento atualizado.")
+                            gm_admin_rpc("gm_admin_renew_user", {"p_user_id": uid, "p_days": int(days)})
+                            st.success("PRO renovado com sucesso.")
                             st.rerun()
                         except Exception as exc:
-                            st.error("Não foi possível atualizar o pagamento.")
+                            st.error("Não foi possível renovar o PRO.")
                             st.caption(str(exc))
-                else:
-                    st.success("💳 Pagamento confirmado")
-            with p2:
-                blocked_now = bool(row.get("blocked")) or row.get("vip_status") == "blocked"
+            with a2:
+                pro_label = "▶️ Reativar PRO" if suspended_now else "⏸️ Suspender PRO"
+                if st.button(pro_label, use_container_width=True, key=f"gm_admin_pro_toggle_{uid}"):
+                    try:
+                        gm_admin_set_pro_suspension(uid, not suspended_now)
+                        st.success("Acesso PRO reativado." if suspended_now else "Acesso PRO suspenso; a conta agora navega como FREE.")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error("Não foi possível alterar o acesso PRO.")
+                        st.caption(str(exc))
+            with a3:
                 action_label = "🔓 Desbloquear" if blocked_now else "⛔ Bloquear"
                 if st.button(action_label, use_container_width=True, key=f"gm_admin_blocktoggle_{uid}"):
                     try:
@@ -2487,37 +2469,47 @@ def gm_render_admin_vip_manager():
                         st.error("Não foi possível alterar o bloqueio.")
                         st.caption(str(exc))
 
-            st.markdown("#### ⚡ Acesso GM SCORE Pro")
-            suspended_now = bool(row.get("pro_suspended"))
             if suspended_now:
-                st.warning("Acesso PRO suspenso pelo ADM. Esta conta navega como GM SCORE FREE; pagamento e validade original foram preservados.")
-                if st.button("▶️ Reativar acesso Pro", use_container_width=True, type="primary", key=f"gm_admin_pro_resume_{uid}"):
-                    try:
-                        gm_admin_set_pro_suspension(uid, False)
-                        st.success("Suspensão removida. Se o plano ainda estiver válido, a conta volta a PRO.")
-                        st.rerun()
-                    except Exception as exc:
-                        st.error("Não foi possível reativar o acesso PRO.")
-                        st.caption(str(exc))
-            else:
-                st.caption("Suspender PRO não bloqueia login, não cancela pagamento e não altera a data de validade. A conta passa a usar somente o modo FREE.")
-                if st.button("⏸️ Suspender acesso Pro", use_container_width=True, key=f"gm_admin_pro_suspend_{uid}"):
-                    try:
-                        gm_admin_set_pro_suspension(uid, True)
-                        st.success("Acesso PRO suspenso. A conta passará a funcionar como FREE.")
-                        st.rerun()
-                    except Exception as exc:
-                        st.error("Não foi possível suspender o acesso PRO.")
-                        st.caption(str(exc))
+                st.caption("⏸️ PRO suspenso pelo ADM · login e validade original preservados.")
 
-            if st.button("🔄 Liberar dispositivo / sessão", use_container_width=True, key=f"gm_admin_reset_session_{uid}"):
-                try:
-                    gm_admin_rpc("gm_admin_reset_session", {"p_user_id": uid})
-                    st.success("Sessão liberada. O cliente já pode entrar em outro dispositivo.")
-                    st.rerun()
-                except Exception as exc:
-                    st.error("Não foi possível liberar a sessão do cliente.")
-                    st.caption(str(exc))
+            with st.expander("Mais ações", expanded=False):
+                courtesy_days = st.selectbox(
+                    "Cortesia",
+                    [30, 90, 180],
+                    format_func=lambda d: {30: "30 dias · 1 mês", 90: "90 dias · 3 meses", 180: "180 dias · 6 meses"}[d],
+                    key=f"gm_admin_courtesy_days_{uid}",
+                )
+                m1, m2, m3 = st.columns(3)
+                with m1:
+                    if st.button("🎁 Liberar cortesia", use_container_width=True, key=f"gm_admin_courtesy_{uid}"):
+                        try:
+                            gm_admin_rpc("gm_admin_grant_courtesy", {"p_user_id": uid, "p_days": int(courtesy_days)})
+                            st.success(f"Cortesia de {courtesy_days} dias liberada.")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error("Não foi possível liberar a cortesia.")
+                            st.caption(str(exc))
+                with m2:
+                    if payment != "paid":
+                        if st.button("💳 Confirmar pagamento", use_container_width=True, key=f"gm_admin_paid_{uid}"):
+                            try:
+                                gm_admin_rpc("gm_admin_set_payment", {"p_user_id": uid, "p_status": "paid"})
+                                st.success("Pagamento atualizado.")
+                                st.rerun()
+                            except Exception as exc:
+                                st.error("Não foi possível atualizar o pagamento.")
+                                st.caption(str(exc))
+                    else:
+                        st.caption("💳 Pagamento confirmado")
+                with m3:
+                    if st.button("🔄 Liberar sessão", use_container_width=True, key=f"gm_admin_reset_session_{uid}"):
+                        try:
+                            gm_admin_rpc("gm_admin_reset_session", {"p_user_id": uid})
+                            st.success("Sessão liberada.")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error("Não foi possível liberar a sessão do cliente.")
+                            st.caption(str(exc))
 
 
 
