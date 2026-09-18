@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-18-v124-free-pro-multi-daily-picks"
+GM_BUILD = "2026-09-18-v125-fast-publish-discard-daily-picks"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -2071,6 +2071,43 @@ def _gm_daily_row_direct_bet_url(row):
     return None
 
 
+def _gm_daily_pick_option_signature(opt):
+    """Identidade estável de uma alternativa para publicar/descartar sem recalcular o funil."""
+    if not isinstance(opt, dict):
+        return ""
+    legs = []
+    for leg in (opt.get("legs") or []):
+        if not isinstance(leg, dict):
+            continue
+        legs.append((str(leg.get("match_id") or ""), str(leg.get("market_code") or ""), str(leg.get("market") or "")))
+    return repr((str(opt.get("pick_kind") or ""), tuple(sorted(legs)), round(float(_gm_daily_num(opt.get("total_odd")) or 0.0), 4)))
+
+def _gm_daily_pick_discard_key(day):
+    return f"gm_daily_discarded_{day.isoformat()}"
+
+def _gm_daily_pick_is_discarded(opt, day):
+    return _gm_daily_pick_option_signature(opt) in set(st.session_state.get(_gm_daily_pick_discard_key(day), set()) or set())
+
+def _gm_daily_pick_discard(opt, day):
+    key = _gm_daily_pick_discard_key(day)
+    discarded = set(st.session_state.get(key, set()) or set())
+    sig = _gm_daily_pick_option_signature(opt)
+    if sig:
+        discarded.add(sig)
+    st.session_state[key] = discarded
+
+def _gm_daily_pick_remove_cached_option(cache_key, kind, opt):
+    """Remove só o card tratado; mantém odds/probabilidades já preparadas para resposta instantânea."""
+    prepared = st.session_state.get(cache_key)
+    if not isinstance(prepared, dict):
+        return
+    options = prepared.get("options") or {}
+    sig = _gm_daily_pick_option_signature(opt)
+    options[kind] = [x for x in (options.get(kind) or []) if _gm_daily_pick_option_signature(x) != sig]
+    prepared["options"] = options
+    st.session_state[cache_key] = prepared
+
+
 def gm_render_admin_daily_pick_approval():
     """Área privada do ADM para avaliar e publicar as Dicas do Dia."""
     st.markdown("### 💡 Aprovação de dicas")
@@ -2149,7 +2186,7 @@ def gm_render_admin_daily_pick_approval():
     for kind in ("matadeira", "dica", "bingo"):
         label = GM_DAILY_PICK_PROFILES[kind]["label"]
         published_count = len(published_for(kind))
-        opts = option_map.get(kind) or []
+        opts = [o for o in (option_map.get(kind) or []) if not _gm_daily_pick_is_discarded(o, today)]
         suffix = f" · {published_count} publicada(s) hoje" if published_count else ""
         with st.expander(f"{label} — {len(opts)} opção(ões) para avaliar{suffix}", expanded=(kind == "matadeira")):
             if not opts:
@@ -2163,20 +2200,27 @@ def gm_render_admin_daily_pick_approval():
                 for leg in legs:
                     st.markdown(f"- **{leg.get('market')}** @ {(_gm_daily_num(leg.get('odd')) or 0):.2f} · {(_gm_daily_num(leg.get('probability')) or 0):.0f}% · {leg.get('home')} × {leg.get('away')} · {_gm_daily_time_label(leg.get('time'))}")
                 direct_bet_url, bet_link_invalid = gm_daily_pick_admin_bet_link(kind, idx, "gm_admin")
-                if st.button("✅ Aprovar e publicar", use_container_width=True, type="primary", key=f"gm_admin_approve_{kind}_{idx}", disabled=bet_link_invalid):
+                approve_col, discard_col = st.columns([2, 1])
+                if approve_col.button("✅ Aprovar e publicar", use_container_width=True, type="primary", key=f"gm_admin_approve_{kind}_{idx}", disabled=bet_link_invalid):
                     try:
                         publish_opt = dict(opt)
                         publish_opt["direct_bet_url"] = direct_bet_url
-                        result = gm_daily_pick_publish_selected(publish_opt)
+                        with st.spinner("Publicando..."):
+                            result = gm_daily_pick_publish_selected(publish_opt)
                         if result.get("ok"):
-                            st.session_state.pop(cache_key, None)
-                            st.success("Dica aprovada e publicada para os clientes.")
+                            _gm_daily_pick_remove_cached_option(cache_key, kind, opt)
+                            st.toast("Dica publicada com sucesso.", icon="✅")
                             st.rerun()
                         else:
                             st.warning("Esta alternativa não pôde ser publicada pelos critérios de segurança.")
                     except Exception as exc:
                         st.error("Falha ao publicar a dica aprovada.")
                         st.caption(type(exc).__name__)
+                if discard_col.button("✕ Descartar", use_container_width=True, key=f"gm_admin_discard_{kind}_{idx}"):
+                    _gm_daily_pick_discard(opt, today)
+                    _gm_daily_pick_remove_cached_option(cache_key, kind, opt)
+                    st.toast("Opção descartada desta avaliação.")
+                    st.rerun()
                 if idx < len(opts):
                     st.divider()
 
@@ -13341,7 +13385,8 @@ def gm_daily_pick_candidate_options(candidates, pick_kind="dica", limit=5, histo
 
 def gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=5):
     """Prepara opções do dia para o ADM sem gravar candidatos em gm_daily_picks."""
-    profile = gm_auth_get_profile(force=True)
+    # V125: evita round-trip de autenticação em cada ação administrativa.
+    profile = gm_auth_get_profile(force=False)
     if (profile or {}).get("role") != "admin":
         return {"ok": False, "reason": "admin_only"}
     today = datetime.now(BRASILIA_TZ).date()
@@ -13385,7 +13430,8 @@ def gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=5):
 
 def gm_daily_pick_publish_selected(choice):
     """Publica somente uma alternativa explicitamente aprovada pelo administrador."""
-    profile = gm_auth_get_profile(force=True)
+    # V125: a sessão ADM já foi validada; não força nova consulta ao Supabase ao publicar.
+    profile = gm_auth_get_profile(force=False)
     if (profile or {}).get("role") != "admin":
         return {"ok": False, "reason": "admin_only"}
     if not isinstance(choice, dict):
@@ -13663,10 +13709,10 @@ def gm_render_daily_pick_page():
         else:
             option_map=prepared.get("options") or {}
             for kind in ("matadeira","dica","bingo"):
-                if lookup(today,kind) is not None:
-                    st.success(f"{GM_DAILY_PICK_PROFILES[kind]['label']} já aprovada e publicada hoje.")
-                    continue
-                opts=option_map.get(kind) or []
+                published_count = len(lookup_all(today, kind))
+                if published_count:
+                    st.caption(f"{GM_DAILY_PICK_PROFILES[kind]['label']}: {published_count} publicada(s) hoje · você pode aprovar outras.")
+                opts=[o for o in (option_map.get(kind) or []) if not _gm_daily_pick_is_discarded(o, today)]
                 with st.expander(f"{GM_DAILY_PICK_PROFILES[kind]['label']} — {len(opts)} opção(ões) para avaliar",expanded=(kind=="matadeira")):
                     if not opts:
                         st.caption("Nenhuma alternativa atingiu os filtros mínimos nesta atualização.")
@@ -13679,21 +13725,26 @@ def gm_render_daily_pick_page():
                         for leg in legs:
                             st.markdown(f"- **{leg.get('market')}** @ {(_gm_daily_num(leg.get('odd')) or 0):.2f} · {(_gm_daily_num(leg.get('probability')) or 0):.0f}% · {leg.get('home')} × {leg.get('away')} · {_gm_daily_time_label(leg.get('time'))}")
                         direct_bet_url, bet_link_invalid = gm_daily_pick_admin_bet_link(kind, idx, "gm_daily")
-                        if st.button("✅ Aprovar e publicar",use_container_width=True,type="primary",key=f"gm_approve_{kind}_{idx}",disabled=bet_link_invalid):
+                        approve_col, discard_col = st.columns([2,1])
+                        if approve_col.button("✅ Aprovar e publicar",use_container_width=True,type="primary",key=f"gm_approve_{kind}_{idx}",disabled=bet_link_invalid):
                             try:
                                 publish_opt=dict(opt)
                                 publish_opt["direct_bet_url"]=direct_bet_url
-                                result=gm_daily_pick_publish_selected(publish_opt)
+                                with st.spinner("Publicando..."):
+                                    result=gm_daily_pick_publish_selected(publish_opt)
                                 if result.get("ok"):
-                                    st.session_state.pop(cache_key,None)
-                                    st.success("Oportunidade aprovada e publicada para os clientes.")
+                                    _gm_daily_pick_remove_cached_option(cache_key, kind, opt)
+                                    st.toast("Oportunidade publicada com sucesso.", icon="✅")
                                     st.rerun()
-                                elif result.get("reason")=="already_published":
-                                    st.warning("Já existe uma oportunidade oficial publicada para esta categoria hoje.")
                                 else:
                                     st.warning("Esta alternativa não pôde ser publicada pelos critérios de segurança.")
                             except Exception as exc:
                                 st.error("Falha ao publicar a oportunidade aprovada."); st.caption(type(exc).__name__)
+                        if discard_col.button("✕ Descartar",use_container_width=True,key=f"gm_discard_{kind}_{idx}"):
+                            _gm_daily_pick_discard(opt, today)
+                            _gm_daily_pick_remove_cached_option(cache_key, kind, opt)
+                            st.toast("Opção descartada desta avaliação.")
+                            st.rerun()
                         if idx < len(opts):
                             st.divider()
 
