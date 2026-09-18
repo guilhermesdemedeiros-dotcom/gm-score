@@ -1,4 +1,4 @@
-streamlit
+streamlit>=1.57,<2
 pandas
 requests
 supabase>=2.18,<3
