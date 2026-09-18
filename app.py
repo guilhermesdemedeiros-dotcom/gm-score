@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-18-v122-auth-navigation-fastpath"
+GM_BUILD = "2026-09-18-v124-free-pro-multi-daily-picks"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -667,6 +667,7 @@ st.markdown("""
   letter-spacing:.08em;
   color:color-mix(in srgb, var(--text-color) 68%, transparent);
 }
+.gm-plan-badge{display:inline-flex;align-items:center;width:max-content;margin:-.55rem 0 .9rem;padding:.3rem .62rem;border-radius:999px;font-size:.68rem;font-weight:950;letter-spacing:.08em;border:1px solid rgba(148,163,184,.25);background:rgba(148,163,184,.08);color:#cbd5e1}.gm-plan-pro{border-color:rgba(52,230,129,.5);background:rgba(52,230,129,.10);color:#34e681}.gm-plan-free{color:#cbd5e1}.gm-pro-lock{display:flex;align-items:center;gap:12px;padding:16px;margin:.7rem 0;border:1px solid rgba(52,230,129,.24);border-radius:16px;background:linear-gradient(145deg,#0d1718,#0b1118);color:#cbd5e1}.gm-pro-lock b{display:block;color:#f8fafc;margin-bottom:3px}.gm-pro-lock-icon{font-size:1.5rem}
 .gm-brand-credit {
   margin-top:.25rem;
   font-size:.78rem;
@@ -1078,6 +1079,38 @@ def gm_auth_access_state(profile=None):
         except Exception:
             return "pending"
     return "vip"
+
+
+def gm_product_tier(profile=None):
+    """Camada comercial Free/Pro preservando vip_status/vip_until do banco."""
+    state = gm_auth_access_state(profile)
+    if state in {"admin", "vip"}:
+        return "pro"
+    if state in {"blocked", "anonymous"}:
+        return state
+    return "free"
+
+
+def gm_is_pro(profile=None):
+    return gm_product_tier(profile) == "pro"
+
+
+def gm_render_plan_badge(profile=None):
+    tier = gm_product_tier(profile)
+    if tier not in {"free", "pro"}:
+        return
+    label = "PRO" if tier == "pro" else "FREE"
+    cls = "gm-plan-pro" if tier == "pro" else "gm-plan-free"
+    st.markdown(f'<div class="gm-plan-badge {cls}">GM SCORE · {label}</div>', unsafe_allow_html=True)
+
+
+def gm_render_pro_lock(title="Conteúdo exclusivo GM SCORE Pro", message=None, key="gm_pro_unlock"):
+    """Paywall server-side: não renderiza dados estatísticos/seleções PRO no Free."""
+    message = message or "Assine o GM SCORE Pro para liberar análises, probabilidades, projeções e seleções atuais."
+    lock_html = f'<div class="gm-pro-lock"><div class="gm-pro-lock-icon">🔒</div><div><b>{html.escape(title)}</b><div>{html.escape(message)}</div></div></div>'
+    st.markdown(lock_html, unsafe_allow_html=True)
+    with st.expander("Desbloquear GM SCORE Pro", expanded=False):
+        gm_render_payment_plans(title="⭐ Escolha seu plano GM SCORE Pro", compact=True)
 
 
 def gm_device_session_token():
@@ -2049,11 +2082,8 @@ def gm_render_admin_daily_pick_approval():
         return
 
     today = datetime.now(BRASILIA_TZ).date()
-    def lookup(kind):
-        for row in rows:
-            if str(row.get("pick_date") or "") == today.isoformat() and str(row.get("pick_kind") or "dica") == kind:
-                return row
-        return None
+    def published_for(kind):
+        return [row for row in rows if str(row.get("pick_date") or "") == today.isoformat() and str(row.get("pick_kind") or "dica") == kind]
 
     try:
         gm_daily_pick_settle_pending(limit=40)
@@ -2118,11 +2148,10 @@ def gm_render_admin_daily_pick_approval():
         )
     for kind in ("matadeira", "dica", "bingo"):
         label = GM_DAILY_PICK_PROFILES[kind]["label"]
-        if lookup(kind) is not None:
-            st.success(f"{label} já aprovada e publicada hoje.")
-            continue
+        published_count = len(published_for(kind))
         opts = option_map.get(kind) or []
-        with st.expander(f"{label} — {len(opts)} opção(ões) para avaliar", expanded=(kind == "matadeira")):
+        suffix = f" · {published_count} publicada(s) hoje" if published_count else ""
+        with st.expander(f"{label} — {len(opts)} opção(ões) para avaliar{suffix}", expanded=(kind == "matadeira")):
             if not opts:
                 st.caption("Nenhuma alternativa atingiu os filtros mínimos nesta atualização.")
             for idx, opt in enumerate(opts, 1):
@@ -2143,8 +2172,6 @@ def gm_render_admin_daily_pick_approval():
                             st.session_state.pop(cache_key, None)
                             st.success("Dica aprovada e publicada para os clientes.")
                             st.rerun()
-                        elif result.get("reason") == "already_published":
-                            st.warning("Já existe uma dica oficial publicada para esta categoria hoje.")
                         else:
                             st.warning("Esta alternativa não pôde ser publicada pelos critérios de segurança.")
                     except Exception as exc:
@@ -2558,11 +2585,21 @@ def gm_render_admin_bets_home():
     # V106: o histórico é independente do feed ativo. Uma aposta finalizada fica
     # is_active=False, mas continua visível aos clientes pela política RLS V106.
     history_rows = [r for r in all_visible_rows if str(r.get("result_status") or "pending") in {"green", "red", "void"}]
+    try:
+        _profile = gm_auth_get_profile()
+    except Exception:
+        _profile = None
+    _is_pro = gm_is_pro(_profile)
 
-    if active_rows:
+    st.markdown("### ⭐ Apostas do ADM")
+    if not active_rows:
+        st.caption("Ainda não temos Apostas do ADM para hoje.")
+    elif not _is_pro:
+        gm_render_pro_lock("Apostas do ADM disponíveis", "As seleções atuais do ADM são exclusivas do GM SCORE Pro.", key="gm_home_adm_pro")
+
+    if active_rows and _is_pro:
         show_all = bool(st.session_state.get("gm_admin_bets_show_all"))
         visible = active_rows if show_all else active_rows[:3]
-        st.markdown("### ⭐ Apostas do ADM")
         st.caption("Seleções manuais publicadas pela administração do GM SCORE.")
         st.markdown('''<style>
         .gm-adm-bet-card{background:linear-gradient(145deg,rgba(13,24,23,.97),rgba(9,15,20,.98));border:1px solid rgba(52,230,129,.27);border-left:3px solid #34e681;border-radius:14px;padding:11px 12px 9px;margin:.42rem 0 .18rem}
@@ -3542,7 +3579,7 @@ def gm_render_public_portal():
             return False
 
         state = gm_auth_access_state(profile)
-        if state in {"admin", "vip"}:
+        if state not in {"blocked", "anonymous"}:
             # A regra de 1 sessão ativa é exclusiva das contas VIP de clientes.
             # O administrador precisa conseguir entrar de qualquer navegador/dispositivo
             # para liberar sessões, bloquear contas e prestar suporte, inclusive quando
@@ -3581,7 +3618,8 @@ def gm_render_public_portal():
             with st.sidebar:
                 st.markdown("### 👤 Minha conta")
                 st.caption(str(profile.get("nome") or profile.get("email") or "GM SCORE"))
-                st.success("🛠️ Administrador" if state == "admin" else "⭐ VIP ativo")
+                tier = gm_product_tier(profile)
+                st.success("🛠️ Administrador · PRO" if state == "admin" else ("⭐ GM SCORE PRO" if tier == "pro" else "○ GM SCORE FREE"))
 
                 # Renovação simples para clientes que já estão com o VIP ativo.
                 # Reutiliza exatamente o checkout individual já existente:
@@ -3632,7 +3670,7 @@ def gm_render_public_portal():
                     )
 
                     if st.button(
-                        "💳 Renovar VIP",
+                        "💳 Renovar Pro",
                         use_container_width=True,
                         key="gm_sidebar_renew_vip",
                     ):
@@ -3640,7 +3678,7 @@ def gm_render_public_portal():
                         st.rerun()
 
                     if st.session_state.get("gm_sidebar_renewal_open", False):
-                        st.markdown("#### 👑 Renovação de planos VIP")
+                        st.markdown("#### 👑 Renovação de planos Pro")
                         st.caption("Escolha o período e mantenha seu acesso completo ao GM SCORE.")
 
                         # Apresentação compacta e comercial dos planos. Mantém exatamente
@@ -3697,6 +3735,14 @@ def gm_render_public_portal():
                             "🔐 O novo prazo é acrescentado ao seu VIP atual somente após "
                             "a confirmação válida do pagamento pelo Mercado Pago."
                         )
+
+                if gm_product_tier(profile) == "free":
+                    st.caption("Conta ativa · plano FREE")
+                    if st.button("⭐ Desbloquear GM SCORE Pro", use_container_width=True, key="gm_sidebar_upgrade_pro"):
+                        st.session_state["gm_sidebar_free_upgrade_open"] = not bool(st.session_state.get("gm_sidebar_free_upgrade_open"))
+                        st.rerun()
+                    if st.session_state.get("gm_sidebar_free_upgrade_open"):
+                        gm_render_payment_plans(title="GM SCORE Pro", compact=True)
 
                 st.markdown("### 🧭 Navegação")
                 nav1, nav2 = st.columns(2)
@@ -3793,6 +3839,8 @@ try:
     _gm_profile_after_gate = gm_auth_get_profile()
 except Exception:
     _gm_profile_after_gate = None
+
+gm_render_plan_badge(_gm_profile_after_gate)
 
 # V66: as novidades ficam concentradas na aba própria da navegação.
 # O sino flutuante deixou de ser renderizado; RPCs, leitura e publicações permanecem intactos.
@@ -13264,11 +13312,11 @@ def gm_daily_pick_choose(candidates, pick_kind="dica", avoid_matches=None, avoid
         if result is not None: return result
     return None
 
-def gm_daily_pick_candidate_options(candidates, pick_kind="dica", limit=5, history_market_counts=None, history_family_counts=None, history_kind_market_counts=None):
+def gm_daily_pick_candidate_options(candidates, pick_kind="dica", limit=5, history_market_counts=None, history_family_counts=None, history_kind_market_counts=None, initial_avoid_legs=None):
     """Gera várias opções privadas para avaliação do ADM, sem publicação automática."""
     base = [dict(c) for c in (candidates or []) if float(c.get("probability") or 0.0) >= 75.0]
     options = []
-    used_legs = set()
+    used_legs = set(initial_avoid_legs or set())
     seen = set()
     for _ in range(max(1, min(int(limit), 8))):
         chosen = gm_daily_pick_choose(
@@ -13301,10 +13349,9 @@ def gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=5):
         return {"ok": False, "reason": "reset_window", "options": {}, "rows": []}
     recent_rows = gm_daily_pick_recent(100)
     existing_rows = [r for r in recent_rows if str(r.get("pick_date") or "") == today.isoformat()]
-    existing_kinds = {str(r.get("pick_kind") or "dica") for r in existing_rows}
-    missing = [k for k in ("matadeira", "dica", "bingo") if k not in existing_kinds]
-    if not missing:
-        return {"ok": True, "reason": "all_published", "options": {}, "rows": existing_rows}
+    # V124: uma categoria pode ter várias publicações no mesmo dia.
+    # Publicações existentes não encerram mais a busca por novas alternativas.
+    missing = ["matadeira", "dica", "bingo"]
     if force_refresh:
         try:
             gm_daily_pick_source_payload.clear()
@@ -13315,6 +13362,13 @@ def gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=5):
     if meta.get("error"):
         return {"ok": False, "reason": "source_error", "meta": meta}
     history_market_counts, history_family_counts, history_kind_market_counts = _gm_daily_recent_market_rotation(recent_rows, today)
+    published_legs = set()
+    for row in existing_rows:
+        for leg in (row.get("legs") or []):
+            mid = str((leg or {}).get("match_id") or "").strip()
+            code = str((leg or {}).get("market_code") or "").strip()
+            if mid and code:
+                published_legs.add((mid, code))
     options = {}
     for kind in missing:
         options[kind] = gm_daily_pick_candidate_options(
@@ -13324,6 +13378,7 @@ def gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=5):
             history_market_counts=history_market_counts,
             history_family_counts=history_family_counts,
             history_kind_market_counts=history_kind_market_counts,
+            initial_avoid_legs=published_legs,
         )
     return {"ok": True, "reason": "prepared", "options": options, "meta": meta, "rows": existing_rows}
 
@@ -13344,9 +13399,8 @@ def gm_daily_pick_publish_selected(choice):
     legs = [dict(x) for x in (choice.get("legs") or []) if isinstance(x, dict)]
     if not legs or any(float(x.get("probability") or 0.0) < 75.0 for x in legs):
         return {"ok": False, "reason": "probability_floor"}
-    for row in gm_daily_pick_recent(20):
-        if str(row.get("pick_date") or "") == today.isoformat() and str(row.get("pick_kind") or "dica") == pick_kind:
-            return {"ok": False, "reason": "already_published", "row": row}
+    # V124: não bloqueia uma segunda publicação da mesma categoria no mesmo dia.
+    # A identidade de cada aposta permanece no registro individual retornado pela RPC.
     direct_bet_url = _gm_daily_valid_direct_bet_url(choice.get("direct_bet_url"))
     if choice.get("direct_bet_url") and not direct_bet_url:
         return {"ok": False, "reason": "invalid_bet_link"}
@@ -13566,11 +13620,12 @@ def gm_render_daily_pick_page():
     if today < GM_DAILY_PICK_RESET_DATE:
         st.info(f"Novo ciclo das Dicas do Dia começa em {GM_DAILY_PICK_RESET_DATE:%d/%m/%Y}. O histórico anterior foi encerrado.")
         return
+    def lookup_all(day,kind):
+        return [r for r in rows if str(r.get("pick_date") or "")==day.isoformat() and str(r.get("pick_kind") or "dica")==kind]
+
     def lookup(day,kind):
-        for r in rows:
-            if str(r.get("pick_date") or "")==day.isoformat() and str(r.get("pick_kind") or "dica")==kind:
-                return r
-        return None
+        matches = lookup_all(day, kind)
+        return matches[0] if matches else None
 
     if is_admin:
         st.markdown("### 🧑‍💼 Aprovação do administrador")
@@ -13652,17 +13707,26 @@ def gm_render_daily_pick_page():
     if is_admin:
         st.markdown("### 📅 Hoje — publicado para clientes")
     for kind in ("matadeira","dica","bingo"):
-        _gm_daily_pick_card(lookup(today,kind),today,kind,is_admin=is_admin)
+        today_rows = lookup_all(today, kind)
+        if not today_rows:
+            _gm_daily_pick_card(None,today,kind,is_admin=is_admin)
+        else:
+            for pick_number, row in enumerate(today_rows, 1):
+                if len(today_rows) > 1:
+                    st.caption(f"{GM_DAILY_PICK_PROFILES[kind]['short']} #{pick_number}")
+                _gm_daily_pick_card(row,today,kind,is_admin=is_admin)
 
     with st.expander("📆 Ontem — seleções e resultados",expanded=False):
         found=False
         for kind in ("matadeira","dica","bingo"):
-            row=lookup(yesterday,kind)
-            if not row: continue
+            kind_rows=lookup_all(yesterday,kind)
+            if not kind_rows: continue
             found=True; label=GM_DAILY_PICK_PROFILES[kind]["label"]
-            if str(row.get("status"))=="no_pick": st.markdown(f"**{label}: ⚫ Sem seleção**"); continue
-            odd=_gm_daily_num(row.get("total_odd")) or 0.0; st.markdown(f"**{label} · {_gm_daily_status_badge(row.get('status'))} · odd {odd:.2f}**")
-            for leg in _gm_daily_sort_legs(row.get("legs") or []): st.caption(f"🕒 {_gm_daily_time_label(leg.get('time'))} • ⚽ {leg.get('home')} × {leg.get('away')} — {leg.get('market')} @ {(_gm_daily_num(leg.get('odd')) or 0.0):.2f}")
+            for pick_number,row in enumerate(kind_rows,1):
+                numbered = f" #{pick_number}" if len(kind_rows) > 1 else ""
+                if str(row.get("status"))=="no_pick": st.markdown(f"**{label}{numbered}: ⚫ Sem seleção**"); continue
+                odd=_gm_daily_num(row.get("total_odd")) or 0.0; st.markdown(f"**{label}{numbered} · {_gm_daily_status_badge(row.get('status'))} · odd {odd:.2f}**")
+                for leg in _gm_daily_sort_legs(row.get("legs") or []): st.caption(f"🕒 {_gm_daily_time_label(leg.get('time'))} • ⚽ {leg.get('home')} × {leg.get('away')} — {leg.get('market')} @ {(_gm_daily_num(leg.get('odd')) or 0.0):.2f}")
         if not found: st.caption("Ainda não há oportunidades registradas para ontem.")
 
     standard=[r for r in rows if str(r.get("pick_kind") or "dica") in {"matadeira","dica"} and str(r.get("status") or "") in {"green","red"}]
@@ -13902,14 +13966,42 @@ def gm_render_news_page():
                 hidden_now = set(st.session_state.get("gm_news_hidden_session", [])); hidden_now.add(news_id); st.session_state["gm_news_hidden_session"] = list(hidden_now); st.rerun()
 
 
+def gm_render_daily_pick_free_page():
+    """Histórico público sem entregar as seleções atuais ao navegador Free."""
+    st.markdown("## 💡 Dicas do Dia")
+    gm_render_pro_lock("Dicas de hoje são exclusivas do GM SCORE Pro", "No Free você pode acompanhar os resultados anteriores. O conteúdo atual fica protegido.", key="gm_daily_free_pro")
+    try:
+        rows = gm_daily_pick_recent(100) or []
+    except Exception:
+        st.caption("O histórico não pôde ser carregado agora.")
+        return
+    today = datetime.now(BRASILIA_TZ).date()
+    past = [r for r in rows if str(r.get("pick_date") or "") < today.isoformat() and str(r.get("status") or "") in {"green", "red", "void"}]
+    st.markdown("### 📊 Resultados anteriores")
+    if not past:
+        st.caption("Ainda não há resultados anteriores publicados.")
+        return
+    for row in past[:20]:
+        kind = str(row.get("pick_kind") or "dica")
+        label = GM_DAILY_PICK_PROFILES.get(kind, {}).get("label", "Dica do Dia")
+        status = _gm_daily_status_badge(row.get("status"))
+        odd = _gm_daily_num(row.get("total_odd")) or 0.0
+        date_txt = str(row.get("pick_date") or "")
+        try:
+            date_txt = datetime.fromisoformat(date_txt).strftime("%d/%m/%Y")
+        except Exception:
+            pass
+        st.markdown(f"**{date_txt} · {label} · {status} · odd {odd:.2f}**")
+
+
 def gm_render_account_page(profile):
     """Conta do ADM espelha a experiência VIP e acrescenta somente o acesso à Central Administrativa."""
     profile = profile or {}; is_admin = profile.get("role") == "admin"
     st.markdown("## 👤 Minha Conta")
     st.markdown(f"**{html.escape(str(profile.get('nome') or profile.get('email') or 'GM SCORE'))}**")
 
-    # V78: ADM também enxerga a mesma experiência de conta do cliente VIP.
-    st.success("⭐ VIP ativo")
+    tier = gm_product_tier(profile)
+    st.success("⭐ GM SCORE PRO" if tier == "pro" else "○ GM SCORE FREE")
     vip_until_raw = profile.get("vip_until")
     if vip_until_raw:
         try:
@@ -13927,9 +14019,9 @@ def gm_render_account_page(profile):
         except Exception:
             pass
 
-    with st.expander("💳 Renovar VIP", expanded=False):
+    with st.expander("💳 Renovar Pro" if tier == "pro" else "⭐ Desbloquear GM SCORE Pro", expanded=False):
         for plan in GM_VIP_PLANS:
-            st.markdown(f"**VIP {str(plan['title']).upper()} · {plan['pix_price']} no Pix**")
+            st.markdown(f"**PRO {str(plan['title']).upper()} · {plan['pix_price']} no Pix**")
             saving = str(plan.get("saving") or "").strip()
             if saving: st.caption(saving)
             gm_checkout_button(plan, "pix", "⚡ Renovar com Pix", primary=True)
@@ -14134,7 +14226,10 @@ if _gm_main_view not in {"analysis", "games"}:
 gm_render_app_navigation(_gm_profile_after_gate)
 
 if _gm_main_view == "daily_pick":
-    gm_render_daily_pick_page()
+    if gm_is_pro(_gm_profile_after_gate):
+        gm_render_daily_pick_page()
+    else:
+        gm_render_daily_pick_free_page()
 elif _gm_main_view == "games":
     gm_render_games_page()
 elif _gm_main_view == "news":
@@ -14156,8 +14251,18 @@ else:
         gm_render_apifootball_league_audit()
         gm_render_apifootball_stat_audit()
         gm_render_calibration_dashboard()
-    render_analysis()
-    gm_force_analysis_scroll_top_after_render()
+    if gm_is_pro(_gm_profile_after_gate):
+        render_analysis()
+        gm_force_analysis_scroll_top_after_render()
+    else:
+        _free_match = st.session_state.get("gm_games_direct_match") if isinstance(st.session_state.get("gm_games_direct_match"), dict) else {}
+        if _free_match:
+            _fh = html.escape(str(_free_match.get("home") or _free_match.get("home_name") or "Mandante"))
+            _fa = html.escape(str(_free_match.get("away") or _free_match.get("away_name") or "Visitante"))
+            _fc = html.escape(str(_free_match.get("competition") or ""))
+            _ft = html.escape(str(_free_match.get("time") or "Horário a confirmar"))
+            st.markdown(f'<div class="gm-game-card"><div class="gm-game-time">{_ft}</div><div class="gm-game-body"><div class="gm-game-league">{_fc}</div><div class="gm-game-teams">{_fh} <span>×</span> {_fa}</div></div></div>', unsafe_allow_html=True)
+        gm_render_pro_lock("Análise completa exclusiva do GM SCORE Pro", "Você pode consultar o jogo, horário e competição no Free. Probabilidades, projeções e oportunidades são conteúdo Pro.", key="gm_analysis_free_pro")
 
 _gm_games_direct_analysis = (
     _gm_main_view == "analysis"
