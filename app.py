@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-18-v134-news-publication-hub"
+GM_BUILD = "2026-09-18-v136-onesignal-auto-push"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -1498,12 +1498,44 @@ def gm_list_news():
     return [row for row in rows if isinstance(row, dict)]
 
 
-def gm_publish_system_news(title, message, category="novidade", featured=True):
-    """Publica uma Novidade automática usando a mesma central das publicações manuais.
+def gm_onesignal_push(title, message, launch_url="https://gmscore.com.br"):
+    """Envia Web Push para todos os dispositivos inscritos no OneSignal.
 
-    V134: Dicas do Dia e Apostas do ADM passam pelo mesmo ponto de entrada,
-    preparando a Central de Novidades para notificações push sem duplicar regras.
+    Falhas de push nunca desfazem uma publicação já concluída no GM SCORE.
+    As credenciais permanecem somente em st.secrets no servidor.
     """
+    try:
+        app_id = str(st.secrets.get("ONESIGNAL_APP_ID", "") or "").strip()
+        api_key = str(st.secrets.get("ONESIGNAL_API_KEY", "") or "").strip()
+    except Exception:
+        return False
+    if not app_id or not api_key:
+        return False
+
+    payload = {
+        "app_id": app_id,
+        "included_segments": ["Total Subscriptions"],
+        "headings": {"en": str(title or "GM SCORE")[:120]},
+        "contents": {"en": str(message or "Há uma nova atualização disponível.")[:500]},
+        "url": str(launch_url or "https://gmscore.com.br"),
+    }
+    try:
+        response = requests.post(
+            "https://api.onesignal.com/notifications",
+            headers={
+                "Authorization": f"Key {api_key}",
+                "Content-Type": "application/json; charset=utf-8",
+            },
+            json=payload,
+            timeout=8,
+        )
+        return 200 <= int(response.status_code) < 300
+    except Exception:
+        return False
+
+
+def gm_publish_system_news(title, message, category="novidade", featured=True, push_title=None, push_message=None):
+    """Publica na Central de Novidades e dispara o push externo correspondente."""
     data = gm_admin_rpc("gm_admin_publish_news", {
         "p_title": str(title or "").strip(),
         "p_message": str(message or "").strip(),
@@ -1511,6 +1543,10 @@ def gm_publish_system_news(title, message, category="novidade", featured=True):
         "p_is_featured": bool(featured),
     })
     gm_invalidate_unread_news_cache()
+    gm_onesignal_push(
+        push_title if push_title is not None else title,
+        push_message if push_message is not None else message,
+    )
     return data
 
 
@@ -1526,6 +1562,8 @@ def gm_daily_pick_publish_news(kind, opt):
         f"Uma nova {label} foi publicada · {detail}. Confira em Dicas do Dia.",
         category="novidade",
         featured=True,
+        push_title="💡 Novas Dicas do Dia disponíveis",
+        push_message="Há uma nova publicação no GM SCORE. Abra o app para conferir.",
     )
 
 
@@ -1807,12 +1845,12 @@ def gm_render_admin_news_manager():
                 st.warning("Informe título e mensagem.")
             else:
                 try:
-                    gm_admin_rpc("gm_admin_publish_news", {
-                        "p_title": title.strip(),
-                        "p_message": message.strip(),
-                        "p_category": category,
-                        "p_is_featured": bool(featured),
-                    })
+                    gm_publish_system_news(
+                        title.strip(),
+                        message.strip(),
+                        category=category,
+                        featured=bool(featured),
+                    )
                     st.success("Novidade publicada com sucesso.")
                     st.rerun()
                 except Exception as exc:
@@ -2727,6 +2765,8 @@ def gm_render_admin_bets_manager():
                             f"{str(title).strip()} · Odd {float(odd):.2f}. Confira a publicação na página Início.",
                             category="novidade",
                             featured=True,
+                            push_title="⭐ Nova Aposta do ADM disponível",
+                            push_message="Há uma nova publicação no GM SCORE. Abra o app para conferir.",
                         )
                     except Exception:
                         news_ok = False
