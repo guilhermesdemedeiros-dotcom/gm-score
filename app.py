@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-17-v121-performance-turbo"
+GM_BUILD = "2026-09-18-v122-auth-navigation-fastpath"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -1136,8 +1136,18 @@ def gm_session_result(data):
 
 
 def gm_start_or_validate_session():
+    """V122: valida a trava VIP sem fazer uma RPC em cada transição de página.
+
+    O primeiro acesso continua fazendo takeover no servidor. Depois disso, uma
+    validação aprovada é reutilizada por até 90 s; o fragmento de heartbeat
+    continua sendo a autoridade periódica para detectar troca de dispositivo.
+    """
     token = gm_device_session_token()
     started = bool(st.session_state.get("gm_device_session_started"))
+    if started:
+        last_check = st.session_state.get("gm_session_last_validation_monotonic")
+        if isinstance(last_check, (int, float)) and (time.monotonic() - float(last_check)) < 90:
+            return True, "cached_validation"
     # Regra v29: o acesso mais recente assume a conta. Em vez de bloquear o novo
     # acesso, o Supabase troca o token ativo; os acessos anteriores caem na próxima
     # validação/heartbeat.
@@ -1146,9 +1156,6 @@ def gm_start_or_validate_session():
     ok, reason = gm_session_result(data)
     if ok:
         st.session_state["gm_device_session_started"] = True
-        # Marca quando esta sessão foi validada no servidor. O heartbeat usa
-        # este relógio local apenas para evitar chamadas duplicadas logo após
-        # um rerun normal do Streamlit; a autoridade continua sendo o Supabase.
         st.session_state["gm_session_last_validation_monotonic"] = time.monotonic()
     return ok, reason
 
@@ -3522,7 +3529,9 @@ def gm_render_public_portal():
     profile = None
     if user_id:
         try:
-            profile = gm_auth_get_profile(force=True)
+            # V122: o perfil já fica em session_state após a primeira leitura.
+            # Não consultar gm_users novamente em cada clique/transição.
+            profile = gm_auth_get_profile(force=False)
         except Exception:
             profile = None
     if profile:
