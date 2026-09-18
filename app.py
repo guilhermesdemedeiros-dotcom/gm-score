@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-18-v132-free-pro-permission-matrix"
+GM_BUILD = "2026-09-18-v133-admin-fixture-rebuild-diagnostics"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -2921,25 +2921,61 @@ def gm_render_admin_panel(profile):
     with tab_system:
         st.markdown("### ⚽ Jogos e operação do sistema")
         st.caption("Controles administrativos de atualização e diagnóstico. A experiência normal de Jogos permanece idêntica à do cliente VIP.")
+        gm_admin_fixture_date = st.date_input(
+            "Data para reconstruir",
+            value=datetime.now(BRASILIA_TZ).date(),
+            key="gm_admin_fixture_rebuild_date",
+            help="A atualização reconstrói somente a data escolhida e reaplica todas as validações da agenda.",
+        )
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("🔄 Atualizar base de jogos", use_container_width=True, type="primary", key="gm_admin_games_refresh"):
-                for _fn_name in (
-                    "load_apifootball_prediction_fixtures_for_date",
-                    "load_apifootball_competition_fixtures_for_date",
-                    "load_apifootball_fixtures_for_date",
-                    "load_sofascore_fixtures_for_date",
-                    "load_espn_fixtures_for_date",
-                    "load_thesportsdb_fixtures_for_date",
-                    "load_fixtures_for_date",
-                ):
-                    _fn = globals().get(_fn_name)
+            if st.button("🔄 Atualizar partidas", use_container_width=True, type="primary", key="gm_admin_games_refresh"):
+                with st.spinner("Reconstruindo a agenda e validando as partidas..."):
+                    for _fn_name in (
+                        "load_apifootball_prediction_fixtures_for_date",
+                        "load_apifootball_competition_fixtures_for_date",
+                        "load_apifootball_all_competitions_fixtures_for_date",
+                        "load_apifootball_fixtures_for_date",
+                        "load_sofascore_fixtures_for_date",
+                        "load_espn_fixtures_for_date",
+                        "load_thesportsdb_fixtures_for_date",
+                        "load_fixtures_for_date",
+                        "gm_games_prepared_fixtures",
+                    ):
+                        _fn = globals().get(_fn_name)
+                        try:
+                            if _fn is not None and hasattr(_fn, "clear"):
+                                _fn.clear()
+                        except Exception:
+                            pass
                     try:
-                        if _fn is not None and hasattr(_fn, "clear"):
-                            _fn.clear()
+                        _official = load_apifootball_all_competitions_fixtures_for_date(gm_admin_fixture_date) or []
                     except Exception:
-                        pass
-                st.success("Cache de jogos limpo. A próxima consulta carregará os dados novamente.")
+                        _official = []
+                    try:
+                        _aggregated = load_fixtures_for_date(gm_admin_fixture_date) or []
+                    except Exception:
+                        _aggregated = []
+                    try:
+                        _final = gm_games_prepared_fixtures(gm_admin_fixture_date) or []
+                    except Exception:
+                        _final = []
+                    _wrong_date = sum(1 for _f in _aggregated if not fixture_matches_selected_date(_f, gm_admin_fixture_date))
+                    _invalid = sum(1 for _f in _aggregated if not valid_daily_fixture(_f))
+                    _roster_rejected = sum(1 for _f in _aggregated if valid_daily_fixture(_f) and fixture_matches_selected_date(_f, gm_admin_fixture_date) and not gm_fixture_matches_official_league_roster(_f))
+                    _competitions = len({str((_f or {}).get("competition") or "") for _f in _final if (_f or {}).get("competition")})
+                    st.session_state["gm_admin_fixture_last_report"] = {
+                        "date": gm_admin_fixture_date.isoformat(),
+                        "official": len(_official),
+                        "aggregated": len(_aggregated),
+                        "final": len(_final),
+                        "wrong_date": _wrong_date,
+                        "invalid": _invalid,
+                        "roster_rejected": _roster_rejected,
+                        "competitions": _competitions,
+                        "updated_at": datetime.now(BRASILIA_TZ).strftime("%d/%m/%Y %H:%M:%S"),
+                    }
+                st.success(f"Agenda de {gm_admin_fixture_date.strftime('%d/%m/%Y')} reconstruída e validada.")
         with c2:
             if st.button("🔄 Sincronizar resultados", use_container_width=True, key="gm_admin_results_sync"):
                 try:
@@ -2948,6 +2984,28 @@ def gm_render_admin_panel(profile):
                 except Exception as exc:
                     st.warning("Não foi possível concluir a sincronização agora.")
                     st.caption(f"Detalhe: {type(exc).__name__}")
+        _fixture_report = st.session_state.get("gm_admin_fixture_last_report")
+        if isinstance(_fixture_report, dict):
+            st.markdown("#### Relatório da última atualização")
+            r1, r2, r3, r4 = st.columns(4)
+            r1.metric("APIfootball oficial", int(_fixture_report.get("official", 0)))
+            r2.metric("Registros agregados", int(_fixture_report.get("aggregated", 0)))
+            r3.metric("Agenda válida", int(_fixture_report.get("final", 0)))
+            r4.metric("Competições", int(_fixture_report.get("competitions", 0)))
+            _discarded = int(_fixture_report.get("wrong_date", 0)) + int(_fixture_report.get("invalid", 0)) + int(_fixture_report.get("roster_rejected", 0))
+            st.caption(
+                f"Validação: {_fixture_report.get('wrong_date', 0)} fora da data · "
+                f"{_fixture_report.get('invalid', 0)} inválidos · "
+                f"{_fixture_report.get('roster_rejected', 0)} incompatíveis com a competição · "
+                f"{_discarded} descarte(s) detectado(s) · atualizado em {_fixture_report.get('updated_at', '—')}."
+            )
+            if int(_fixture_report.get("official", 0)) == 0 and int(_fixture_report.get("final", 0)) > 0:
+                st.warning("A fonte oficial não retornou partidas nesta atualização. A agenda exibida dependeu das fontes complementares e merece conferência.")
+            elif int(_fixture_report.get("final", 0)) == 0:
+                st.info("Nenhuma partida válida permaneceu para a data após as validações.")
+            else:
+                st.success("A agenda final foi reconstruída com as barreiras de data, competição, identidade e deduplicação ativas.")
+
         st.markdown("#### Diagnóstico das competições")
         gm_render_apifootball_league_audit()
         gm_render_apifootball_stat_audit()
