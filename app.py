@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-18-v129-header-access-badge"
+GM_BUILD = "2026-09-18-v130-persistent-header-access-badge"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -631,25 +631,13 @@ if GM_MAINTENANCE_MODE:
         gm_render_apifootball_coverage_probe()
     st.stop()
 
-# V129: identificação de acesso integrada à marca. Evita repetir "GM SCORE" em um badge separado.
-_gm_header_profile = st.session_state.get("gm_auth_profile") if isinstance(st.session_state.get("gm_auth_profile"), dict) else None
-_gm_header_access = ""
-_gm_header_access_cls = ""
-if _gm_header_profile:
-    if str(_gm_header_profile.get("role") or "").lower() == "admin":
-        _gm_header_access = "ADM"
-        _gm_header_access_cls = "gm-brand-access-adm"
-    else:
-        _gm_header_is_pro = str(_gm_header_profile.get("vip_status") or "").lower() == "active" and not bool(st.session_state.get("gm_pro_suspended", False))
-        _gm_header_access = "PRO" if _gm_header_is_pro else "FREE"
-        _gm_header_access_cls = "gm-brand-access-pro" if _gm_header_is_pro else "gm-brand-access-free"
-_gm_header_badge = f'<span class="gm-brand-access {_gm_header_access_cls}">{_gm_header_access}</span>' if _gm_header_access else ""
+# V130: a marca é renderizada antes da restauração de autenticação.
+# O selo persistente é aplicado após o portal, quando o perfil já está resolvido.
 st.markdown(f"""
 <div class="gm-brand" style="margin:0 0 1.15rem 0">
   <div style="display:flex;align-items:center;gap:.65rem;line-height:1;flex-wrap:wrap">
     <span style="font-size:2.35rem">⚽</span>
     <span class="gm-brand-title"><span class="gm-brand-gm">GM</span><span class="gm-brand-score">SCORE</span></span>
-    {_gm_header_badge}
   </div>
   <div class="gm-brand-subtitle">ANÁLISE • ESTATÍSTICAS • PROBABILIDADES</div>
 </div>
@@ -4030,7 +4018,34 @@ try:
 except Exception:
     _gm_profile_after_gate = None
 
-# V129: plano já aparece integrado ao lado da marca GM SCORE; sem badge duplicado.
+# V130: resolve FREE/PRO/ADM depois do restore/login e aplica o selo na marca já renderizada.
+# Assim o indicador não desaparece após F5 ou reabertura da sessão persistida.
+if _gm_profile_after_gate:
+    if str(_gm_profile_after_gate.get("role") or "").lower() == "admin":
+        _gm_runtime_badge = "ADM"
+        _gm_runtime_badge_css = "border-color:rgba(250,204,21,.55);background:rgba(250,204,21,.10);color:#fde047;"
+    else:
+        _gm_runtime_tier = gm_product_tier(_gm_profile_after_gate)
+        _gm_runtime_badge = "PRO" if _gm_runtime_tier == "pro" else "FREE"
+        _gm_runtime_badge_css = (
+            "border-color:rgba(52,230,129,.55);background:rgba(52,230,129,.12);color:#34e681;"
+            if _gm_runtime_tier == "pro"
+            else "border-color:rgba(148,163,184,.30);background:rgba(148,163,184,.08);color:#cbd5e1;"
+        )
+    st.markdown(
+        f"""<style>
+        .gm-brand-title::after{{
+            content:"{_gm_runtime_badge}";
+            display:inline-flex;align-items:center;justify-content:center;
+            margin-left:.62rem;padding:.26rem .52rem;border-radius:8px;
+            font-size:.66rem;font-weight:950;letter-spacing:.09em;
+            border:1px solid;vertical-align:middle;transform:translateY(-.18rem);
+            -webkit-text-stroke:0;paint-order:normal;{_gm_runtime_badge_css}
+        }}
+        </style>""",
+        unsafe_allow_html=True,
+    )
+
 
 # V66: as novidades ficam concentradas na aba própria da navegação.
 # O sino flutuante deixou de ser renderizado; RPCs, leitura e publicações permanecem intactos.
