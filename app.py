@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-19-v142-admin-picks-performance"
+GM_BUILD = "2026-09-19-v143-admin-picks-fastload"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -2321,12 +2321,15 @@ def gm_render_admin_daily_pick_approval():
     if cache_key not in st.session_state:
         try:
             with st.spinner("Preparando opções para avaliação do ADM..."):
-                st.session_state[cache_key] = gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=5)
+                # V143: primeira abertura prepara 1 alternativa por categoria. Isso reduz
+                # drasticamente o beam inicial; critérios e piso de 75% permanecem iguais.
+                # O botão Atualizar continua podendo preparar a fila completa.
+                st.session_state[cache_key] = gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=1)
         except Exception as exc:
             st.session_state[cache_key] = {"ok": False, "reason": type(exc).__name__}
 
     a1, a2 = st.columns(2)
-    if a1.button("🔄 Atualizar opções", use_container_width=True, key="gm_admin_daily_refresh_candidates"):
+    if a1.button("🔄 Carregar mais opções", use_container_width=True, key="gm_admin_daily_refresh_candidates"):
         try:
             with st.spinner("Atualizando odds e probabilidades..."):
                 st.session_state[cache_key] = gm_daily_pick_prepare_admin_options(force_refresh=True, per_kind=5)
@@ -13149,23 +13152,45 @@ def gm_daily_pick_source_payload(target_date_iso):
             if mid:
                 odds_by_match.setdefault(mid, []).append(row)
 
+    # V143 PERFORMANCE: os complementos por match_id são I/O independente.
+    # Antes, até ~70 partidas podiam gerar consultas individuais em série. Fazemos
+    # exatamente as mesmas consultas em paralelo, sem alterar fontes, thresholds,
+    # probabilidades, odds ou critérios de elegibilidade.
     direct_prediction_hits = 0
     direct_odds_hits = 0
-    for mid in official_match_ids:
+
+    def _load_missing_match(mid):
+        pred_row = None
+        odd_rows = None
         if mid not in pred_by_match:
             rows, err = gm_apifootball_request("get_predictions", match_id=mid)
             if not err and isinstance(rows, list):
                 for row in rows:
                     if isinstance(row, dict) and str(row.get("match_id") or "").strip() == mid:
-                        pred_by_match[mid] = row
-                        direct_prediction_hits += 1
+                        pred_row = row
                         break
         if mid not in odds_by_match:
             rows, err = gm_apifootball_request("get_odds", match_id=mid)
             if not err and isinstance(rows, list):
                 valid = [r for r in rows if isinstance(r, dict) and str(r.get("match_id") or "").strip() == mid]
                 if valid:
-                    odds_by_match[mid] = valid
+                    odd_rows = valid
+        return mid, pred_row, odd_rows
+
+    missing_ids = [mid for mid in official_match_ids if mid not in pred_by_match or mid not in odds_by_match]
+    if missing_ids:
+        with ThreadPoolExecutor(max_workers=min(8, len(missing_ids))) as pool:
+            futures = [pool.submit(_load_missing_match, mid) for mid in missing_ids]
+            for future in as_completed(futures):
+                try:
+                    mid, pred_row, odd_rows = future.result()
+                except Exception:
+                    continue
+                if pred_row is not None and mid not in pred_by_match:
+                    pred_by_match[mid] = pred_row
+                    direct_prediction_hits += 1
+                if odd_rows and mid not in odds_by_match:
+                    odds_by_match[mid] = odd_rows
                     direct_odds_hits += 1
 
     merged_predictions = list(pred_by_match.values())
@@ -13682,6 +13707,7 @@ def gm_daily_pick_candidate_options(candidates, pick_kind="dica", limit=5, histo
 
 def gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=5):
     """Prepara opções do dia para o ADM sem gravar candidatos em gm_daily_picks."""
+    _perf_started = time.perf_counter()
     # V125: evita round-trip de autenticação em cada ação administrativa.
     profile = gm_auth_get_profile(force=False)
     if (profile or {}).get("role") != "admin":
@@ -13700,7 +13726,9 @@ def gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=5):
         except Exception:
             pass
     cutoff_at = datetime.now(BRASILIA_TZ) + timedelta(minutes=10)
+    _source_started = time.perf_counter()
     candidates, meta = gm_daily_pick_candidates(today, cutoff_at=cutoff_at)
+    _source_seconds = time.perf_counter() - _source_started
     if meta.get("error"):
         return {"ok": False, "reason": "source_error", "meta": meta}
     history_market_counts, history_family_counts, history_kind_market_counts = _gm_daily_recent_market_rotation(recent_rows, today)
@@ -13728,6 +13756,10 @@ def gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=5):
             initial_avoid_legs=published_legs,
         )
         options[kind] = [o for o in generated if _gm_daily_pick_option_signature(o) not in discarded_signatures][:per_kind]
+    meta = dict(meta or {})
+    meta["perf_source_seconds"] = round(_source_seconds, 3)
+    meta["perf_total_seconds"] = round(time.perf_counter() - _perf_started, 3)
+    meta["perf_options_per_kind"] = int(per_kind)
     return {"ok": True, "reason": "prepared", "options": options, "meta": meta, "rows": existing_rows}
 
 
