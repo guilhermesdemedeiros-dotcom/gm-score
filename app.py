@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-19-v147-multiple-daily-picks-dbfix"
+GM_BUILD = "2026-09-19-v148-fast-picks-adm-badge"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -1161,10 +1161,12 @@ def gm_access_capabilities(profile=None):
 
 
 def gm_render_plan_badge(profile=None):
+    profile = profile or gm_auth_get_profile()
     tier = gm_product_tier(profile)
     if tier not in {"free", "pro"}:
         return
-    label = "PRO" if tier == "pro" else "FREE"
+    is_admin = str((profile or {}).get("role") or "").lower() == "admin"
+    label = "ADM" if is_admin else ("PRO" if tier == "pro" else "FREE")
     cls = "gm-plan-pro" if tier == "pro" else "gm-plan-free"
     st.markdown(f'<div class="gm-plan-badge {cls}">GM SCORE · {label}</div>', unsafe_allow_html=True)
 
@@ -3968,7 +3970,7 @@ def gm_render_public_portal():
                 st.markdown("### 👤 Minha conta")
                 st.caption(str(profile.get("nome") or profile.get("email") or "GM SCORE"))
                 tier = gm_product_tier(profile)
-                st.success("🛠️ Administrador · PRO" if state == "admin" else ("⭐ GM SCORE PRO" if tier == "pro" else "○ GM SCORE FREE"))
+                st.success("🛠️ GM SCORE ADM" if state == "admin" else ("⭐ GM SCORE PRO" if tier == "pro" else "○ GM SCORE FREE"))
 
                 # Renovação simples para clientes que já estão com o VIP ativo.
                 # Reutiliza exatamente o checkout individual já existente:
@@ -4189,7 +4191,8 @@ except Exception:
 # Assim o indicador não desaparece após F5 ou reabertura da sessão persistida.
 if _gm_profile_after_gate:
     _gm_runtime_tier = gm_product_tier(_gm_profile_after_gate)
-    _gm_runtime_badge = "PRO" if _gm_runtime_tier == "pro" else "FREE"
+    _gm_runtime_is_admin = str((_gm_profile_after_gate or {}).get("role") or "").lower() == "admin"
+    _gm_runtime_badge = "ADM" if _gm_runtime_is_admin else ("PRO" if _gm_runtime_tier == "pro" else "FREE")
     _gm_runtime_badge_css = (
         "border-color:rgba(52,230,129,.55);background:rgba(52,230,129,.12);color:#34e681;"
         if _gm_runtime_tier == "pro"
@@ -13096,6 +13099,50 @@ def _gm_daily_sort_legs(legs):
     )
 
 
+GM_DAILY_PICK_DISK_CACHE_TTL = 1800
+
+def _gm_daily_pick_disk_cache_path(target_date_iso, kind="source"):
+    safe_day = re.sub(r"[^0-9-]", "", str(target_date_iso or ""))[:10]
+    return f"/tmp/gm_score_daily_pick_{kind}_{safe_day}.json"
+
+def _gm_daily_pick_disk_cache_load(target_date_iso, kind="source", ttl=GM_DAILY_PICK_DISK_CACHE_TTL):
+    """V148: cache local persistente entre reruns/restarts do Streamlit."""
+    path = _gm_daily_pick_disk_cache_path(target_date_iso, kind)
+    try:
+        age = time.time() - os.path.getmtime(path)
+        if age < 0 or age > float(ttl):
+            return None
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+def _gm_daily_pick_disk_cache_save(target_date_iso, payload, kind="source"):
+    path = _gm_daily_pick_disk_cache_path(target_date_iso, kind)
+    tmp = f"{path}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False, separators=(",", ":"), default=str)
+        os.replace(tmp, path)
+        return True
+    except Exception:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
+        return False
+
+def _gm_daily_pick_disk_cache_clear(target_date_iso):
+    for kind in ("source", "candidates"):
+        try:
+            os.remove(_gm_daily_pick_disk_cache_path(target_date_iso, kind))
+        except FileNotFoundError:
+            pass
+        except Exception:
+            pass
+
 @st.cache_data(ttl=600, show_spinner=False)
 def gm_daily_pick_source_payload(target_date_iso):
     """Fonte das aprovações dirigida pela grade oficial de partidas.
@@ -13109,6 +13156,14 @@ def gm_daily_pick_source_payload(target_date_iso):
     """
     if not gm_apifootball_api_key():
         return {"predictions": [], "odds": [], "fixtures": [], "error": "secret_missing"}
+
+    # V148: se outra execução já coletou a grade/odds/previsões recentemente,
+    # reutiliza a base local em vez de repetir dezenas de chamadas por partida.
+    disk_cached = _gm_daily_pick_disk_cache_load(target_date_iso, "source")
+    if disk_cached is not None:
+        disk_cached = dict(disk_cached)
+        disk_cached["persistent_cache_hit"] = True
+        return disk_cached
 
     try:
         target_day = pd.to_datetime(target_date_iso).date()
@@ -13216,7 +13271,7 @@ def gm_daily_pick_source_payload(target_date_iso):
         else:
             source_error = "no_prediction_or_odds_data"
 
-    return {
+    result = {
         "predictions": merged_predictions,
         "odds": merged_odds,
         "fixtures": fixtures,
@@ -13225,6 +13280,10 @@ def gm_daily_pick_source_payload(target_date_iso):
         "direct_odds_hits": direct_odds_hits,
         "error": source_error,
     }
+    # Só persiste uma coleta útil; erro de fonte não fica "preso" no cache.
+    if not source_error:
+        _gm_daily_pick_disk_cache_save(target_date_iso, result, "source")
+    return result
 
 
 def _gm_daily_prob_over_05_from_over15(prob_over15):
@@ -13757,9 +13816,38 @@ def gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=5):
             gm_daily_pick_source_payload.clear()
         except Exception:
             pass
+        _gm_daily_pick_disk_cache_clear(today.isoformat())
+
     cutoff_at = datetime.now(BRASILIA_TZ) + timedelta(minutes=10)
     _source_started = time.perf_counter()
-    candidates, meta = gm_daily_pick_candidates(today, cutoff_at=cutoff_at)
+
+    # V148: a base de candidatos também é persistida por 30 min. O horário de
+    # corte é reaplicado abaixo, portanto jogos que ficaram próximos do início
+    # não são reutilizados indevidamente.
+    cached_candidate_pack = None if force_refresh else _gm_daily_pick_disk_cache_load(today.isoformat(), "candidates")
+    if cached_candidate_pack:
+        raw_candidates = [dict(c) for c in (cached_candidate_pack.get("candidates") or []) if isinstance(c, dict)]
+        cutoff_iso = cutoff_at.isoformat()
+        candidates = []
+        for c in raw_candidates:
+            try:
+                ko = datetime.fromisoformat(str(c.get("kickoff_at") or ""))
+            except Exception:
+                ko = None
+            if ko is not None and ko > cutoff_at:
+                candidates.append(c)
+        meta = dict(cached_candidate_pack.get("meta") or {})
+        meta["persistent_candidate_cache_hit"] = True
+        meta["cutoff_at"] = cutoff_iso
+        meta["candidates"] = len(candidates)
+    else:
+        candidates, meta = gm_daily_pick_candidates(today, cutoff_at=cutoff_at)
+        if not (meta or {}).get("error"):
+            _gm_daily_pick_disk_cache_save(
+                today.isoformat(),
+                {"candidates": candidates, "meta": meta},
+                "candidates",
+            )
     _source_seconds = time.perf_counter() - _source_started
     if meta.get("error"):
         return {"ok": False, "reason": "source_error", "meta": meta}
@@ -13798,13 +13886,14 @@ def gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=5):
 
 
 def gm_daily_pick_expand_cached_admin_options(prepared, per_kind=5):
-    """Expande opções usando somente a base já preparada; não atualiza odds/previsões."""
+    """V148: acrescenta novas opções sobre a base pronta, sem refazer coleta pesada."""
     _perf_started = time.perf_counter()
     profile = gm_auth_get_profile(force=False)
     if (profile or {}).get("role") != "admin":
         return {"ok": False, "reason": "admin_only"}
     if not isinstance(prepared, dict) or not prepared.get("ok"):
         return {"ok": False, "reason": "cache_unavailable"}
+
     candidates = [dict(c) for c in (prepared.get("candidates") or []) if isinstance(c, dict)]
     if not candidates:
         return {"ok": False, "reason": "cache_unavailable"}
@@ -13813,6 +13902,7 @@ def gm_daily_pick_expand_cached_admin_options(prepared, per_kind=5):
     recent_rows = gm_daily_pick_recent(100)
     existing_rows = [r for r in recent_rows if str(r.get("pick_date") or "") == today.isoformat()]
     history_market_counts, history_family_counts, history_kind_market_counts = _gm_daily_recent_market_rotation(recent_rows, today)
+
     published_legs = set()
     for row in existing_rows:
         for leg in (row.get("legs") or []):
@@ -13820,25 +13910,55 @@ def gm_daily_pick_expand_cached_admin_options(prepared, per_kind=5):
             code = str((leg or {}).get("market_code") or "").strip()
             if mid and code:
                 published_legs.add((mid, code))
+
     discarded_signatures = _gm_daily_pick_load_discarded(today, force=False)
+    current_options = prepared.get("options") or {}
     options = {}
+
+    # Em vez de recalcular até 5 combinações por categoria, cada clique acrescenta
+    # no máximo UMA nova alternativa por categoria. Isso mantém os mesmos filtros
+    # estatísticos e torna "Carregar mais" progressivo e muito mais leve.
     for kind in ("matadeira", "dica", "bingo"):
-        discarded_kind_count = sum(1 for sig in discarded_signatures if sig)
-        raw_limit = min(30, max(per_kind, per_kind + discarded_kind_count))
+        existing_opts = [
+            dict(o) for o in (current_options.get(kind) or [])
+            if isinstance(o, dict) and _gm_daily_pick_option_signature(o) not in discarded_signatures
+        ]
+        avoid_legs = set(published_legs)
+        for opt in existing_opts:
+            for leg in (opt.get("legs") or []):
+                mid = str((leg or {}).get("match_id") or "").strip()
+                code = str((leg or {}).get("market_code") or "").strip()
+                if mid and code:
+                    avoid_legs.add((mid, code))
+
         generated = gm_daily_pick_candidate_options(
-            candidates, kind, limit=raw_limit,
+            candidates,
+            kind,
+            limit=1,
             history_market_counts=history_market_counts,
             history_family_counts=history_family_counts,
             history_kind_market_counts=history_kind_market_counts,
-            initial_avoid_legs=published_legs,
+            initial_avoid_legs=avoid_legs,
         )
-        options[kind] = [o for o in generated if _gm_daily_pick_option_signature(o) not in discarded_signatures][:per_kind]
+        for opt in generated:
+            sig = _gm_daily_pick_option_signature(opt)
+            if sig and sig not in discarded_signatures and all(
+                _gm_daily_pick_option_signature(x) != sig for x in existing_opts
+            ):
+                existing_opts.append(opt)
+        options[kind] = existing_opts
+
     meta = dict(prepared.get("meta") or {})
     meta["perf_expand_seconds"] = round(time.perf_counter() - _perf_started, 3)
-    meta["perf_options_per_kind"] = int(per_kind)
-    meta["expanded_from_cached_source"] = True
-    return {"ok": True, "reason": "expanded_cached", "options": options, "meta": meta, "rows": existing_rows, "candidates": candidates}
-
+    meta["progressive_expand_v148"] = True
+    return {
+        "ok": True,
+        "reason": "expanded_cached",
+        "options": options,
+        "meta": meta,
+        "rows": existing_rows,
+        "candidates": candidates,
+    }
 
 def gm_daily_pick_publish_selected(choice):
     """Publica somente uma alternativa explicitamente aprovada pelo administrador."""
