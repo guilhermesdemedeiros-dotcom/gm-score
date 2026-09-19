@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-19-v146-multiple-daily-picks"
+GM_BUILD = "2026-09-19-v147-multiple-daily-picks-dbfix"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -13887,39 +13887,8 @@ def gm_daily_pick_publish_selected(choice):
 
 
 def gm_daily_pick_recent(limit=80):
-    """V146: retorna todas as publicações do ciclo, inclusive várias do mesmo tipo/dia.
-
-    A RPC histórica pode consolidar por data/categoria. Primeiro tentamos a tabela
-    autenticada diretamente (sempre sob RLS do Supabase), preservando cada registro
-    individual aprovado. Se a política da instalação não permitir SELECT direto,
-    mantemos compatibilidade usando a RPC existente.
-    """
-    safe_limit = max(1, min(int(limit), 140))
-    rows = None
-    try:
-        client = gm_auth_client_from_session()
-        if client is not None:
-            result = (
-                client.table("gm_daily_picks")
-                .select("*")
-                .gte("pick_date", GM_DAILY_PICK_RESET_DATE.isoformat())
-                .order("pick_date", desc=True)
-                .order("created_at", desc=True)
-                .limit(safe_limit)
-                .execute()
-            )
-            direct_rows = getattr(result, "data", None)
-            if isinstance(direct_rows, list):
-                rows = direct_rows
-    except Exception:
-        rows = None
-
-    if rows is None:
-        rows = gm_daily_pick_rpc(
-            "gm_daily_pick_recent_v2",
-            {"p_limit": max(1, min(safe_limit, 100))}
-        ) or []
-
+    """V147: lê as publicações oficiais pela RPC autenticada, preservando múltiplas do mesmo tipo/dia."""
+    rows = gm_daily_pick_rpc("gm_daily_pick_recent_v2", {"p_limit": max(1, min(int(limit), 100))}) or []
     clean = []
     seen_ids = set()
     for r in rows:
@@ -13934,9 +13903,6 @@ def gm_daily_pick_recent(limit=80):
             continue
         if pick_day < GM_DAILY_PICK_RESET_DATE:
             continue
-
-        # Não consolida por kind/data. Só elimina duplicata do MESMO registro caso
-        # alguma resposta de backend o repita.
         row_id = str(r.get("id") or "").strip()
         if row_id:
             if row_id in seen_ids:
@@ -13944,7 +13910,6 @@ def gm_daily_pick_recent(limit=80):
             seen_ids.add(row_id)
         clean.append(r)
     return clean
-
 
 def _gm_daily_recent_market_rotation(rows, today):
     """Conta uso recente de mercados com peso por recência para incentivar rotação."""
