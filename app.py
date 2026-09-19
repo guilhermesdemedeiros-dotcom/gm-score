@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-19-v149-fast-batch-fixtures"
+GM_BUILD = "2026-09-19-v150-global-performance-direct-fixture"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -2670,14 +2670,21 @@ def gm_admin_bets_client():
 
 
 def gm_admin_bets_list(active_only=False, limit=100):
-    # Lista publicações manuais; o RLS define o acesso.
+    # V150: cache curto por sessão; evita SELECT repetido em cada rerun da Home.
+    _key = f"{bool(active_only)}:{int(limit)}"
+    _now = time.time()
+    _all = st.session_state.setdefault("_gm_admin_bets_cache", {})
+    _cached = _all.get(_key) if isinstance(_all, dict) else None
+    if isinstance(_cached, dict) and (_now - float(_cached.get("at") or 0)) < 30:
+        return list(_cached.get("rows") or [])
     client = gm_admin_bets_client()
     query = client.table("gm_admin_bets").select("*").order("created_at", desc=True).limit(int(limit))
     if active_only:
         query = query.eq("is_active", True)
     result = query.execute()
-    rows = getattr(result, "data", None) or []
-    return [row for row in rows if isinstance(row, dict)]
+    rows = [row for row in (getattr(result, "data", None) or []) if isinstance(row, dict)]
+    _all[_key] = {"at": _now, "rows": rows}
+    return rows
 
 
 def gm_admin_bet_is_current(row):
@@ -11655,6 +11662,9 @@ def gm_resolve_direct_fixture_team(payload, side, teams):
     return None
 
 
+_GM_DIRECT_PROFILE_CACHE = {}
+_GM_DIRECT_PROFILE_CACHE_TTL = 1800
+
 def gm_hydrate_direct_fixture_rows(df, payload):
     """Completa somente linhas ausentes da partida aberta pela agenda.
 
@@ -11673,10 +11683,16 @@ def gm_hydrate_direct_fixture_rows(df, payload):
     teams = df["Time"].dropna().astype(str).tolist()
     if gm_resolve_direct_fixture_team(payload, "home", teams) and gm_resolve_direct_fixture_team(payload, "away", teams):
         return df
-    try:
-        profiles = gm_apifootball_pair_profiles(home, away, competition_name=competition, limit_per_team=20, lookback_days=520)
-    except Exception:
-        return df
+    _cache_key = (competition, home, away)
+    _cached = _GM_DIRECT_PROFILE_CACHE.get(_cache_key)
+    if _cached and (time.time() - float(_cached.get("at") or 0)) < _GM_DIRECT_PROFILE_CACHE_TTL:
+        profiles = _cached.get("profiles")
+    else:
+        try:
+            profiles = gm_apifootball_pair_profiles(home, away, competition_name=competition, limit_per_team=20, lookback_days=520)
+            _GM_DIRECT_PROFILE_CACHE[_cache_key] = {"at": time.time(), "profiles": profiles}
+        except Exception:
+            return df
     if not isinstance(profiles, dict):
         return df
     out = df.copy()
@@ -11893,6 +11909,12 @@ def render_analysis():
                 _diag_profile = None
             if (_diag_profile or {}).get("role") == "admin":
                 with st.expander("🧪 Diagnóstico da agenda (admin)", expanded=False):
+                    # V150: expander fechado ainda executa Python no Streamlit.
+                    # As chamadas extras de rede só rodam sob solicitação explícita.
+                    _run_agenda_diag = st.button(
+                        "Executar diagnóstico da agenda",
+                        key=f"gm_run_agenda_diag_{main_fixture_date}_{league_name}",
+                    )
                     _diag_sources = []
                     _checks = [
                         ("APIfootball · predictions", lambda: load_apifootball_prediction_fixtures_for_date(main_fixture_date, league_name)),
@@ -11902,7 +11924,7 @@ def render_analysis():
                         ("ESPN", lambda: [x for x in load_espn_fixtures_for_date(main_fixture_date) if x.get("competition") == league_name]),
                         ("TheSportsDB", lambda: [x for x in load_thesportsdb_fixtures_for_date(main_fixture_date) if x.get("competition") == league_name]),
                     ]
-                    for _label, _call in _checks:
+                    for _label, _call in (_checks if _run_agenda_diag else []):
                         try:
                             _rows = _call() or []
                             _diag_sources.append((_label, _rows, None))
@@ -11941,19 +11963,34 @@ def render_analysis():
                         away_candidate = (away_identity or {}).get("name") or game_away
                         resolved_game_home = resolve_team_name(home_candidate, teams) or resolve_team_name(game_home, teams)
                         resolved_game_away = resolve_team_name(away_candidate, teams) or resolve_team_name(game_away, teams)
-                        if not resolved_game_home or not resolved_game_away:
-                            st.warning("Este confronto está na agenda oficial, mas uma das equipes ainda não possui base histórica suficiente nesta competição para abrir a análise.")
-                        else:
-                            st.session_state.selected_home = resolved_game_home
-                            st.session_state.selected_away = resolved_game_away
-                            st.session_state.loaded_home = resolved_game_home
-                            st.session_state.loaded_away = resolved_game_away
-                            st.session_state.loaded_competition = league_name
-                            st.session_state["_main_games_hidden_competition"] = league_name
-                            st.session_state["home_widget"] = resolved_game_home
-                            st.session_state["away_widget"] = resolved_game_away
-                            st.session_state["_synced_loaded_signature"] = f"{league_name}|{resolved_game_home}|{resolved_game_away}"
-                            st.rerun()
+                        # V150: fixture oficial entra no fluxo direto mesmo se uma
+                        # equipe ainda não estiver na base histórica principal. A
+                        # análise já possui hidratação real pela APIfootball.
+                        _direct_home = resolved_game_home or str(home_candidate or game_home)
+                        _direct_away = resolved_game_away or str(away_candidate or game_away)
+                        st.session_state["gm_games_direct_match"] = {
+                            "fixture_id": (f or {}).get("fixture_id") or (f or {}).get("match_id"),
+                            "match_id": (f or {}).get("match_id") or (f or {}).get("fixture_id"),
+                            "league_id": (f or {}).get("league_id"),
+                            "competition": league_name,
+                            "date": str(main_fixture_date),
+                            "time": (f or {}).get("time"),
+                            "home": str(game_home or _direct_home),
+                            "away": str(game_away or _direct_away),
+                            "home_team_id": (f or {}).get("home_team_id") or (home_identity or {}).get("id"),
+                            "away_team_id": (f or {}).get("away_team_id") or (away_identity or {}).get("id"),
+                        }
+                        st.session_state["gm_analysis_origin"] = "games"
+                        st.session_state.selected_home = _direct_home
+                        st.session_state.selected_away = _direct_away
+                        st.session_state.loaded_home = _direct_home
+                        st.session_state.loaded_away = _direct_away
+                        st.session_state.loaded_competition = league_name
+                        st.session_state["_main_games_hidden_competition"] = league_name
+                        st.session_state["home_widget"] = _direct_home
+                        st.session_state["away_widget"] = _direct_away
+                        st.session_state["_synced_loaded_signature"] = f"{league_name}|{_direct_home}|{_direct_away}"
+                        st.rerun()
             else:
                 st.info("Nenhum jogo profissional masculino encontrado para esta competição na data selecionada. Você ainda pode usar **🎯 Selecionar equipes**.")
 
@@ -13817,7 +13854,7 @@ def gm_daily_pick_candidate_options(candidates, pick_kind="dica", limit=5, histo
     return options
 
 
-def gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=5):
+def gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=1):
     """Prepara opções do dia para o ADM sem gravar candidatos em gm_daily_picks."""
     _perf_started = time.perf_counter()
     # V125: evita round-trip de autenticação em cada ação administrativa.
@@ -14024,12 +14061,20 @@ def gm_daily_pick_publish_selected(choice):
         },
     }
     data = gm_daily_pick_rpc("gm_daily_pick_publish_v2", payload)
+    st.session_state.pop("_gm_daily_pick_recent_cache", None)
     return {"ok": True, "reason": "published", "data": data}
 
 
 def gm_daily_pick_recent(limit=80):
-    """V147: lê as publicações oficiais pela RPC autenticada, preservando múltiplas do mesmo tipo/dia."""
-    rows = gm_daily_pick_rpc("gm_daily_pick_recent_v2", {"p_limit": max(1, min(int(limit), 100))}) or []
+    """V150: leitura oficial com cache curto por sessão para evitar RPC em toda navegação."""
+    _limit = max(1, min(int(limit), 100))
+    _now = time.time()
+    _cache = st.session_state.get("_gm_daily_pick_recent_cache")
+    if isinstance(_cache, dict) and int(_cache.get("limit") or 0) >= _limit and (_now - float(_cache.get("at") or 0)) < 30:
+        rows = list(_cache.get("rows") or [])[:_limit]
+    else:
+        rows = gm_daily_pick_rpc("gm_daily_pick_recent_v2", {"p_limit": _limit}) or []
+        st.session_state["_gm_daily_pick_recent_cache"] = {"at": _now, "limit": _limit, "rows": list(rows)}
     clean = []
     seen_ids = set()
     for r in rows:
