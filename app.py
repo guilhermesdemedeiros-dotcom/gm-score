@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-19-v145-admin-picks-responsive"
+GM_BUILD = "2026-09-19-v146-multiple-daily-picks"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -13887,9 +13887,41 @@ def gm_daily_pick_publish_selected(choice):
 
 
 def gm_daily_pick_recent(limit=80):
-    """V105: expõe somente o novo ciclo iniciado em 16/09/2026."""
-    rows = gm_daily_pick_rpc("gm_daily_pick_recent_v2", {"p_limit": max(1, min(int(limit), 100))}) or []
+    """V146: retorna todas as publicações do ciclo, inclusive várias do mesmo tipo/dia.
+
+    A RPC histórica pode consolidar por data/categoria. Primeiro tentamos a tabela
+    autenticada diretamente (sempre sob RLS do Supabase), preservando cada registro
+    individual aprovado. Se a política da instalação não permitir SELECT direto,
+    mantemos compatibilidade usando a RPC existente.
+    """
+    safe_limit = max(1, min(int(limit), 140))
+    rows = None
+    try:
+        client = gm_auth_client_from_session()
+        if client is not None:
+            result = (
+                client.table("gm_daily_picks")
+                .select("*")
+                .gte("pick_date", GM_DAILY_PICK_RESET_DATE.isoformat())
+                .order("pick_date", desc=True)
+                .order("created_at", desc=True)
+                .limit(safe_limit)
+                .execute()
+            )
+            direct_rows = getattr(result, "data", None)
+            if isinstance(direct_rows, list):
+                rows = direct_rows
+    except Exception:
+        rows = None
+
+    if rows is None:
+        rows = gm_daily_pick_rpc(
+            "gm_daily_pick_recent_v2",
+            {"p_limit": max(1, min(safe_limit, 100))}
+        ) or []
+
     clean = []
+    seen_ids = set()
     for r in rows:
         if not isinstance(r, dict):
             continue
@@ -13900,8 +13932,17 @@ def gm_daily_pick_recent(limit=80):
             pick_day = datetime.fromisoformat(str(r.get("pick_date") or "")).date()
         except Exception:
             continue
-        if pick_day >= GM_DAILY_PICK_RESET_DATE:
-            clean.append(r)
+        if pick_day < GM_DAILY_PICK_RESET_DATE:
+            continue
+
+        # Não consolida por kind/data. Só elimina duplicata do MESMO registro caso
+        # alguma resposta de backend o repita.
+        row_id = str(r.get("id") or "").strip()
+        if row_id:
+            if row_id in seen_ids:
+                continue
+            seen_ids.add(row_id)
+        clean.append(r)
     return clean
 
 
@@ -14169,6 +14210,8 @@ def gm_render_daily_pick_page():
 
     if is_admin:
         st.markdown("### 📅 Hoje — publicado para clientes")
+    # V146: cada aprovação é um card próprio. Não existe limite de uma publicação
+    # por categoria: 3 Matadeiras + 2 Dicas + 1 Bingo => 6 cards no cliente Pro.
     for kind in ("matadeira","dica","bingo"):
         today_rows = lookup_all(today, kind)
         if not today_rows:
