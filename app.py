@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-19-v150-global-performance-direct-fixture"
+GM_BUILD = "2026-09-19-v151-free-daily-picks-preview"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -14624,29 +14624,110 @@ def gm_render_news_page():
 
 
 def gm_render_daily_pick_free_page():
-    """Experiência Free: histórico completo, sem entregar seleções atuais."""
+    # V151: prévia das Dicas atuais sem renderizar seleção nem link no plano Free.
     st.markdown("## 💡 Dicas do Dia")
-    gm_render_pro_lock(
-        "Dicas de hoje são exclusivas do GM SCORE Pro",
-        "No Free você acompanha os resultados já encerrados. As seleções atuais ficam protegidas no servidor.",
-        key="gm_daily_free_pro",
+    st.markdown(
+        '<div class="gm-risk-rule"><span class="gm-risk-green">QUANTO MAIOR A ODD</span><span class="gm-risk-arrow">→</span><span class="gm-risk-red">MENORES AS CHANCES</span></div>',
+        unsafe_allow_html=True,
     )
     try:
         rows = gm_daily_pick_recent(140) or []
     except Exception:
-        st.caption("O histórico não pôde ser carregado agora.")
+        st.caption("As Dicas do Dia não puderam ser carregadas agora.")
         return
 
     today = datetime.now(BRASILIA_TZ).date()
+    today_iso = today.isoformat()
+    current = [
+        r for r in rows
+        if str(r.get("pick_date") or "") == today_iso
+        and str(r.get("status") or "") == "pending"
+        and str(r.get("pick_kind") or "dica") in {"matadeira", "dica", "bingo"}
+    ]
+    current.sort(key=lambda r: (
+        {"matadeira": 0, "dica": 1, "bingo": 2}.get(str(r.get("pick_kind") or "dica"), 9),
+        str(r.get("created_at") or ""),
+    ))
+
+    if current:
+        plural = len(current) != 1
+        teaser = (
+            f'<div class="gm-free-picks-teaser"><b>🔥 {len(current)} oportunidade'
+            f'{"s" if plural else ""} PRO disponível{"is" if plural else ""} hoje</b>'
+            '<div>Veja confrontos, horários e indicadores. A seleção exata e o acesso à aposta são exclusivos do GM SCORE Pro.</div></div>'
+        )
+        st.markdown(teaser, unsafe_allow_html=True)
+
+        for idx, row in enumerate(current):
+            kind = str(row.get("pick_kind") or "dica")
+            profile = GM_DAILY_PICK_PROFILES.get(kind, GM_DAILY_PICK_PROFILES["dica"])
+            label = "📊 Dica Principal" if kind == "dica" else profile.get("label", "Dica do Dia")
+            legs = _gm_daily_sort_legs(row.get("legs") or [])
+            total_odd = _gm_daily_num(row.get("total_odd")) or 0.0
+            btype = _gm_daily_bet_type_label(row.get("bet_type"), len(legs))
+
+            card = [
+                f'<div class="gm-pick-card gm-kind-{html.escape(kind)}">',
+                '<div class="gm-pick-head"><div>',
+                f'<div class="gm-pick-title">{html.escape(label)}</div>',
+                f'<div class="gm-pick-muted">{today:%d/%m/%Y} • {html.escape(btype)} • {_gm_daily_status_badge(row.get("status"))}</div>',
+                '</div><div><div class="gm-pick-muted">ODD TOTAL</div>',
+                f'<div class="gm-pick-odd">{total_odd:.2f}</div></div></div>',
+            ]
+
+            for leg in legs:
+                # FREE: market, odd da perna, bookmaker e URL não entram no HTML.
+                time_label = _gm_daily_time_label(leg.get("time"))
+                prob = _gm_daily_num(leg.get("probability"))
+                conf = str(leg.get("confidence_band") or (_gm_daily_confidence_band(prob) if prob is not None else ""))
+                prob_txt = f" • prob. estimada {prob:.0f}% • {html.escape(conf)}" if prob is not None else ""
+                comp = str(leg.get("competition") or "")
+                game_text = f"{str(leg.get('home') or '')} × {str(leg.get('away') or '')}"
+                card.append(
+                    '<div class="gm-pick-leg">'
+                    '<div class="gm-free-market-lock">'
+                    '<span class="gm-free-market-blur">MERCADO EXCLUSIVO PRO</span>'
+                    '<span class="gm-free-market-lock-label">🔒 Seleção exclusiva PRO</span>'
+                    '</div>'
+                    f'<div class="gm-pick-muted">🕒 {html.escape(time_label)} • ⚽ {html.escape(game_text)} • {html.escape(comp)}{prob_txt}</div>'
+                    '</div>'
+                )
+
+            card.append("</div>")
+            st.markdown("".join(card), unsafe_allow_html=True)
+
+            unlock_key = str(row.get("id") or idx)
+            if st.button("🔒 Desbloquear aposta com PRO", use_container_width=True, key=f"gm_free_daily_unlock_{unlock_key}"):
+                st.session_state["_gm_free_daily_upgrade_open"] = unlock_key
+            if st.session_state.get("_gm_free_daily_upgrade_open") == unlock_key:
+                gm_render_pro_lock(
+                    "Seja PRO para acessar esta aposta",
+                    "O GM SCORE Pro libera a seleção exata, o mercado indicado e o acesso direto à aposta.",
+                    key=f"gm_free_daily_pro_{unlock_key}",
+                )
+    else:
+        st.info("Ainda não há Dicas do Dia publicadas para hoje.")
+
+    st.markdown(
+        '<style>'
+        '.gm-free-picks-teaser{background:linear-gradient(145deg,#0e1818,#0b1118);border:1px solid rgba(52,230,129,.42);border-radius:15px;padding:13px 14px;margin:.65rem 0 1rem;color:#f8fafc}'
+        '.gm-free-picks-teaser b{color:#34e681;font-size:1rem}.gm-free-picks-teaser div{color:#a8b3c2;font-size:.78rem;margin-top:4px}'
+        '.gm-free-market-lock{position:relative;min-height:35px;margin-bottom:5px;border-radius:9px;overflow:hidden;background:#0b1219;border:1px solid rgba(148,163,184,.12)}'
+        '.gm-free-market-blur{display:block;padding:8px 10px;color:#d7dee7;font-weight:900;letter-spacing:.04em;filter:blur(6px);opacity:.42;user-select:none}'
+        '.gm-free-market-lock-label{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#f8fafc;font-weight:900;font-size:.82rem;background:rgba(10,15,21,.58);backdrop-filter:blur(1px)}'
+        '</style>',
+        unsafe_allow_html=True,
+    )
+
     past = [
         r for r in rows
-        if str(r.get("pick_date") or "") < today.isoformat()
+        if str(r.get("pick_date") or "") < today_iso
         and str(r.get("status") or "") in {"green", "red", "void"}
     ]
     past.sort(key=lambda r: (str(r.get("pick_date") or ""), str(r.get("created_at") or "")), reverse=True)
 
     st.markdown("### 📊 Resultados anteriores")
-    st.caption("Histórico público das Dicas do Dia já encerradas. Nenhuma seleção atual é enviada ao plano Free.")
+    st.caption("Histórico público das Dicas do Dia já encerradas.")
     if not past:
         st.caption("Ainda não há resultados anteriores publicados.")
         return
@@ -14654,6 +14735,8 @@ def gm_render_daily_pick_free_page():
     for row in past[:30]:
         kind = str(row.get("pick_kind") or "dica")
         label = GM_DAILY_PICK_PROFILES.get(kind, {}).get("label", "Dica do Dia")
+        if kind == "dica":
+            label = "📊 Dica Principal"
         status = _gm_daily_status_badge(row.get("status"))
         odd = _gm_daily_num(row.get("total_odd")) or 0.0
         date_txt = str(row.get("pick_date") or "")
@@ -14670,7 +14753,11 @@ def gm_render_daily_pick_free_page():
                 st.markdown(f"**{leg.get('market') or 'Mercado'}** @ {leg_odd:.2f}")
                 st.caption(f"🕒 {_gm_daily_time_label(leg.get('time'))} • ⚽ {leg.get('home')} × {leg.get('away')} • {leg.get('competition') or ''}")
 
-    settled_standard = [r for r in past if str(r.get("pick_kind") or "dica") in {"matadeira", "dica"} and str(r.get("status") or "") in {"green", "red"}]
+    settled_standard = [
+        r for r in past
+        if str(r.get("pick_kind") or "dica") in {"matadeira", "dica"}
+        and str(r.get("status") or "") in {"green", "red"}
+    ]
     if settled_standard:
         greens = sum(1 for r in settled_standard if str(r.get("status")) == "green")
         reds = sum(1 for r in settled_standard if str(r.get("status")) == "red")
