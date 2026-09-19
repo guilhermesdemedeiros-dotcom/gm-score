@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-19-v139-session-browser-persist"
+GM_BUILD = "2026-09-19-v140-admin-lazy-sections"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -3002,15 +3002,24 @@ def gm_render_admin_panel(profile):
         if st.button("🔄 Atualizar", use_container_width=True, key="gm_admin_refresh", help="Atualizar dados do painel"):
             st.rerun()
 
-    tab_system, tab_tips, tab_admin_bets, tab_news, tab_reviews, tab_vip = st.tabs([
+    # V140: st.tabs executa o conteúdo de TODAS as abas em cada rerun, inclusive
+    # diagnósticos pesados do sistema. O seletor abaixo mantém a mesma separação
+    # administrativa, mas executa somente a seção escolhida.
+    _admin_sections = [
         "⚽ Jogos / Sistema",
         "💡 Dicas do Dia",
         "⭐ Apostas do ADM",
         "📰 Novidades",
         "⭐ Avaliações",
         "👥 Clientes / VIP",
-    ])
-    with tab_system:
+    ]
+    _admin_section = st.radio(
+        "Área administrativa",
+        _admin_sections,
+        horizontal=True,
+        key="gm_admin_active_section",
+    )
+    if _admin_section == "⚽ Jogos / Sistema":
         st.markdown("### ⚽ Jogos e operação do sistema")
         st.caption("Controles administrativos de atualização e diagnóstico. A experiência normal de Jogos permanece idêntica à do cliente VIP.")
         gm_admin_fixture_date = st.date_input(
@@ -3102,15 +3111,15 @@ def gm_render_admin_panel(profile):
         gm_render_apifootball_league_audit()
         gm_render_apifootball_stat_audit()
         gm_render_calibration_dashboard()
-    with tab_tips:
+    elif _admin_section == "💡 Dicas do Dia":
         gm_render_admin_daily_pick_approval()
-    with tab_admin_bets:
+    elif _admin_section == "⭐ Apostas do ADM":
         gm_render_admin_bets_manager()
-    with tab_news:
+    elif _admin_section == "📰 Novidades":
         gm_render_admin_news_manager()
-    with tab_reviews:
+    elif _admin_section == "⭐ Avaliações":
         gm_render_admin_reviews_manager()
-    with tab_vip:
+    elif _admin_section == "👥 Clientes / VIP":
         gm_render_admin_vip_manager()
 
     st.markdown("---")
