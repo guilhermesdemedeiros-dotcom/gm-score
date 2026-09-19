@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-18-v138-session-24h-rolling"
+GM_BUILD = "2026-09-19-v139-session-browser-persist"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -749,10 +749,14 @@ def gm_auth_fernet():
 
 
 def gm_auth_clear_resume_marker():
-    """Remove somente o marcador persistente de autenticação da URL."""
+    """Remove o marcador persistente e sinaliza ao navegador para apagar a cópia local."""
     try:
         if GM_AUTH_RESUME_PARAM in st.query_params:
             del st.query_params[GM_AUTH_RESUME_PARAM]
+        # V139: o Nginx injeta uma ponte mínima com localStorage para que o PWA/Safari
+        # consiga restaurar gm_resume mesmo quando reabre diretamente em "/". Este
+        # sinal é usado em logout, sessão substituída ou marcador inválido/expirado.
+        st.query_params["gm_logout"] = "1"
     except Exception:
         pass
 
