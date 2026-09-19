@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-19-v144-admin-picks-cache-expand"
+GM_BUILD = "2026-09-19-v145-admin-picks-responsive"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -2318,31 +2318,30 @@ def gm_render_admin_daily_pick_approval():
         pass
 
     cache_key = f"gm_daily_admin_options_{today.isoformat()}"
-    if cache_key not in st.session_state:
-        try:
-            with st.spinner("Preparando opções para avaliação do ADM..."):
-                # V143: primeira abertura prepara 1 alternativa por categoria. Isso reduz
-                # drasticamente o beam inicial; critérios e piso de 75% permanecem iguais.
-                # O botão Atualizar continua podendo preparar a fila completa.
-                st.session_state[cache_key] = gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=1)
-        except Exception as exc:
-            st.session_state[cache_key] = {"ok": False, "reason": type(exc).__name__}
+    _has_prepared = isinstance(st.session_state.get(cache_key), dict) and bool(st.session_state.get(cache_key))
 
     a1, a2 = st.columns(2)
-    if a1.button("🔄 Carregar mais opções", use_container_width=True, key="gm_admin_daily_refresh_candidates"):
+    _load_label = "🔄 Carregar mais opções" if _has_prepared else "💡 Preparar opções"
+    if a1.button(_load_label, use_container_width=True, key="gm_admin_daily_refresh_candidates"):
         try:
-            with st.spinner("Montando mais opções com os dados já carregados..."):
-                _cached_prepared = st.session_state.get(cache_key) or {}
-                _expanded = gm_daily_pick_expand_cached_admin_options(_cached_prepared, per_kind=5)
-                if _expanded.get("ok"):
-                    st.session_state[cache_key] = _expanded
-                else:
-                    # Compatibilidade com sessão criada antes da V144: faz uma única
-                    # preparação normal e, dali em diante, reutiliza a base em cache.
-                    st.session_state[cache_key] = gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=5)
+            if not _has_prepared:
+                with st.spinner("Preparando opções para avaliação do ADM..."):
+                    # V145: a Central abre imediatamente. O cálculo pesado só começa
+                    # por ação explícita do ADM, evitando travar navegação/reruns gerais.
+                    st.session_state[cache_key] = gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=1)
+            else:
+                with st.spinner("Montando mais opções com os dados já carregados..."):
+                    _cached_prepared = st.session_state.get(cache_key) or {}
+                    _expanded = gm_daily_pick_expand_cached_admin_options(_cached_prepared, per_kind=5)
+                    if _expanded.get("ok"):
+                        st.session_state[cache_key] = _expanded
+                    else:
+                        # Só usa a fonte novamente se a sessão realmente não possuir
+                        # a base preparada; nunca força atualização de odds neste botão.
+                        st.session_state[cache_key] = gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=1)
             st.rerun()
         except Exception as exc:
-            st.error("Não foi possível carregar mais opções agora.")
+            st.error("Não foi possível preparar as opções agora.")
             st.caption(type(exc).__name__)
     if a2.button("✅ Conferir resultados", use_container_width=True, key="gm_admin_daily_settle_now"):
         try:
@@ -2354,6 +2353,9 @@ def gm_render_admin_daily_pick_approval():
             st.caption(type(exc).__name__)
 
     prepared = st.session_state.get(cache_key) or {}
+    if not prepared:
+        st.info("Toque em **💡 Preparar opções** para calcular as alternativas do dia. A navegação permanece livre até você iniciar o processamento.")
+        return
     if not prepared.get("ok"):
         reason = str(prepared.get("reason") or "indisponivel")
         meta = prepared.get("meta") or {}
@@ -13649,29 +13651,52 @@ def gm_daily_pick_choose(candidates, pick_kind="dica", avoid_matches=None, avoid
         # B+A, A+C+B...), multiplicando CPU sem mudar nenhuma regra estatística.
         # last_idx elimina essas permutações: thresholds, odds, probabilidades,
         # diversidade e score permanecem exatamente os mesmos.
-        states=[([],1.0,set(),0.0,-1)]; best=None; beam_width=650
+        # V145 PERFORMANCE: mantém os mesmos filtros, faixas de odds, probabilidades
+        # e score, mas evita trabalho Python repetido dentro do beam. Metadados puros
+        # de cada perna são pré-calculados uma vez e os estados carregam tuplas/frozenset.
+        # A largura continua 650: não reduzimos a profundidade nem os critérios oficiais.
+        pool_meta = []
+        for c in pool:
+            pool_meta.append((
+                c,
+                str(c.get("match_id") or ""),
+                float(c.get("odd") or 1.0),
+                _gm_daily_market_family(c.get("market_code")),
+                str(c.get("market_code") or ""),
+            ))
+        states=[(tuple(),1.0,frozenset(),0.0,-1)]; best=None; beam_width=650
         for size in range(1,max_legs+1):
             expanded=[]
-            for legs,total,used,_,last_idx in states:
-                for idx in range(last_idx+1, len(pool)):
-                    c=pool[idx]
-                    mid=str(c.get("match_id") or "")
-                    if not mid or mid in used: continue
-                    nl=legs+[c]; no=total*float(c.get("odd") or 1.0)
-                    if max_odd is not None and no > max_odd*1.06: continue
-                    nu=set(used); nu.add(mid); rank=combo_rank(nl,no,kind)
-                    expanded.append((nl,no,nu,rank,idx))
+            for legs_idx,total,used,_,last_idx in states:
+                for idx in range(last_idx+1, len(pool_meta)):
+                    c,mid,c_odd,_,_ = pool_meta[idx]
+                    if not mid or mid in used:
+                        continue
+                    no=total*c_odd
+                    if max_odd is not None and no > max_odd*1.06:
+                        continue
+                    nl_idx=legs_idx+(idx,)
+                    nl=[pool_meta[i][0] for i in nl_idx]
+                    nu=used.union((mid,))
+                    rank=combo_rank(nl,no,kind)
+                    expanded.append((nl_idx,no,nu,rank,idx))
                     if size>=min_legs and no>=min_odd and (max_odd is None or no<=max_odd) and valid_diversity(nl,kind):
                         combo=_gm_daily_combo_payload(nl,"double" if size==2 else "triple" if size==3 else "multiple",kind)
                         combo["score"]=round(rank,3)
                         combo["model_meta_bingo"]={"strategy":"quality_fallback_bingo_v54","leg_count":len(nl),"markets":sorted({str(x.get('market_code') or '') for x in nl}),"families":sorted(set(_gm_daily_market_family(x.get('market_code')) for x in nl)),"min_leg_probability":round(min(float(x.get('probability') or 0) for x in nl),2),"min_leg_odd":round(min(float(x.get('odd') or 0) for x in nl),3),"max_leg_odd":round(max(float(x.get('odd') or 0) for x in nl),3),"avg_leg_odd":round(sum(float(x.get('odd') or 0) for x in nl)/len(nl),3)}
-                        if best is None or combo["score"]>best["score"]: best=combo
-            if not expanded: break
-            # dedup states by used match set + family profile
+                        if best is None or combo["score"]>best["score"]:
+                            best=combo
+            if not expanded:
+                break
+            # Mesma chave lógica de deduplicação da V144, calculada sem reconstruir
+            # dicionários/sets repetidamente.
             uniq={}
             for state in expanded:
-                legs,total,used,rank,last_idx=state; key=(tuple(sorted(used)),tuple(sorted(_gm_daily_market_family(x.get('market_code')) for x in legs)))
-                if key not in uniq or rank>uniq[key][3]: uniq[key]=state
+                legs_idx,total,used,rank,last_idx=state
+                fam_profile=tuple(sorted(pool_meta[i][3] for i in legs_idx))
+                key=(tuple(sorted(used)),fam_profile)
+                if key not in uniq or rank>uniq[key][3]:
+                    uniq[key]=state
             states=sorted(uniq.values(),key=lambda x:x[3],reverse=True)[:beam_width]
         return best
 
