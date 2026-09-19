@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-19-v148-fast-picks-adm-badge"
+GM_BUILD = "2026-09-19-v149-fast-batch-fixtures"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -10773,6 +10773,20 @@ def load_apifootball_all_competitions_fixtures_for_date(target_date):
 def load_fixtures_for_date(target_date):
     """Carrega somente jogos das competições suportadas para uma data de Brasília."""
     today = target_date
+    try:
+        _day_iso = pd.to_datetime(today).date().isoformat()
+    except Exception:
+        _day_iso = str(today)
+
+    # V149: agenda diária compartilhada e persistente. Depois da primeira montagem,
+    # Jogos/Home/Dicas reutilizam o mesmo resultado mesmo após reruns do Streamlit.
+    try:
+        _disk = _gm_daily_pick_disk_cache_load(_day_iso, "fixtures", ttl=1800)
+    except Exception:
+        _disk = None
+    if isinstance(_disk, dict) and isinstance(_disk.get("fixtures"), list):
+        return _disk.get("fixtures") or []
+
     fixtures = []
 
     # v42: primeiro recupera confrontos pelo endpoint de previsões, que já é
@@ -10982,7 +10996,12 @@ def load_fixtures_for_date(target_date):
             ff["home"] = resolve_team_name(ff.get("home"), roster) or ff.get("home")
             ff["away"] = resolve_team_name(ff.get("away"), roster) or ff.get("away")
         _merge_fixture_unique(best, ff)
-    return [x for x in best if valid_daily_fixture(x)]
+    result = [x for x in best if valid_daily_fixture(x)]
+    try:
+        _gm_daily_pick_disk_cache_save(_day_iso, {"fixtures": result}, "fixtures")
+    except Exception:
+        pass
+    return result
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -11316,16 +11335,37 @@ def resolve_team_name(candidate, teams):
             if ranked and (len(ranked) == 1 or ranked[0][0] > ranked[1][0]):
                 return ranked[0][1]
 
-    c_tokens = set(c.split("_")) - {"fc","cf","ac","sc","ec","club","de","da","do"}
-    best, best_score = None, 0.0
+    # V149: normaliza abreviações frequentes de provedores antes da similaridade.
+    # Ex.: "Nottm Forest" <-> "Nottingham Forest". A regra continua exigindo
+    # correspondência lexical forte e nunca escolhe entre dois candidatos empatados.
+    token_aliases = {
+        "nottm": "nottingham", "notts": "nottingham",
+        "utd": "united", "man": "manchester",
+        "weds": "wednesday", "intl": "internacional",
+    }
+    def _tokens(value):
+        raw = [x for x in clean_col(value).split("_") if x]
+        noise = {"fc","cf","ac","sc","ec","club","de","da","do"}
+        return {token_aliases.get(x, x) for x in raw if x not in noise}
+
+    c_tokens = _tokens(candidate)
+    ranked = []
     for t in teams:
-        tt = set(clean_col(t).split("_")) - {"fc","cf","ac","sc","ec","club","de","da","do"}
+        tt = _tokens(t)
         if not c_tokens or not tt:
             continue
-        score = len(c_tokens & tt) / len(c_tokens | tt)
-        if score > best_score:
-            best, best_score = t, score
-    return best if best_score >= 0.45 else None
+        inter = len(c_tokens & tt)
+        union = len(c_tokens | tt)
+        jaccard = (inter / union) if union else 0.0
+        coverage = inter / min(len(c_tokens), len(tt))
+        score = max(jaccard, coverage * 0.92)
+        ranked.append((score, t))
+    ranked.sort(key=lambda x: x[0], reverse=True)
+    if not ranked or ranked[0][0] < 0.60:
+        return None
+    if len(ranked) > 1 and ranked[0][0] - ranked[1][0] < 0.08 and ranked[0][0] < 0.96:
+        return None
+    return ranked[0][1]
 
 
 def gm_share_market_sections(team_a, team_b, probs, expectations, a, b, df, sample_games=0):
@@ -11888,10 +11928,21 @@ def render_analysis():
                         key=f"main_game_{main_fixture_date}_{i}_{clean_col(str(game_home))}_{clean_col(str(game_away))}",
                         use_container_width=True,
                     ):
-                        resolved_game_home = resolve_team_name(game_home, teams)
-                        resolved_game_away = resolve_team_name(game_away, teams)
+                        # V149: a agenda já possui identidade estrutural do fixture.
+                        # Primeiro usa IDs oficiais para obter o nome canônico; o
+                        # resolvedor textual fica apenas como fallback para a base histórica.
+                        home_identity = gm_fixture_official_team_identity(
+                            game_home, league_name, (f or {}).get("home_team_id")
+                        )
+                        away_identity = gm_fixture_official_team_identity(
+                            game_away, league_name, (f or {}).get("away_team_id")
+                        )
+                        home_candidate = (home_identity or {}).get("name") or game_home
+                        away_candidate = (away_identity or {}).get("name") or game_away
+                        resolved_game_home = resolve_team_name(home_candidate, teams) or resolve_team_name(game_home, teams)
+                        resolved_game_away = resolve_team_name(away_candidate, teams) or resolve_team_name(game_away, teams)
                         if not resolved_game_home or not resolved_game_away:
-                            st.warning("Não consegui associar este jogo às equipes da competição.")
+                            st.warning("Este confronto está na agenda oficial, mas uma das equipes ainda não possui base histórica suficiente nesta competição para abrir a análise.")
                         else:
                             st.session_state.selected_home = resolved_game_home
                             st.session_state.selected_away = resolved_game_away
@@ -13135,7 +13186,7 @@ def _gm_daily_pick_disk_cache_save(target_date_iso, payload, kind="source"):
         return False
 
 def _gm_daily_pick_disk_cache_clear(target_date_iso):
-    for kind in ("source", "candidates"):
+    for kind in ("source", "candidates", "fixtures"):
         try:
             os.remove(_gm_daily_pick_disk_cache_path(target_date_iso, kind))
         except FileNotFoundError:
@@ -13204,7 +13255,11 @@ def gm_daily_pick_source_payload(target_date_iso):
     if odds_err or not isinstance(odds, list):
         odds = []
 
-    # 3) Completa SOMENTE os eventos oficiais ausentes dos lotes globais.
+    # 3) V149 PERFORMANCE: o preparo interativo usa somente os lotes por data.
+    # As consultas individuais por match_id eram a causa do bloqueio de vários
+    # minutos em dias com muitos jogos. Elas não alteravam os thresholds; apenas
+    # tentavam completar cobertura. Agora o ADM recebe rapidamente os mercados
+    # que já possuem previsão + odds no lote oficial, sem baixar critérios.
     pred_by_match = {
         str(r.get("match_id") or "").strip(): r
         for r in predictions if isinstance(r, dict) and str(r.get("match_id") or "").strip()
@@ -13216,47 +13271,10 @@ def gm_daily_pick_source_payload(target_date_iso):
             if mid:
                 odds_by_match.setdefault(mid, []).append(row)
 
-    # V143 PERFORMANCE: os complementos por match_id são I/O independente.
-    # Antes, até ~70 partidas podiam gerar consultas individuais em série. Fazemos
-    # exatamente as mesmas consultas em paralelo, sem alterar fontes, thresholds,
-    # probabilidades, odds ou critérios de elegibilidade.
+    missing_prediction_ids = [mid for mid in official_match_ids if mid not in pred_by_match]
+    missing_odds_ids = [mid for mid in official_match_ids if mid not in odds_by_match]
     direct_prediction_hits = 0
     direct_odds_hits = 0
-
-    def _load_missing_match(mid):
-        pred_row = None
-        odd_rows = None
-        if mid not in pred_by_match:
-            rows, err = gm_apifootball_request("get_predictions", match_id=mid)
-            if not err and isinstance(rows, list):
-                for row in rows:
-                    if isinstance(row, dict) and str(row.get("match_id") or "").strip() == mid:
-                        pred_row = row
-                        break
-        if mid not in odds_by_match:
-            rows, err = gm_apifootball_request("get_odds", match_id=mid)
-            if not err and isinstance(rows, list):
-                valid = [r for r in rows if isinstance(r, dict) and str(r.get("match_id") or "").strip() == mid]
-                if valid:
-                    odd_rows = valid
-        return mid, pred_row, odd_rows
-
-    missing_ids = [mid for mid in official_match_ids if mid not in pred_by_match or mid not in odds_by_match]
-    if missing_ids:
-        with ThreadPoolExecutor(max_workers=min(8, len(missing_ids))) as pool:
-            futures = [pool.submit(_load_missing_match, mid) for mid in missing_ids]
-            for future in as_completed(futures):
-                try:
-                    mid, pred_row, odd_rows = future.result()
-                except Exception:
-                    continue
-                if pred_row is not None and mid not in pred_by_match:
-                    pred_by_match[mid] = pred_row
-                    direct_prediction_hits += 1
-                if odd_rows and mid not in odds_by_match:
-                    odds_by_match[mid] = odd_rows
-                    direct_odds_hits += 1
-
     merged_predictions = list(pred_by_match.values())
     merged_odds = [row for rows in odds_by_match.values() for row in rows]
 
@@ -13278,6 +13296,9 @@ def gm_daily_pick_source_payload(target_date_iso):
         "official_fixture_ids": official_match_ids,
         "direct_prediction_hits": direct_prediction_hits,
         "direct_odds_hits": direct_odds_hits,
+        "batch_missing_predictions": len(missing_prediction_ids),
+        "batch_missing_odds": len(missing_odds_ids),
+        "batch_only_fastpath": True,
         "error": source_error,
     }
     # Só persiste uma coleta útil; erro de fonte não fica "preso" no cache.
