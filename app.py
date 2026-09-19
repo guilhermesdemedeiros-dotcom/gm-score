@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-19-v141-admin-pro-visual"
+GM_BUILD = "2026-09-19-v142-admin-picks-performance"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -13612,18 +13612,23 @@ def gm_daily_pick_choose(candidates, pick_kind="dica", avoid_matches=None, avoid
             bucket=by_match.setdefault(str(c.get("match_id") or ""),[])
             if len(bucket)<3: bucket.append(c)
         pool=[c for b in by_match.values() for c in b][:72]
-        states=[([],1.0,set(),0.0)]; best=None; beam_width=650
+        # V142 PERFORMANCE: cada combinação é expandida em ordem canônica do pool.
+        # Antes, o beam reconstruía a mesma combinação em várias permutações (A+B,
+        # B+A, A+C+B...), multiplicando CPU sem mudar nenhuma regra estatística.
+        # last_idx elimina essas permutações: thresholds, odds, probabilidades,
+        # diversidade e score permanecem exatamente os mesmos.
+        states=[([],1.0,set(),0.0,-1)]; best=None; beam_width=650
         for size in range(1,max_legs+1):
             expanded=[]
-            for legs,total,used,_ in states:
-                for c in pool:
+            for legs,total,used,_,last_idx in states:
+                for idx in range(last_idx+1, len(pool)):
+                    c=pool[idx]
                     mid=str(c.get("match_id") or "")
                     if not mid or mid in used: continue
-                    if legs and leg_rank(c) > leg_rank(legs[-1]) + 20: continue
                     nl=legs+[c]; no=total*float(c.get("odd") or 1.0)
                     if max_odd is not None and no > max_odd*1.06: continue
                     nu=set(used); nu.add(mid); rank=combo_rank(nl,no,kind)
-                    expanded.append((nl,no,nu,rank))
+                    expanded.append((nl,no,nu,rank,idx))
                     if size>=min_legs and no>=min_odd and (max_odd is None or no<=max_odd) and valid_diversity(nl,kind):
                         combo=_gm_daily_combo_payload(nl,"double" if size==2 else "triple" if size==3 else "multiple",kind)
                         combo["score"]=round(rank,3)
@@ -13633,7 +13638,7 @@ def gm_daily_pick_choose(candidates, pick_kind="dica", avoid_matches=None, avoid
             # dedup states by used match set + family profile
             uniq={}
             for state in expanded:
-                legs,total,used,rank=state; key=(tuple(sorted(used)),tuple(sorted(_gm_daily_market_family(x.get('market_code')) for x in legs)))
+                legs,total,used,rank,last_idx=state; key=(tuple(sorted(used)),tuple(sorted(_gm_daily_market_family(x.get('market_code')) for x in legs)))
                 if key not in uniq or rank>uniq[key][3]: uniq[key]=state
             states=sorted(uniq.values(),key=lambda x:x[3],reverse=True)[:beam_width]
         return best
