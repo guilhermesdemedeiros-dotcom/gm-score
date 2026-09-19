@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-19-v140-admin-lazy-sections"
+GM_BUILD = "2026-09-19-v141-admin-pro-visual"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -2958,50 +2958,7 @@ def gm_render_admin_panel(profile):
         st.error("Acesso administrativo não autorizado.")
         return
 
-    _adm_head, _adm_exit = st.columns([4, 1])
-    with _adm_head:
-        st.markdown("## 🛡️ CENTRAL ADMINISTRATIVA · GM SCORE")
-        st.caption(f"Administrador • Sistema operacional • Build {GM_BUILD}")
-    with _adm_exit:
-        if st.button("👤 Cliente", use_container_width=True, key="gm_admin_back_client"):
-            st.session_state["gm_admin_panel_open"] = False
-            st.session_state["gm_main_view"] = "analysis"
-            st.rerun()
-
-    # V66: visão operacional rica, calculada apenas com dados administrativos já existentes.
-    try:
-        _admin_users = gm_admin_list_users() or []
-    except Exception:
-        _admin_users = []
-    try:
-        _admin_reviews = gm_admin_rpc("gm_admin_list_reviews") or []
-    except Exception:
-        _admin_reviews = []
-    try:
-        _admin_picks = gm_daily_pick_recent(100) or []
-    except Exception:
-        _admin_picks = []
-    _admin_today = datetime.now(BRASILIA_TZ).date().isoformat()
-    _vip_active = sum(1 for r in _admin_users if str((r or {}).get("vip_status") or "") == "active" and not bool((r or {}).get("blocked")))
-    _tips_today = sum(1 for r in _admin_picks if str((r or {}).get("pick_date") or "") == _admin_today and str((r or {}).get("status") or "") != "no_pick")
-    _reviews_total = len([r for r in _admin_reviews if isinstance(r, dict)])
-    _pending_picks = sum(1 for r in _admin_picks if str((r or {}).get("status") or "") == "pending")
-    m1,m2,m3,m4 = st.columns(4)
-    m1.metric("VIPs ativos", _vip_active)
-    m2.metric("Dicas hoje", _tips_today)
-    m3.metric("Avaliações", _reviews_total)
-    m4.metric("Dicas pendentes", _pending_picks)
-    st.info("🟢 Área administrativa ativa · autenticação, pagamentos, motor estatístico e dados permanecem sob as mesmas regras do GM SCORE.")
-
-    top1, top2 = st.columns([1, 1])
-    with top1:
-        if st.button("← Voltar", use_container_width=True, key="gm_admin_back_top", help="Retornar ao GM SCORE"):
-            st.session_state["gm_admin_panel_open"] = False
-            st.rerun()
-    with top2:
-        if st.button("🔄 Atualizar", use_container_width=True, key="gm_admin_refresh", help="Atualizar dados do painel"):
-            st.rerun()
-
+    # V141: Central compacta; ferramentas administrativas ficam somente aqui.
     # V140: st.tabs executa o conteúdo de TODAS as abas em cada rerun, inclusive
     # diagnósticos pesados do sistema. O seletor abaixo mantém a mesma separação
     # administrativa, mas executa somente a seção escolhida.
@@ -3018,8 +2975,22 @@ def gm_render_admin_panel(profile):
         _admin_sections,
         horizontal=True,
         key="gm_admin_active_section",
+        label_visibility="collapsed",
     )
     if _admin_section == "⚽ Jogos / Sistema":
+        with st.expander("🧭 Verificação da versão carregada", expanded=False):
+            try:
+                _gm_runtime_file = os.path.basename(os.path.abspath(__file__))
+            except Exception:
+                _gm_runtime_file = "app.py"
+            try:
+                _gm_runtime_mtime = datetime.fromtimestamp(os.path.getmtime(__file__), tz=timezone.utc).astimezone(ZoneInfo("America/Sao_Paulo"))
+                _gm_runtime_mtime_txt = _gm_runtime_mtime.strftime("%d/%m/%Y %H:%M:%S")
+            except Exception:
+                _gm_runtime_mtime_txt = "indisponível"
+            st.markdown(f"**Build carregada:** `{GM_BUILD}`")
+            st.caption(f"Arquivo em execução: `{_gm_runtime_file}` • modificado: {_gm_runtime_mtime_txt} (Brasília)")
+        gm_render_auth_test_console()
         st.markdown("### ⚽ Jogos e operação do sistema")
         st.caption("Controles administrativos de atualização e diagnóstico. A experiência normal de Jogos permanece idêntica à do cliente VIP.")
         gm_admin_fixture_date = st.date_input(
@@ -4137,17 +4108,6 @@ def gm_render_public_portal():
                     if st.button("⭐ Avaliar GM SCORE", use_container_width=True, key="gm_sidebar_review"):
                         st.session_state["gm_reviews_open"] = True
                         st.rerun()
-                if state == "admin":
-                    st.markdown("### 🛡️ Ambiente")
-                    _adm_c1, _adm_c2 = st.columns(2)
-                    with _adm_c1:
-                        if st.button("👤 Cliente", use_container_width=True, key="gm_sidebar_client_mode"):
-                            st.session_state["gm_admin_panel_open"] = False
-                            st.rerun()
-                    with _adm_c2:
-                        if st.button("🛡️ ADM", use_container_width=True, type="primary", key="gm_sidebar_admin_panel"):
-                            st.session_state["gm_admin_panel_open"] = True
-                            st.rerun()
                 if st.button("🚪 Sair", use_container_width=True, key="gm_sidebar_logout"):
                     gm_auth_sign_out()
                     st.session_state.pop("gm_admin_panel_open", None)
@@ -4216,17 +4176,13 @@ except Exception:
 # V130: resolve FREE/PRO/ADM depois do restore/login e aplica o selo na marca já renderizada.
 # Assim o indicador não desaparece após F5 ou reabertura da sessão persistida.
 if _gm_profile_after_gate:
-    if str(_gm_profile_after_gate.get("role") or "").lower() == "admin":
-        _gm_runtime_badge = "ADM"
-        _gm_runtime_badge_css = "border-color:rgba(250,204,21,.55);background:rgba(250,204,21,.10);color:#fde047;"
-    else:
-        _gm_runtime_tier = gm_product_tier(_gm_profile_after_gate)
-        _gm_runtime_badge = "PRO" if _gm_runtime_tier == "pro" else "FREE"
-        _gm_runtime_badge_css = (
-            "border-color:rgba(52,230,129,.55);background:rgba(52,230,129,.12);color:#34e681;"
-            if _gm_runtime_tier == "pro"
-            else "border-color:rgba(148,163,184,.30);background:rgba(148,163,184,.08);color:#cbd5e1;"
-        )
+    _gm_runtime_tier = gm_product_tier(_gm_profile_after_gate)
+    _gm_runtime_badge = "PRO" if _gm_runtime_tier == "pro" else "FREE"
+    _gm_runtime_badge_css = (
+        "border-color:rgba(52,230,129,.55);background:rgba(52,230,129,.12);color:#34e681;"
+        if _gm_runtime_tier == "pro"
+        else "border-color:rgba(148,163,184,.30);background:rgba(148,163,184,.08);color:#cbd5e1;"
+    )
     st.markdown(
         f"""<style>
         .gm-brand-title::after{{
@@ -4253,28 +4209,8 @@ if _gm_profile_after_gate and st.session_state.get("gm_reviews_open"):
 # V75: a Central Administrativa é renderizada somente após todas as funções e constantes do app estarem definidas.
 # Isso evita dependências prematuras (ex.: BRASILIA_TZ e funções das Dicas do Dia).
 
-if _gm_profile_after_gate and _gm_profile_after_gate.get("role") == "admin":
-    gm_render_auth_test_console()
 
-    # Runtime check: confirma visualmente qual arquivo/build o Streamlit está executando.
-    # Restrito ao administrador e sem expor segredos/configurações.
-    try:
-        _gm_runtime_file = os.path.basename(os.path.abspath(__file__))
-    except Exception:
-        _gm_runtime_file = "app.py"
-    try:
-        _gm_runtime_mtime = datetime.fromtimestamp(os.path.getmtime(__file__), tz=timezone.utc).astimezone(ZoneInfo("America/Sao_Paulo"))
-        _gm_runtime_mtime_txt = _gm_runtime_mtime.strftime("%d/%m/%Y %H:%M:%S")
-    except Exception:
-        _gm_runtime_mtime_txt = "indisponível"
-    _gm_runtime_checks = {
-        "Data Recovery v7+": "recover" in globals() or any("recover" in str(_k).lower() for _k in globals().keys()),
-        "Diagnóstico de cobertura": "render_match_analysis" in globals() or "analysis_context" in globals(),
-    }
-    with st.expander("🧭 Verificação da versão carregada (admin)", expanded=True):
-        st.markdown(f"**Build carregada:** `{GM_BUILD}`")
-        st.caption(f"Arquivo em execução: `{_gm_runtime_file}` • modificado: {_gm_runtime_mtime_txt} (Brasília)")
-        st.caption("Este bloco existe apenas para confirmar o deploy/runtime. Se ele não aparecer após publicar, o Streamlit não está executando este arquivo/build.")
+# V141: diagnósticos administrativos ficam somente na Central Administrativa.
 
 # Competições com estatísticas detalhadas em CSV público.
 EUROPE_LEAGUES = {
@@ -14484,13 +14420,6 @@ def gm_render_account_page(profile):
     if st.button("⭐ Avaliar GM SCORE", use_container_width=True, key="gm_account_review"):
         st.session_state["gm_reviews_open"] = True; st.rerun()
 
-    # Único acréscimo visível na Conta do administrador.
-    if is_admin:
-        st.markdown("---")
-        st.caption(f"🛡️ Administrador GM SCORE · Build {GM_BUILD}")
-        if st.button("🛠 Abrir Central Administrativa", use_container_width=True, type="primary", key="gm_account_admin"):
-            st.session_state["gm_admin_panel_open"] = True; st.rerun()
-
     st.link_button("✈️ Suporte pelo Telegram", "https://t.me/suport_gm", use_container_width=True)
     if st.button("🚪 Sair", use_container_width=True, key="gm_account_logout"):
         gm_auth_sign_out(); st.session_state.pop("gm_admin_panel_open", None); st.rerun()
@@ -14625,6 +14554,11 @@ def gm_render_main_shortcuts():
         if st.button("⚽ Jogos do dia",use_container_width=True,type="primary",key="gm_home_games"): st.session_state["gm_main_view"]="games"; st.rerun()
     with c2:
         if st.button("💡 Dicas do Dia",use_container_width=True,key="gm_home_daily_pick"): st.session_state["gm_main_view"]="daily_pick"; st.rerun()
+    _home_profile = st.session_state.get("gm_auth_profile") or {}
+    if str((_home_profile or {}).get("role") or "").lower() == "admin":
+        if st.button("🛡️ Área Administrativa", use_container_width=True, key="gm_home_admin"):
+            st.session_state["gm_admin_panel_open"] = True
+            st.rerun()
 
 
 
@@ -14633,6 +14567,8 @@ st.markdown(r"""
 .gm-game-card{display:flex;align-items:center;gap:14px;background:linear-gradient(145deg,#0d1718,#0b1118);border:1px solid rgba(52,230,129,.22);border-radius:16px;padding:13px 14px;margin:.55rem 0 .28rem}.gm-game-time{font-weight:950;color:#34e681;min-width:54px;font-size:1rem}.gm-game-body{min-width:0;flex:1}.gm-game-league{color:#94a3b8;font-size:.76rem;font-weight:750}.gm-game-teams{color:#f8fafc;font-size:1rem;font-weight:900;margin-top:2px}.gm-game-teams span{color:#34e681;padding:0 4px}
 .gm-mobile-nav-shell{display:none}
 .gm-admin-mobile-switch{display:none}
+div[class*="st-key-gm_admin_active_section"] [data-testid="stRadio"] > div{gap:.42rem!important;flex-wrap:wrap!important}
+div[class*="st-key-gm_admin_active_section"] [data-testid="stRadio"] label{border:1px solid rgba(52,230,129,.28)!important;border-radius:10px!important;padding:.42rem .62rem!important;background:rgba(52,230,129,.05)!important}
 button[kind="secondary"]:has(+ div),button[kind="primary"]:has(+ div){}
 @media (max-width:768px){
 .gm-admin-mobile-switch{display:flex!important;position:fixed!important;right:.75rem!important;top:4.15rem!important;z-index:100002!important;align-items:center!important;justify-content:center!important;padding:.38rem .68rem!important;border-radius:999px!important;border:1px solid rgba(52,230,129,.42)!important;background:rgba(7,16,15,.95)!important;color:#eafbf2!important;text-decoration:none!important;font-size:.72rem!important;font-weight:900!important;box-shadow:0 5px 16px rgba(0,0,0,.28)!important;backdrop-filter:blur(8px)!important}
@@ -14667,31 +14603,23 @@ try:
 except Exception:
     pass
 
-# V131: Cliente e Administração são ambientes separados. No desktop a troca fica
-# na sidebar; no mobile há um seletor compacto e persistente para o administrador.
-if _gm_profile_after_gate and _gm_profile_after_gate.get("role") == "admin":
-    _gm_admin_mode_cmd = str(st.query_params.get("gm_admin_mode", "") or "").strip()
-    if _gm_admin_mode_cmd in {"0", "1"}:
-        st.session_state["gm_admin_panel_open"] = (_gm_admin_mode_cmd == "1")
-        try:
-            del st.query_params["gm_admin_mode"]
-        except Exception:
-            pass
-    _gm_admin_mode_active = bool(st.session_state.get("gm_admin_panel_open"))
-    gm_render_admin_mobile_workspace_switch(_gm_profile_after_gate, admin_mode=_gm_admin_mode_active)
-    if _gm_admin_mode_active:
-        gm_render_admin_panel(_gm_profile_after_gate)
-        st.stop()
-
+# V141: a barra inferior padrão permanece ativa dentro da Central Administrativa.
 _gm_requested_view = str(st.query_params.get("gm_view", "") or "").strip()
 if _gm_requested_view in {"analysis", "games", "daily_pick", "news", "account", "admin_results"}:
     st.session_state["gm_main_view"] = _gm_requested_view
-    # V103: query param da navegação mobile é um comando de uso único. Sem isso,
-    # ele reaplicava a view antiga em todo rerun e anulava a sidebar no desktop.
+    if _gm_profile_after_gate and _gm_profile_after_gate.get("role") == "admin":
+        st.session_state["gm_admin_panel_open"] = False
     try:
         del st.query_params["gm_view"]
     except Exception:
         pass
+
+if (_gm_profile_after_gate and _gm_profile_after_gate.get("role") == "admin"
+        and bool(st.session_state.get("gm_admin_panel_open"))):
+    gm_render_app_navigation(_gm_profile_after_gate)
+    gm_render_admin_panel(_gm_profile_after_gate)
+    st.stop()
+
 _gm_main_view = str(st.session_state.get("gm_main_view") or "analysis")
 # V86: o retorno contextual pertence somente ao fluxo Jogos → Análise. Ao navegar
 # deliberadamente para outra área, encerra a sessão de retorno e o botão desaparece.
