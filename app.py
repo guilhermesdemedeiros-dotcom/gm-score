@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-19-v143-admin-picks-fastload"
+GM_BUILD = "2026-09-19-v144-admin-picks-cache-expand"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -2331,11 +2331,18 @@ def gm_render_admin_daily_pick_approval():
     a1, a2 = st.columns(2)
     if a1.button("🔄 Carregar mais opções", use_container_width=True, key="gm_admin_daily_refresh_candidates"):
         try:
-            with st.spinner("Atualizando odds e probabilidades..."):
-                st.session_state[cache_key] = gm_daily_pick_prepare_admin_options(force_refresh=True, per_kind=5)
+            with st.spinner("Montando mais opções com os dados já carregados..."):
+                _cached_prepared = st.session_state.get(cache_key) or {}
+                _expanded = gm_daily_pick_expand_cached_admin_options(_cached_prepared, per_kind=5)
+                if _expanded.get("ok"):
+                    st.session_state[cache_key] = _expanded
+                else:
+                    # Compatibilidade com sessão criada antes da V144: faz uma única
+                    # preparação normal e, dali em diante, reutiliza a base em cache.
+                    st.session_state[cache_key] = gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=5)
             st.rerun()
         except Exception as exc:
-            st.error("Não foi possível atualizar as opções agora.")
+            st.error("Não foi possível carregar mais opções agora.")
             st.caption(type(exc).__name__)
     if a2.button("✅ Conferir resultados", use_container_width=True, key="gm_admin_daily_settle_now"):
         try:
@@ -13760,7 +13767,52 @@ def gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=5):
     meta["perf_source_seconds"] = round(_source_seconds, 3)
     meta["perf_total_seconds"] = round(time.perf_counter() - _perf_started, 3)
     meta["perf_options_per_kind"] = int(per_kind)
-    return {"ok": True, "reason": "prepared", "options": options, "meta": meta, "rows": existing_rows}
+    # V144: preserva a base já coletada/analisada na sessão ADM. Assim, pedir mais
+    # opções não repete as consultas de odds/previsões das partidas do dia.
+    return {"ok": True, "reason": "prepared", "options": options, "meta": meta, "rows": existing_rows, "candidates": candidates}
+
+
+def gm_daily_pick_expand_cached_admin_options(prepared, per_kind=5):
+    """Expande opções usando somente a base já preparada; não atualiza odds/previsões."""
+    _perf_started = time.perf_counter()
+    profile = gm_auth_get_profile(force=False)
+    if (profile or {}).get("role") != "admin":
+        return {"ok": False, "reason": "admin_only"}
+    if not isinstance(prepared, dict) or not prepared.get("ok"):
+        return {"ok": False, "reason": "cache_unavailable"}
+    candidates = [dict(c) for c in (prepared.get("candidates") or []) if isinstance(c, dict)]
+    if not candidates:
+        return {"ok": False, "reason": "cache_unavailable"}
+
+    today = datetime.now(BRASILIA_TZ).date()
+    recent_rows = gm_daily_pick_recent(100)
+    existing_rows = [r for r in recent_rows if str(r.get("pick_date") or "") == today.isoformat()]
+    history_market_counts, history_family_counts, history_kind_market_counts = _gm_daily_recent_market_rotation(recent_rows, today)
+    published_legs = set()
+    for row in existing_rows:
+        for leg in (row.get("legs") or []):
+            mid = str((leg or {}).get("match_id") or "").strip()
+            code = str((leg or {}).get("market_code") or "").strip()
+            if mid and code:
+                published_legs.add((mid, code))
+    discarded_signatures = _gm_daily_pick_load_discarded(today, force=False)
+    options = {}
+    for kind in ("matadeira", "dica", "bingo"):
+        discarded_kind_count = sum(1 for sig in discarded_signatures if sig)
+        raw_limit = min(30, max(per_kind, per_kind + discarded_kind_count))
+        generated = gm_daily_pick_candidate_options(
+            candidates, kind, limit=raw_limit,
+            history_market_counts=history_market_counts,
+            history_family_counts=history_family_counts,
+            history_kind_market_counts=history_kind_market_counts,
+            initial_avoid_legs=published_legs,
+        )
+        options[kind] = [o for o in generated if _gm_daily_pick_option_signature(o) not in discarded_signatures][:per_kind]
+    meta = dict(prepared.get("meta") or {})
+    meta["perf_expand_seconds"] = round(time.perf_counter() - _perf_started, 3)
+    meta["perf_options_per_kind"] = int(per_kind)
+    meta["expanded_from_cached_source"] = True
+    return {"ok": True, "reason": "expanded_cached", "options": options, "meta": meta, "rows": existing_rows, "candidates": candidates}
 
 
 def gm_daily_pick_publish_selected(choice):
