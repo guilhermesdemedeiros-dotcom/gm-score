@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-20-v155-positive-markets-only"
+GM_BUILD = "2026-09-20-v156-more-options-exclusive-legs"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -2394,8 +2394,8 @@ def gm_render_admin_daily_pick_approval():
             f"tempo total: {float(meta.get('perf_total_seconds') or 0):.1f}s."
         )
         st.caption(
-            "V155: mercados 'Menos de' e 'Ambas marcam — Não' foram removidos das Dicas. "
-            "O motor prioriza mercados positivos e exige diversidade real no Bingo."
+            "V156: mercados negativos seguem removidos. Matadeira/Dica usam piso de 78%, "
+            "Bingo mantém 75%, e uma seleção usada não pode reaparecer em outra aposta."
         )
     for kind in ("matadeira", "dica", "bingo"):
         label = GM_DAILY_PICK_PROFILES[kind]["label"]
@@ -13629,8 +13629,10 @@ def _gm_daily_high_margin_candidate(candidate, pick_kind, simple_mode=False):
         "bingo":     {"O0.5": 82.0, "O1.5": 75.0, "U1.5": 76.0, "O2.5": 75.0, "U2.5": 75.0, "O3.5": 76.0, "U3.5": 75.0, "BTTS_Y": 75.0, "BTTS_N": 75.0, "1X": 76.0, "X2": 76.0, "12": 75.0, "1": 75.0, "2": 75.0},
     }
     needed = thresholds.get(pick_kind, thresholds["dica"]).get(code, 101.0)
+    # V156: amplia a oferta sem baixar o piso principal para níveis frágeis.
+    # Matadeira/Dica: mínimo 78%; Bingo continua respeitando >=75%.
     if pick_kind in {"matadeira", "dica"}:
-        needed = max(needed, 80.0)
+        needed = max(needed, 78.0)
 
     # Curva de proteção do Bingo: odds médias podem entrar com ~75–80% de modelo;
     # odds realmente altas só entram quando a sustentação também sobe. Não há teto
@@ -13944,9 +13946,13 @@ def gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=1):
     # descartar uma bet, novas alternativas possam ocupar seu lugar sem ela reaparecer.
     discarded_signatures = _gm_daily_pick_load_discarded(today, force=force_refresh)
     options = {}
+    # V156: exclusividade absoluta por seleção (match_id + market_code).
+    # O que já foi publicado ou reservado por uma opção desta preparação não
+    # pode aparecer em nenhuma outra Matadeira, Dica Principal ou Bingo.
+    reserved_legs = set(published_legs)
     for kind in missing:
         discarded_kind_count = sum(1 for sig in discarded_signatures if sig)
-        raw_limit = min(30, max(per_kind, per_kind + discarded_kind_count))
+        raw_limit = min(60, max(per_kind * 6, per_kind + discarded_kind_count))
         generated = gm_daily_pick_candidate_options(
             candidates,
             kind,
@@ -13954,10 +13960,7 @@ def gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=1):
             history_market_counts=history_market_counts,
             history_family_counts=history_family_counts,
             history_kind_market_counts=history_kind_market_counts,
-            # V153: publicações anteriores do dia não bloqueiam todo o mercado.
-            # A assinatura completa continua impedindo republicar a mesma bet,
-            # mas uma perna já usada pode participar de outra combinação válida.
-            initial_avoid_legs=set(),
+            initial_avoid_legs=reserved_legs,
         )
         _published_option_sigs = {
             _gm_daily_pick_option_signature({
@@ -13967,11 +13970,24 @@ def gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=1):
             for r in existing_rows
             if str(r.get("pick_kind") or "dica") == kind
         }
-        options[kind] = [
-            o for o in generated
-            if _gm_daily_pick_option_signature(o) not in discarded_signatures
-            and _gm_daily_pick_option_signature(o) not in _published_option_sigs
-        ][:per_kind]
+        accepted = []
+        for o in generated:
+            sig = _gm_daily_pick_option_signature(o)
+            leg_sigs = {
+                (str((leg or {}).get("match_id") or "").strip(),
+                 str((leg or {}).get("market_code") or "").strip())
+                for leg in (o.get("legs") or [])
+            }
+            leg_sigs.discard(("", ""))
+            if sig in discarded_signatures or sig in _published_option_sigs:
+                continue
+            if leg_sigs & reserved_legs:
+                continue
+            accepted.append(o)
+            reserved_legs.update(leg_sigs)
+            if len(accepted) >= per_kind:
+                break
+        options[kind] = accepted
     meta = dict(meta or {})
     meta["perf_source_seconds"] = round(_source_seconds, 3)
     meta["perf_total_seconds"] = round(time.perf_counter() - _perf_started, 3)
@@ -14011,37 +14027,51 @@ def gm_daily_pick_expand_cached_admin_options(prepared, per_kind=5):
     current_options = prepared.get("options") or {}
     options = {}
 
-    # Em vez de recalcular até 5 combinações por categoria, cada clique acrescenta
-    # no máximo UMA nova alternativa por categoria. Isso mantém os mesmos filtros
-    # estatísticos e torna "Carregar mais" progressivo e muito mais leve.
-    for kind in ("matadeira", "dica", "bingo"):
-        existing_opts = [
-            dict(o) for o in (current_options.get(kind) or [])
+    # V156: "Carregar mais" também respeita exclusividade GLOBAL.
+    # Primeiro reserva todas as pernas já publicadas e todas as opções visíveis,
+    # independentemente da categoria.
+    global_reserved_legs = set(published_legs)
+    cleaned_current = {}
+    for _kind in ("matadeira", "dica", "bingo"):
+        cleaned_current[_kind] = [
+            dict(o) for o in (current_options.get(_kind) or [])
             if isinstance(o, dict) and _gm_daily_pick_option_signature(o) not in discarded_signatures
         ]
-        avoid_legs = set(published_legs)
-        for opt in existing_opts:
+        for opt in cleaned_current[_kind]:
             for leg in (opt.get("legs") or []):
                 mid = str((leg or {}).get("match_id") or "").strip()
                 code = str((leg or {}).get("market_code") or "").strip()
                 if mid and code:
-                    avoid_legs.add((mid, code))
+                    global_reserved_legs.add((mid, code))
 
+    for kind in ("matadeira", "dica", "bingo"):
+        existing_opts = cleaned_current[kind]
         generated = gm_daily_pick_candidate_options(
             candidates,
             kind,
-            limit=1,
+            limit=8,
             history_market_counts=history_market_counts,
             history_family_counts=history_family_counts,
             history_kind_market_counts=history_kind_market_counts,
-            initial_avoid_legs=avoid_legs,
+            initial_avoid_legs=global_reserved_legs,
         )
         for opt in generated:
             sig = _gm_daily_pick_option_signature(opt)
-            if sig and sig not in discarded_signatures and all(
-                _gm_daily_pick_option_signature(x) != sig for x in existing_opts
-            ):
-                existing_opts.append(opt)
+            leg_sigs = {
+                (str((leg or {}).get("match_id") or "").strip(),
+                 str((leg or {}).get("market_code") or "").strip())
+                for leg in (opt.get("legs") or [])
+            }
+            leg_sigs.discard(("", ""))
+            if not sig or sig in discarded_signatures:
+                continue
+            if leg_sigs & global_reserved_legs:
+                continue
+            if any(_gm_daily_pick_option_signature(x) == sig for x in existing_opts):
+                continue
+            existing_opts.append(opt)
+            global_reserved_legs.update(leg_sigs)
+            break
         options[kind] = existing_opts
 
     meta = dict(prepared.get("meta") or {})
