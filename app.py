@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-20-v152-daily-picks-results-fix"
+GM_BUILD = "2026-09-20-v153-picks-coverage-under-control"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -2330,7 +2330,7 @@ def gm_render_admin_daily_pick_approval():
                 with st.spinner("Preparando opções para avaliação do ADM..."):
                     # V145: a Central abre imediatamente. O cálculo pesado só começa
                     # por ação explícita do ADM, evitando travar navegação/reruns gerais.
-                    st.session_state[cache_key] = gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=1)
+                    st.session_state[cache_key] = gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=3)
             else:
                 with st.spinner("Montando mais opções com os dados já carregados..."):
                     _cached_prepared = st.session_state.get(cache_key) or {}
@@ -2389,7 +2389,13 @@ def gm_render_admin_daily_pick_approval():
             f"{int(meta.get('direct_odds_hits') or 0)} conjunto(s) de odds. "
             f"Excluídos: {int(meta.get('excluded_past') or 0)} por horário/status e "
             f"{int(meta.get('excluded_unknown_time') or 0)} sem horário confiável. "
-            "O piso de 75% permanece inalterado."
+            "O piso de 75% permanece inalterado. "
+            f"Tempo da fonte: {float(meta.get('perf_source_seconds') or 0):.1f}s · "
+            f"tempo total: {float(meta.get('perf_total_seconds') or 0):.1f}s."
+        )
+        st.caption(
+            "V153: mercados 'Menos de' agora exigem sustentação adicional e edge mais forte; "
+            "eles deixam de dominar o ranking quando existem alternativas equivalentes."
         )
     for kind in ("matadeira", "dica", "bingo"):
         label = GM_DAILY_PICK_PROFILES[kind]["label"]
@@ -13613,7 +13619,11 @@ def _gm_daily_high_margin_candidate(candidate, pick_kind, simple_mode=False):
 
     # Não exige edge positivo nos mercados mais protegidos, mas evita aceitar uma
     # perna em que o modelo esteja muito abaixo da probabilidade implícita da casa.
-    min_edge = -5.0 if code in {"O0.5", "1X", "X2", "12", "U1.5", "U2.5", "U3.5", "BTTS_N"} else -3.0
+    min_edge = -5.0 if code in {"O0.5", "1X", "X2", "12", "BTTS_N"} else -3.0
+    # V153: mercados "Menos de" exigem sustentação maior e edge menos permissivo.
+    # Não reduz nenhum piso estatístico; apenas torna Under mais seletivo.
+    if code in {"U1.5", "U2.5", "U3.5"}:
+        min_edge = 0.0 if pick_kind in {"matadeira", "dica"} else -1.0
     if pick_kind == "bingo" and odd >= 1.70:
         min_edge = -2.0
     if pick_kind == "bingo" and odd >= 2.00:
@@ -13627,6 +13637,9 @@ def _gm_daily_high_margin_candidate(candidate, pick_kind, simple_mode=False):
         "bingo":     {"O0.5": 82.0, "O1.5": 75.0, "U1.5": 76.0, "O2.5": 75.0, "U2.5": 75.0, "O3.5": 76.0, "U3.5": 75.0, "BTTS_Y": 75.0, "BTTS_N": 75.0, "1X": 76.0, "X2": 76.0, "12": 75.0, "1": 75.0, "2": 75.0},
     }
     needed = thresholds.get(pick_kind, thresholds["dica"]).get(code, 101.0)
+    if code in {"U1.5", "U2.5", "U3.5"}:
+        under_floor = {"matadeira": 86.0, "dica": 84.0, "bingo": 80.0}.get(pick_kind, 84.0)
+        needed = max(needed, under_floor)
 
     # Curva de proteção do Bingo: odds médias podem entrar com ~75–80% de modelo;
     # odds realmente altas só entram quando a sustentação também sobe. Não há teto
@@ -13685,7 +13698,8 @@ def gm_daily_pick_choose(candidates, pick_kind="dica", avoid_matches=None, avoid
         hist_market_penalty = min(8.0, float(history_market_counts.get(code, 0.0)) * 0.55)
         hist_family_penalty = min(5.0, float(history_family_counts.get(family, 0.0)) * 0.28)
         hist_kind_penalty = min(7.0, float(history_kind_market_counts.get((pick_kind, code), 0.0)) * 0.70)
-        return prob + family_bonus + edge_component - price_penalty - repeat_penalty - hist_market_penalty - hist_family_penalty - hist_kind_penalty + deterministic_jitter(c) * 0.35
+        under_penalty = 7.0 if code in {"U1.5", "U2.5", "U3.5"} else 0.0
+        return prob + family_bonus + edge_component - price_penalty - repeat_penalty - hist_market_penalty - hist_family_penalty - hist_kind_penalty - under_penalty + deterministic_jitter(c) * 0.35
 
     # 1) Primeiro tenta uma seleção simples excelente dentro da faixa final.
     if pick_kind in {"matadeira", "dica"}:
@@ -13935,9 +13949,24 @@ def gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=1):
             history_market_counts=history_market_counts,
             history_family_counts=history_family_counts,
             history_kind_market_counts=history_kind_market_counts,
-            initial_avoid_legs=published_legs,
+            # V153: publicações anteriores do dia não bloqueiam todo o mercado.
+            # A assinatura completa continua impedindo republicar a mesma bet,
+            # mas uma perna já usada pode participar de outra combinação válida.
+            initial_avoid_legs=set(),
         )
-        options[kind] = [o for o in generated if _gm_daily_pick_option_signature(o) not in discarded_signatures][:per_kind]
+        _published_option_sigs = {
+            _gm_daily_pick_option_signature({
+                "legs": (r.get("legs") or []),
+                "pick_kind": str(r.get("pick_kind") or "dica"),
+            })
+            for r in existing_rows
+            if str(r.get("pick_kind") or "dica") == kind
+        }
+        options[kind] = [
+            o for o in generated
+            if _gm_daily_pick_option_signature(o) not in discarded_signatures
+            and _gm_daily_pick_option_signature(o) not in _published_option_sigs
+        ][:per_kind]
     meta = dict(meta or {})
     meta["perf_source_seconds"] = round(_source_seconds, 3)
     meta["perf_total_seconds"] = round(time.perf_counter() - _perf_started, 3)
