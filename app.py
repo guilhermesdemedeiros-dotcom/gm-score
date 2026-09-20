@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-20-v153-picks-coverage-under-control"
+GM_BUILD = "2026-09-20-v154-picks-positive-diversity"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -2394,8 +2394,8 @@ def gm_render_admin_daily_pick_approval():
             f"tempo total: {float(meta.get('perf_total_seconds') or 0):.1f}s."
         )
         st.caption(
-            "V153: mercados 'Menos de' agora exigem sustentação adicional e edge mais forte; "
-            "eles deixam de dominar o ranking quando existem alternativas equivalentes."
+            "V154: 'Menos de' e 'Ambas marcam — Não' são mercados de exceção: exigem "
+            "sustentação/edge superiores e não podem dominar uma combinação."
         )
     for kind in ("matadeira", "dica", "bingo"):
         label = GM_DAILY_PICK_PROFILES[kind]["label"]
@@ -13622,8 +13622,8 @@ def _gm_daily_high_margin_candidate(candidate, pick_kind, simple_mode=False):
     min_edge = -5.0 if code in {"O0.5", "1X", "X2", "12", "BTTS_N"} else -3.0
     # V153: mercados "Menos de" exigem sustentação maior e edge menos permissivo.
     # Não reduz nenhum piso estatístico; apenas torna Under mais seletivo.
-    if code in {"U1.5", "U2.5", "U3.5"}:
-        min_edge = 0.0 if pick_kind in {"matadeira", "dica"} else -1.0
+    if code in {"U1.5", "U2.5", "U3.5", "BTTS_N"}:
+        min_edge = 1.0 if pick_kind in {"matadeira", "dica"} else 0.0
     if pick_kind == "bingo" and odd >= 1.70:
         min_edge = -2.0
     if pick_kind == "bingo" and odd >= 2.00:
@@ -13637,9 +13637,9 @@ def _gm_daily_high_margin_candidate(candidate, pick_kind, simple_mode=False):
         "bingo":     {"O0.5": 82.0, "O1.5": 75.0, "U1.5": 76.0, "O2.5": 75.0, "U2.5": 75.0, "O3.5": 76.0, "U3.5": 75.0, "BTTS_Y": 75.0, "BTTS_N": 75.0, "1X": 76.0, "X2": 76.0, "12": 75.0, "1": 75.0, "2": 75.0},
     }
     needed = thresholds.get(pick_kind, thresholds["dica"]).get(code, 101.0)
-    if code in {"U1.5", "U2.5", "U3.5"}:
-        under_floor = {"matadeira": 86.0, "dica": 84.0, "bingo": 80.0}.get(pick_kind, 84.0)
-        needed = max(needed, under_floor)
+    if code in {"U1.5", "U2.5", "U3.5", "BTTS_N"}:
+        negative_floor = {"matadeira": 88.0, "dica": 86.0, "bingo": 84.0}.get(pick_kind, 86.0)
+        needed = max(needed, negative_floor)
 
     # Curva de proteção do Bingo: odds médias podem entrar com ~75–80% de modelo;
     # odds realmente altas só entram quando a sustentação também sobe. Não há teto
@@ -13698,8 +13698,12 @@ def gm_daily_pick_choose(candidates, pick_kind="dica", avoid_matches=None, avoid
         hist_market_penalty = min(8.0, float(history_market_counts.get(code, 0.0)) * 0.55)
         hist_family_penalty = min(5.0, float(history_family_counts.get(family, 0.0)) * 0.28)
         hist_kind_penalty = min(7.0, float(history_kind_market_counts.get((pick_kind, code), 0.0)) * 0.70)
-        under_penalty = 7.0 if code in {"U1.5", "U2.5", "U3.5"} else 0.0
-        return prob + family_bonus + edge_component - price_penalty - repeat_penalty - hist_market_penalty - hist_family_penalty - hist_kind_penalty - under_penalty + deterministic_jitter(c) * 0.35
+        negative_market_penalty = 14.0 if code in {"U1.5", "U2.5", "U3.5", "BTTS_N"} else 0.0
+        positive_market_bonus = {
+            "O0.5": 3.0, "O1.5": 4.0, "O2.5": 3.0, "O3.5": 1.5,
+            "BTTS_Y": 3.5, "1": 3.0, "2": 3.0, "1X": 2.5, "X2": 2.5, "12": 1.5,
+        }.get(code, 0.0)
+        return prob + family_bonus + positive_market_bonus + edge_component - price_penalty - repeat_penalty - hist_market_penalty - hist_family_penalty - hist_kind_penalty - negative_market_penalty + deterministic_jitter(c) * 0.35
 
     # 1) Primeiro tenta uma seleção simples excelente dentro da faixa final.
     if pick_kind in {"matadeira", "dica"}:
@@ -13732,6 +13736,12 @@ def gm_daily_pick_choose(candidates, pick_kind="dica", avoid_matches=None, avoid
         code_counts={c:sum(1 for x in legs if str(x.get("market_code") or "")==c) for c in codes}
         exact_repeat_penalty=sum(max(0,n-1)*1.8 for n in code_counts.values())
         history_combo_penalty=sum(min(3.0,float(history_market_counts.get(str(x.get("market_code") or ""),0.0))*0.18) for x in legs)
+        negative_codes={"U1.5","U2.5","U3.5","BTTS_N"}
+        positive_codes={"O0.5","O1.5","O2.5","O3.5","BTTS_Y","1","2","1X","X2","12"}
+        negative_count=sum(1 for x in legs if str(x.get("market_code") or "") in negative_codes)
+        positive_count=sum(1 for x in legs if str(x.get("market_code") or "") in positive_codes)
+        direction_bonus=positive_count*1.6
+        direction_penalty=negative_count*5.5 + max(0,negative_count-1)*8.0
         target=1.72 if kind=="matadeira" else 2.00 if kind=="dica" else 4.50
         distance=0.0 if kind=="bingo" else abs(total_odd-target)*4.0
 
@@ -13754,7 +13764,7 @@ def gm_daily_pick_choose(candidates, pick_kind="dica", avoid_matches=None, avoid
                 odd_risk_penalty += (very_low - max(1, len(odds)//2)) * 2.8
             odd_risk_penalty += sum(max(0.0, o-1.85) * 5.0 for o in odds)
 
-        return model_prob*100 + min(probs)*0.78 + sum(probs)/len(probs)*0.14 + sum(max(-2,min(6,e)) for e in edges)*0.06 + diversity_bonus + odd_mix_bonus - concentration_penalty - exact_repeat_penalty - history_combo_penalty - odd_risk_penalty - distance - max(0,total_odd-8.0)*(0.65 if kind=="bingo" else 0)
+        return model_prob*100 + min(probs)*0.78 + sum(probs)/len(probs)*0.14 + sum(max(-2,min(6,e)) for e in edges)*0.06 + diversity_bonus + direction_bonus + odd_mix_bonus - concentration_penalty - exact_repeat_penalty - history_combo_penalty - direction_penalty - odd_risk_penalty - distance - max(0,total_odd-8.0)*(0.65 if kind=="bingo" else 0)
 
     def valid_diversity(legs, kind):
         families=[_gm_daily_market_family(x.get("market_code")) for x in legs]
@@ -13762,6 +13772,17 @@ def gm_daily_pick_choose(candidates, pick_kind="dica", avoid_matches=None, avoid
         # preferência de score: em uma grade forte não deixamos a múltipla sumir
         # apenas porque as melhores pernas do dia pertencem à mesma família.
         codes=[str(x.get("market_code") or "") for x in legs]
+        negative_codes={"U1.5","U2.5","U3.5","BTTS_N"}
+        negative_count=sum(1 for c in codes if c in negative_codes)
+        # V154: mercados negativos nunca podem dominar um bilhete.
+        # Bingo: no máximo 1 perna negativa; Matadeira/Dica: no máximo 1 e nunca
+        # quando todas as pernas seriam da mesma direção negativa.
+        if kind == "bingo" and negative_count > 1:
+            return False
+        if kind != "bingo" and negative_count > 1:
+            return False
+        if len(legs) >= 2 and negative_count == len(legs):
+            return False
         if kind == "bingo":
             # v54: diversidade no Bingo passa a ser preferência forte de score, não
             # trava eliminatória. Assim o motor não deixa de publicar em uma grade
@@ -13775,12 +13796,14 @@ def gm_daily_pick_choose(candidates, pick_kind="dica", avoid_matches=None, avoid
 
     def beam_combo(base, min_legs, max_legs, min_odd, max_odd, kind):
         if len(base) < min_legs: return None
-        # Até 3 alternativas por jogo para realmente permitir diversidade de mercado.
+        # V154: até 5 alternativas por jogo. Com apenas 3, Under/BTTS-N de alta
+        # probabilidade podiam expulsar vitória, dupla chance, Over e BTTS-Sim antes
+        # mesmo da montagem das combinações.
         by_match={}
         for c in sorted(base,key=leg_rank,reverse=True):
             bucket=by_match.setdefault(str(c.get("match_id") or ""),[])
-            if len(bucket)<3: bucket.append(c)
-        pool=[c for b in by_match.values() for c in b][:72]
+            if len(bucket)<5: bucket.append(c)
+        pool=[c for b in by_match.values() for c in b][:96]
         # V142 PERFORMANCE: cada combinação é expandida em ordem canônica do pool.
         # Antes, o beam reconstruía a mesma combinação em várias permutações (A+B,
         # B+A, A+C+B...), multiplicando CPU sem mudar nenhuma regra estatística.
