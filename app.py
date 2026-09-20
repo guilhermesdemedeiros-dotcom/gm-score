@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-19-v151-free-daily-picks-preview"
+GM_BUILD = "2026-09-20-v152-daily-picks-results-fix"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -2315,7 +2315,7 @@ def gm_render_admin_daily_pick_approval():
         return [row for row in rows if str(row.get("pick_date") or "") == today.isoformat() and str(row.get("pick_kind") or "dica") == kind]
 
     try:
-        gm_daily_pick_settle_pending(limit=40)
+        gm_daily_pick_settle_pending(limit=100)
     except Exception:
         pass
 
@@ -2347,8 +2347,12 @@ def gm_render_admin_daily_pick_approval():
             st.caption(type(exc).__name__)
     if a2.button("✅ Conferir resultados", use_container_width=True, key="gm_admin_daily_settle_now"):
         try:
-            result = gm_daily_pick_settle_pending(limit=60)
-            st.success(f"Conferência concluída: {result['settled']} seleção(ões) atualizada(s).")
+            result = gm_daily_pick_settle_pending(limit=100)
+            if result.get("errors"):
+                st.error("Erro ao gravar resultado. Confirme a RPC v3 do V152 no Supabase.")
+                st.caption(" • ".join(result.get("errors")[:3]))
+            else:
+                st.success(f"Conferência concluída: {result.get('settled',0)} atualizada(s) · {result.get('pending',0)} ainda pendente(s).")
             st.rerun()
         except Exception as exc:
             st.error("Não foi possível conferir os resultados agora.")
@@ -14189,29 +14193,76 @@ def _gm_daily_evaluate_leg(leg, ev):
     return "green" if win else "red"
 
 
-def gm_daily_pick_settle_pending(limit=36):
-    try: profile=gm_auth_get_profile()
-    except Exception: profile=None
-    if (profile or {}).get("role") != "admin": return {"checked":0,"settled":0}
-    pending=[r for r in gm_daily_pick_recent(limit) if str(r.get("status") or "")=="pending"]; checked=settled=0
-    for row in pending:
-        legs=row.get("legs") or []
-        if not isinstance(legs,list) or not legs: continue
-        leg_results=[]; detail=[]
-        for leg in legs:
-            mid=str((leg or {}).get("match_id") or "").strip()
-            if not mid: leg_results.append("pending"); continue
-            events,err=gm_apifootball_request("get_events",match_id=mid,timezone="America/Sao_Paulo"); ev=events[0] if not err and isinstance(events,list) and events else None
-            result=_gm_daily_evaluate_leg(leg,ev or {}); leg_results.append(result); detail.append({"match_id":mid,"result":result,"score":None if not ev else f"{ev.get('match_hometeam_score','')}–{ev.get('match_awayteam_score','')}"})
-        checked+=1
-        if "red" in leg_results: final="red"
-        elif leg_results and all(x=="green" for x in leg_results): final="green"
-        elif "pending" in leg_results: continue
-        elif "void" in leg_results: final="void"
-        else: continue
-        gm_daily_pick_rpc("gm_daily_pick_settle_v2",{"p_pick_date":str(row.get("pick_date")),"p_pick_kind":str(row.get("pick_kind") or "dica"),"p_status":final,"p_result_summary":{"legs":detail,"settled_by_build":GM_BUILD}}); settled+=1
-    return {"checked":checked,"settled":settled}
+def _gm_daily_pick_settle_exact(row, final, detail=None):
+    """V152: liquida uma publicação específica pelo id."""
+    pick_id = row.get("id")
+    if not pick_id:
+        raise RuntimeError("Publicação sem id.")
+    data = gm_daily_pick_rpc("gm_daily_pick_settle_by_id_v3", {
+        "p_pick_id": pick_id,
+        "p_status": str(final),
+        "p_result_summary": {"legs": detail or [], "settled_by_build": GM_BUILD},
+    })
+    st.session_state.pop("_gm_daily_pick_recent_cache", None)
+    return data
 
+
+def gm_daily_pick_settle_pending(limit=80):
+    try:
+        profile = gm_auth_get_profile()
+    except Exception:
+        profile = None
+    if (profile or {}).get("role") != "admin":
+        return {"checked": 0, "settled": 0, "pending": 0, "errors": []}
+
+    st.session_state.pop("_gm_daily_pick_recent_cache", None)
+    pending_rows = [r for r in gm_daily_pick_recent(limit) if str(r.get("status") or "") == "pending"]
+    checked = settled = 0
+    errors = []
+
+    for row in pending_rows:
+        legs = row.get("legs") or []
+        if not isinstance(legs, list) or not legs:
+            continue
+        leg_results, detail = [], []
+        for leg in legs:
+            mid = str((leg or {}).get("match_id") or "").strip()
+            if not mid:
+                leg_results.append("pending")
+                detail.append({"match_id": "", "result": "pending", "reason": "missing_match_id"})
+                continue
+            try:
+                events, err = gm_apifootball_request("get_events", match_id=mid, timezone="America/Sao_Paulo")
+                ev = events[0] if not err and isinstance(events, list) and events else None
+                result = _gm_daily_evaluate_leg(leg, ev or {})
+                leg_results.append(result)
+                detail.append({
+                    "match_id": mid, "result": result,
+                    "status": None if not ev else ev.get("match_status"),
+                    "score": None if not ev else f"{ev.get('match_hometeam_score','')}–{ev.get('match_awayteam_score','')}",
+                })
+            except Exception as exc:
+                leg_results.append("pending")
+                detail.append({"match_id": mid, "result": "pending", "reason": type(exc).__name__})
+
+        checked += 1
+        if "red" in leg_results:
+            final = "red"
+        elif leg_results and all(x == "green" for x in leg_results):
+            final = "green"
+        elif leg_results and all(x in {"green", "void"} for x in leg_results) and "void" in leg_results:
+            final = "void"
+        else:
+            continue
+
+        try:
+            _gm_daily_pick_settle_exact(row, final, detail)
+            settled += 1
+        except Exception as exc:
+            errors.append(f"{row.get('id')}: {type(exc).__name__}")
+
+    st.session_state.pop("_gm_daily_pick_recent_cache", None)
+    return {"checked": checked, "settled": settled, "pending": max(0, checked-settled), "errors": errors}
 
 def _gm_daily_status_badge(status): return {"green":"🟢 GREEN","red":"🔴 RED","void":"⚪ VOID","pending":"🟡 PENDENTE","no_pick":"⚫ SEM SELEÇÃO"}.get(str(status),"—")
 def _gm_daily_bet_type_label(value, legs_count=0): return f"Múltipla ({int(legs_count or 0)} jogos)" if str(value)=="multiple" else {"simple":"Simples","double":"Dupla","triple":"Tripla","none":"Sem seleção"}.get(str(value),str(value or "—").title())
@@ -14298,8 +14349,12 @@ def gm_render_daily_pick_page():
                 st.error("Não foi possível atualizar as opções agora."); st.caption(type(exc).__name__)
         if a2.button("✅ Conferir resultados publicados",use_container_width=True,key="gm_daily_pick_settle_now"):
             try:
-                result=gm_daily_pick_settle_pending(limit=60)
-                st.success(f"Conferência concluída: {result['settled']} seleção(ões) atualizada(s).")
+                result=gm_daily_pick_settle_pending(limit=100)
+                if result.get("errors"):
+                    st.error("Erro ao gravar resultado. Confirme a RPC v3 do V152 no Supabase.")
+                    st.caption(" • ".join(result.get("errors")[:3]))
+                else:
+                    st.success(f"Conferência concluída: {result.get('settled',0)} atualizada(s) · {result.get('pending',0)} pendente(s).")
                 st.rerun()
             except Exception as exc:
                 st.error("Não foi possível conferir os resultados agora."); st.caption(type(exc).__name__)
