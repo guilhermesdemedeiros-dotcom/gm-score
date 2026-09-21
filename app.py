@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-22-v173-client-safe-games-daily-candidates"
+GM_BUILD = "2026-09-22-v174-safe-daily-fallback-loading"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -13954,7 +13954,15 @@ def gm_daily_pick_candidates(target_date, cutoff_at=None):
         mid = str(pred.get("match_id") or "").strip()
         fx = fixture_map.get(mid) or {}
         status = _gm_api_norm(fx.get("status") or pred.get("match_status") or "")
-        if status and any(tok in status for tok in blocked_status_tokens):
+        # V174: status é tratado por estados completos. O teste antigo por substring
+        # podia bloquear um pré-jogo por coincidência textual em respostas do provedor.
+        _status_compact = re.sub(r"[^a-z0-9]+", " ", status).strip()
+        _blocked_exact = {
+            "finished", "ft", "after et", "after pen", "cancelled", "canceled",
+            "postponed", "abandoned", "awarded", "live", "in play", "inplay",
+            "halftime", "half time", "1st half", "2nd half", "extra time", "penalties"
+        }
+        if _status_compact in _blocked_exact:
             excluded_status += 1
             continue
         time_label = _gm_daily_time_label(fx.get("time") or pred.get("match_time") or "")
@@ -14368,10 +14376,24 @@ def gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=8):
         _gm_daily_pick_disk_cache_clear(today.isoformat())
     recent_rows=gm_daily_pick_recent(100)
     existing_rows=[r for r in recent_rows if str(r.get("pick_date") or "")==today.isoformat()]
-    cutoff_at=datetime.now(BRASILIA_TZ)+timedelta(minutes=10)
+    cutoff_at=datetime.now(BRASILIA_TZ)+timedelta(minutes=2)
     _source_started=time.perf_counter()
     candidates,meta=gm_daily_pick_candidates(today,cutoff_at=cutoff_at)
+    # V174: se todos os jogos de hoje já começaram/encerraram, a triagem ADM não
+    # fica vazia por definição. Busca a próxima grade oficial (amanhã), mantendo
+    # a publicação exclusivamente manual. Não rebaixa probabilidade nem inventa odd.
+    _opportunity_date = today
+    if not candidates and not meta.get("error"):
+        _tomorrow = today + timedelta(days=1)
+        _tomorrow_cutoff = datetime(_tomorrow.year, _tomorrow.month, _tomorrow.day, 0, 0, tzinfo=BRASILIA_TZ)
+        _next_candidates, _next_meta = gm_daily_pick_candidates(_tomorrow, cutoff_at=_tomorrow_cutoff)
+        if _next_candidates and not _next_meta.get("error"):
+            candidates, meta = _next_candidates, dict(_next_meta)
+            _opportunity_date = _tomorrow
+            meta["fallback_next_day"] = True
     _source_seconds=time.perf_counter()-_source_started
+    meta=dict(meta or {})
+    meta["opportunity_date"] = _opportunity_date.isoformat()
     if meta.get("error"): return {"ok":False,"reason":"source_error","meta":meta}
     published_legs=set()
     for row in existing_rows:
@@ -15443,7 +15465,21 @@ else:
         gm_render_apifootball_stat_audit()
         gm_render_calibration_dashboard()
     if _gm_caps["analysis_intelligence"]:
+        _gm_loading_slot = st.empty()
+        if _gm_games_direct_analysis:
+            _gm_loading_slot.markdown(
+                """<div style="position:fixed;inset:0;z-index:999998;background:rgba(7,13,18,.86);display:flex;align-items:center;justify-content:center;backdrop-filter:blur(3px)">
+                <div style="text-align:center;padding:28px 30px;border:1px solid rgba(31,209,119,.35);border-radius:18px;background:#0b1419;box-shadow:0 18px 60px rgba(0,0,0,.45);max-width:360px;width:calc(100% - 48px)">
+                <div style="font-size:38px;line-height:1;margin-bottom:14px">⚽</div>
+                <div style="font-size:20px;font-weight:800;color:#fff">Carregando partida...</div>
+                <div style="font-size:13px;color:#b7c3ca;margin-top:8px">Preparando estatísticas, probabilidades e mercados.</div>
+                <div style="height:5px;background:#16252c;border-radius:999px;overflow:hidden;margin-top:18px"><div class="gm-load-runner"></div></div>
+                </div></div>
+                <style>@keyframes gmLoadMove{0%{transform:translateX(-100%)}100%{transform:translateX(360%)}}.gm-load-runner{width:28%;height:100%;background:#1fd177;border-radius:999px;animation:gmLoadMove 1.05s ease-in-out infinite}</style>""",
+                unsafe_allow_html=True,
+            )
         render_analysis()
+        _gm_loading_slot.empty()
         gm_force_analysis_scroll_top_after_render()
     else:
         _free_match = st.session_state.get("gm_games_direct_match") if isinstance(st.session_state.get("gm_games_direct_match"), dict) else {}
