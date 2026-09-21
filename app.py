@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-21-v159-national-teams-manual-and-date-routing"
+GM_BUILD = "2026-09-21-v160-national-teams-ptbr-visual-context"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -95,6 +95,36 @@ GM_FIFA_TOP50 = {
 }
 GM_NATIONAL_COMPETITION = "Seleções - Internacional"
 
+# V160 — apresentação pt-BR das seleções. As chaves canônicas em inglês continuam
+# sendo usadas internamente para casar com APIfootball/ranking sem alterar cálculos.
+GM_FIFA_PTBR_NAMES = {
+    "Spain":"Espanha", "Argentina":"Argentina", "France":"França", "England":"Inglaterra",
+    "Brazil":"Brasil", "Morocco":"Marrocos", "Portugal":"Portugal", "Belgium":"Bélgica",
+    "Netherlands":"Países Baixos", "Mexico":"México", "Colombia":"Colômbia", "Germany":"Alemanha",
+    "Croatia":"Croácia", "Switzerland":"Suíça", "Italy":"Itália", "United States":"Estados Unidos",
+    "Japan":"Japão", "Senegal":"Senegal", "Norway":"Noruega", "Uruguay":"Uruguai",
+    "Denmark":"Dinamarca", "Iran":"Irã", "Austria":"Áustria", "Egypt":"Egito", "Ecuador":"Equador",
+    "Nigeria":"Nigéria", "Türkiye":"Turquia", "Australia":"Austrália", "Algeria":"Argélia",
+    "Canada":"Canadá", "Côte d'Ivoire":"Costa do Marfim", "Korea Republic":"Coreia do Sul",
+    "Ukraine":"Ucrânia", "Paraguay":"Paraguai", "Russia":"Rússia", "Poland":"Polônia",
+    "Sweden":"Suécia", "Wales":"País de Gales", "Hungary":"Hungria", "Serbia":"Sérvia",
+    "DR Congo":"RD Congo", "Scotland":"Escócia", "Cameroon":"Camarões", "Panama":"Panamá",
+    "Slovakia":"Eslováquia", "Greece":"Grécia", "Venezuela":"Venezuela", "Czechia":"Tchéquia",
+    "Chile":"Chile", "Peru":"Peru",
+}
+GM_FIFA_FLAGS = {
+    "Spain":"🇪🇸", "Argentina":"🇦🇷", "France":"🇫🇷", "England":"🏴", "Brazil":"🇧🇷",
+    "Morocco":"🇲🇦", "Portugal":"🇵🇹", "Belgium":"🇧🇪", "Netherlands":"🇳🇱", "Mexico":"🇲🇽",
+    "Colombia":"🇨🇴", "Germany":"🇩🇪", "Croatia":"🇭🇷", "Switzerland":"🇨🇭", "Italy":"🇮🇹",
+    "United States":"🇺🇸", "Japan":"🇯🇵", "Senegal":"🇸🇳", "Norway":"🇳🇴", "Uruguay":"🇺🇾",
+    "Denmark":"🇩🇰", "Iran":"🇮🇷", "Austria":"🇦🇹", "Egypt":"🇪🇬", "Ecuador":"🇪🇨",
+    "Nigeria":"🇳🇬", "Türkiye":"🇹🇷", "Australia":"🇦🇺", "Algeria":"🇩🇿", "Canada":"🇨🇦",
+    "Côte d'Ivoire":"🇨🇮", "Korea Republic":"🇰🇷", "Ukraine":"🇺🇦", "Paraguay":"🇵🇾",
+    "Russia":"🇷🇺", "Poland":"🇵🇱", "Sweden":"🇸🇪", "Wales":"🏴", "Hungary":"🇭🇺",
+    "Serbia":"🇷🇸", "DR Congo":"🇨🇩", "Scotland":"🏴", "Cameroon":"🇨🇲", "Panama":"🇵🇦",
+    "Slovakia":"🇸🇰", "Greece":"🇬🇷", "Venezuela":"🇻🇪", "Czechia":"🇨🇿", "Chile":"🇨🇱", "Peru":"🇵🇪",
+}
+
 GM_FIFA_TEAM_ALIASES = {
     "spain":"Spain", "espana":"Spain",
     "argentina":"Argentina", "france":"France", "franca":"France",
@@ -136,6 +166,18 @@ def gm_fifa_points(name):
     canonical = gm_fifa_team_key(name)
     item = GM_FIFA_TOP50.get(canonical)
     return float(item[1]) if item else None
+
+def gm_national_name_ptbr(name):
+    canonical = gm_fifa_team_key(name)
+    return GM_FIFA_PTBR_NAMES.get(canonical, str(name or "").strip())
+
+def gm_national_flag(name):
+    canonical = gm_fifa_team_key(name)
+    return GM_FIFA_FLAGS.get(canonical, "🌐")
+
+def gm_national_display_name(name, with_flag=True):
+    label = gm_national_name_ptbr(name)
+    return f"{gm_national_flag(name)} {label}" if with_flag else label
 
 def gm_national_fixture_eligible(home, away):
     """Regra GM SCORE: Top-25 enfrenta qualquer seleção A; fora do Top-25,
@@ -370,6 +412,11 @@ def gm_current_match_team_id(team_name, side=None):
 def gm_league_visual(competition):
     """Identidade visual oficial da competição; camada somente de apresentação."""
     league_id = str((GM_APIFOOTBALL_FIXED_LEAGUE_IDS or {}).get(competition) or "").strip()
+    if competition == GM_NATIONAL_COMPETITION:
+        try:
+            league_id = str((st.session_state.get("gm_games_direct_match") or {}).get("league_id") or "").strip()
+        except Exception:
+            league_id = ""
     if not league_id:
         return {"id": "", "name": competition_display_name(competition), "logo": ""}
     try:
@@ -411,6 +458,13 @@ def gm_current_match_datetime():
     return ""
 
 def gm_team_badge_html(team_name, competition=None, team_id=None, size=24, show_name=True):
+    # V160: seleções usam bandeira + nome pt-BR; clubes preservam o catálogo oficial.
+    if competition == GM_NATIONAL_COMPETITION:
+        flag = html.escape(gm_national_flag(team_name))
+        name = html.escape(gm_national_name_ptbr(team_name))
+        icon = f'<span aria-hidden="true" style="font-size:{max(18,int(size))}px;line-height:1;display:inline-flex;align-items:center;justify-content:center">{flag}</span>'
+        text = f'<span>{name}</span>' if show_name else ''
+        return f'<span class="gm-team-with-badge" style="display:inline-flex;align-items:center;gap:7px;min-width:0">{icon}{text}</span>'
     visual = gm_team_visual(team_name, competition, team_id)
     badge = str(visual.get("badge") or "")
     name = html.escape(str(team_name or ""))
@@ -3738,7 +3792,14 @@ def gm_render_match_hero(team_a, team_b, league_name, season_text, probs=None, u
     league_visual = gm_league_visual(league_name)
     league_logo = str(league_visual.get("logo") or "")
     league_logo_html = (f'<img src="{html.escape(league_logo, quote=True)}" alt="" loading="lazy" style="width:30px;height:30px;object-fit:contain">') if league_logo else ""
-    league_title = _gm_safe_html(league_name)
+    if league_name == GM_NATIONAL_COMPETITION:
+        try:
+            _nat_tournament_title = str((st.session_state.get("gm_games_direct_match") or {}).get("tournament") or "Seleções - Internacional").strip()
+        except Exception:
+            _nat_tournament_title = "Seleções - Internacional"
+        league_title = _gm_safe_html(_nat_tournament_title)
+    else:
+        league_title = _gm_safe_html(league_name)
     match_datetime = gm_current_match_datetime()
     season_html = _gm_safe_html(season_text)
     meta = f"{season_html}"
@@ -12311,6 +12372,7 @@ def render_analysis():
                     teams,
                     index=teams.index(default_home),
                     key="home_widget",
+                    format_func=(lambda x: gm_national_display_name(x)) if league_name == GM_NATIONAL_COMPETITION else None,
                 )
             with manual_c2:
                 manual_team_b = st.selectbox(
@@ -12318,6 +12380,7 @@ def render_analysis():
                     teams,
                     index=teams.index(default_away),
                     key="away_widget",
+                    format_func=(lambda x: gm_national_display_name(x)) if league_name == GM_NATIONAL_COMPETITION else None,
                 )
 
             if manual_team_a == manual_team_b:
@@ -12381,7 +12444,9 @@ def render_analysis():
         loaded_away = resolve_team_name(st.session_state.get("loaded_away"), teams)
 
     if loaded_home and loaded_away:
-        st.caption(f"✅ Jogo carregado: {loaded_home} × {loaded_away}")
+        _loaded_home_label = gm_national_display_name(loaded_home) if league_name == GM_NATIONAL_COMPETITION else loaded_home
+        _loaded_away_label = gm_national_display_name(loaded_away) if league_name == GM_NATIONAL_COMPETITION else loaded_away
+        st.caption(f"✅ Jogo carregado: {_loaded_home_label} × {_loaded_away_label}")
         if league_name == GM_NATIONAL_COMPETITION:
             _nat_payload = st.session_state.get("gm_games_direct_match") or {}
             _nat_tournament = str(_nat_payload.get("tournament") or "Seleções").strip()
@@ -14922,11 +14987,13 @@ def gm_render_games_page():
     for i, f in enumerate(safe):
         comp = str(f.get("competition") or ""); home = str(f.get("home") or ""); away = str(f.get("away") or ""); tm = str(f.get("time") or "—")
         _display_comp = str(f.get("tournament") or "").strip() if comp == GM_NATIONAL_COMPETITION else competition_display_name(comp)
+        _home_display, _away_display = home, away
         if comp == GM_NATIONAL_COMPETITION:
             _rh, _ra = gm_fifa_rank(home), gm_fifa_rank(away)
             _rank_txt = f" · FIFA #{_rh if _rh is not None else '—'} × #{_ra if _ra is not None else '—'}"
             _display_comp = "🌍 " + (_display_comp or "Seleções") + _rank_txt
-        card_html = '<div id="gm-game-{}" class="gm-game-card"><div class="gm-game-time">{}</div><div class="gm-game-body"><div class="gm-game-league">{}</div><div class="gm-game-teams">{} × {}</div></div></div>'.format(i, html.escape(tm), html.escape(_display_comp), html.escape(home), html.escape(away))
+            _home_display, _away_display = gm_national_display_name(home), gm_national_display_name(away)
+        card_html = '<div id="gm-game-{}" class="gm-game-card"><div class="gm-game-time">{}</div><div class="gm-game-body"><div class="gm-game-league">{}</div><div class="gm-game-teams">{} × {}</div></div></div>'.format(i, html.escape(tm), html.escape(_display_comp), html.escape(_home_display), html.escape(_away_display))
         st.markdown(card_html, unsafe_allow_html=True)
         if st.button("📊 Analisar", use_container_width=False, key=f"gm_games_analyze_{target_date}_{i}_{clean_col(comp)}"):
             # V81: transporta o contexto completo do jogo e neutraliza o gm_view=games
