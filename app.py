@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-21-v168-clean-login-admin-trial"
+GM_BUILD = "2026-09-21-v169-restore-match-hero"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -3783,6 +3783,121 @@ def gm_render_public_intro():
     gm_render_payment_plans(title="👑 Planos GM SCORE Pro — 15% OFF no Pix")
     st.markdown("### 🔐 Comece sem pagar")
     st.markdown("**1.** Crie sua conta e confirme o e-mail.  \n**2.** Entre e use o **GM SCORE Pro por 6 horas grátis**.  \n**3.** Se quiser continuar no Pro, escolha um plano.  \n**4.** Sem assinatura após o teste, sua conta continua no **Free**.")
+
+def _gm_display_1x2_percentages(probs):
+    """Arredonda 1X2 para inteiros preservando soma visual exata de 100%."""
+    if not probs:
+        return {"home": 0, "draw": 0, "away": 0}
+    keys = ("home", "draw", "away")
+    vals = []
+    for key in keys:
+        try:
+            vals.append(max(float(probs.get(key, 0.0) or 0.0), 0.0))
+        except Exception:
+            vals.append(0.0)
+    total = sum(vals)
+    if total <= 0:
+        return {"home": 0, "draw": 0, "away": 0}
+    scaled = [v * 100.0 / total for v in vals]
+    base = [int(math.floor(v)) for v in scaled]
+    missing = 100 - sum(base)
+    order = sorted(range(3), key=lambda i: (scaled[i] - base[i], scaled[i]), reverse=True)
+    for i in order[:max(missing, 0)]:
+        base[i] += 1
+    return dict(zip(keys, base))
+
+
+def gm_render_match_hero(team_a, team_b, league_name, season_text, probs=None, updated_until=None, sample=None):
+    """Cabeçalho visual da partida real, sem alterar nenhum cálculo do modelo."""
+    team_a_html = _gm_safe_html(team_a)
+    team_b_html = _gm_safe_html(team_b)
+    team_a_visual = gm_team_badge_html(team_a, league_name, team_id=gm_current_match_team_id(team_a, "home"), size=54, show_name=False)
+    team_b_visual = gm_team_badge_html(team_b, league_name, team_id=gm_current_match_team_id(team_b, "away"), size=54, show_name=False)
+    team_a_label = _gm_safe_html(gm_national_name_ptbr(team_a) if league_name == GM_NATIONAL_COMPETITION else team_a)
+    team_b_label = _gm_safe_html(gm_national_name_ptbr(team_b) if league_name == GM_NATIONAL_COMPETITION else team_b)
+    league_html = _gm_safe_html(league_name)
+    league_visual = gm_league_visual(league_name)
+    league_logo = str(league_visual.get("logo") or "")
+    league_logo_html = (f'<img src="{html.escape(league_logo, quote=True)}" alt="" loading="lazy" style="width:30px;height:30px;object-fit:contain">') if league_logo else ""
+    if league_name == GM_NATIONAL_COMPETITION:
+        try:
+            _nat_tournament_title = str((st.session_state.get("gm_games_direct_match") or {}).get("tournament") or "Seleções - Internacional").strip()
+        except Exception:
+            _nat_tournament_title = "Seleções - Internacional"
+        league_title = _gm_safe_html(_nat_tournament_title)
+    else:
+        league_title = _gm_safe_html(league_name)
+    match_datetime = gm_current_match_datetime()
+    season_html = _gm_safe_html(season_text)
+    meta = f"{season_html}"
+    if match_datetime:
+        meta += f" • {_gm_safe_html(match_datetime)}"
+    if updated_until is not None and not pd.isna(updated_until):
+        try:
+            meta += f" • dados até {pd.Timestamp(updated_until):%d/%m/%Y}"
+        except Exception:
+            pass
+    if sample is not None:
+        meta += f" • amostra mínima: {int(sample)} jogo(s)"
+
+    if probs:
+        _display_1x2 = _gm_display_1x2_percentages(probs)
+        home = _display_1x2["home"]
+        draw = _display_1x2["draw"]
+        away = _display_1x2["away"]
+        fair_home = 100.0 / max(min(float(probs.get("home", 0.0)), 99.5), 0.5)
+        fair_draw = 100.0 / max(min(float(probs.get("draw", 0.0)), 99.5), 0.5)
+        fair_away = 100.0 / max(min(float(probs.get("away", 0.0)), 99.5), 0.5)
+        probability_html = f"""
+          <div class="gm-real-probgrid">
+            <div class="gm-real-probbox"><span>Vitória casa</span><b>{home}%</b><small>Odd justa {fair_home:.2f}</small></div>
+            <div class="gm-real-probbox"><span>Empate</span><b>{draw}%</b><small>Odd justa {fair_draw:.2f}</small></div>
+            <div class="gm-real-probbox"><span>Vitória fora</span><b>{away}%</b><small>Odd justa {fair_away:.2f}</small></div>
+          </div>
+          <div class="gm-real-note">Probabilidades estimadas pelo modelo GM SCORE para a partida selecionada — não representam garantia de resultado.</div>
+        """
+    else:
+        probability_html = '<div class="gm-real-note">A análise estatística será exibida conforme a disponibilidade e qualidade dos dados da competição.</div>'
+
+    st.markdown(
+        f"""
+        <style>
+        .gm-real-match{{position:relative;overflow:hidden;border:1px solid rgba(34,197,94,.40);border-radius:22px;padding:20px;margin:.65rem 0 1rem;
+          background:radial-gradient(circle at 84% 10%,rgba(74,222,128,.16),transparent 27%),linear-gradient(145deg,rgba(22,128,58,.20),rgba(15,23,42,.94));box-shadow:0 15px 42px rgba(0,0,0,.19);color:#f8fafc}}
+        .gm-real-kicker{{font-size:.69rem;text-transform:uppercase;letter-spacing:.13em;font-weight:850;color:#86efac}}
+        .gm-real-title{{font-size:clamp(1.35rem,4.5vw,2rem);font-weight:950;letter-spacing:-.035em;margin:.38rem 0 .22rem;line-height:1.12}}
+        .gm-real-meta{{font-size:.76rem;color:#94a3b8;line-height:1.4}}
+        .gm-real-probgrid{{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:15px}}
+        .gm-real-probbox{{background:rgba(15,23,42,.76);border:1px solid rgba(148,163,184,.20);border-radius:14px;padding:11px;text-align:center}}
+        .gm-real-probbox span{{display:block;font-size:.67rem;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em}}.gm-real-probbox b{{display:block;font-size:1.32rem;margin-top:3px;color:#fff}}.gm-real-probbox small{{display:block;font-size:.64rem;color:#94a3b8;margin-top:2px;font-weight:600}}
+        .gm-real-note{{font-size:.72rem;color:#94a3b8;margin-top:10px;line-height:1.4}}
+        @media(max-width:520px){{.gm-real-match{{padding:17px 14px}}.gm-real-probbox{{padding:9px 5px}}.gm-real-probbox b{{font-size:1.12rem}}}}
+        </style>
+        <section class="gm-real-match">
+          <div class="gm-real-kicker">Partida carregada • análise VIP</div>
+          <div class="gm-match-identity" style="display:grid;grid-template-columns:minmax(0,1fr) minmax(150px,.82fr) minmax(0,1fr);align-items:center;gap:8px;margin:.65rem 0 .35rem">
+            <div style="display:flex;flex-direction:column;justify-content:center;align-items:center;min-width:0;text-align:center;gap:8px">
+              <div style="height:58px;display:flex;align-items:center;justify-content:center">{team_a_visual}</div>
+              <div style="width:100%;font-size:clamp(.82rem,3vw,1rem);font-weight:850;color:#f8fafc;line-height:1.15;white-space:normal;overflow-wrap:anywhere">{team_a_label}</div>
+            </div>
+            <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-width:0;text-align:center">
+              <div style="height:38px;display:flex;align-items:center;justify-content:center">{league_logo_html}</div>
+              <div style="width:100%;font-size:.74rem;font-weight:900;color:#cbd5e1;line-height:1.15;margin-top:3px;text-align:center;white-space:normal;overflow-wrap:anywhere">{league_title}</div>
+              <div style="font-size:1.38rem;font-weight:950;color:#24e58b;line-height:1;margin-top:7px">×</div>
+              <div style="font-size:.69rem;font-weight:750;color:#94a3b8;line-height:1.2;margin-top:7px">{_gm_safe_html(match_datetime) if match_datetime else ''}</div>
+            </div>
+            <div style="display:flex;flex-direction:column;justify-content:center;align-items:center;min-width:0;text-align:center;gap:8px">
+              <div style="height:58px;display:flex;align-items:center;justify-content:center">{team_b_visual}</div>
+              <div style="width:100%;font-size:clamp(.82rem,3vw,1rem);font-weight:850;color:#f8fafc;line-height:1.15;white-space:normal;overflow-wrap:anywhere">{team_b_label}</div>
+            </div>
+          </div>
+          <div class="gm-real-meta" style="text-align:center">{season_html}{(' • dados até ' + pd.Timestamp(updated_until).strftime('%d/%m/%Y')) if updated_until is not None and not pd.isna(updated_until) else ''}{(' • amostra mínima: ' + str(int(sample)) + ' jogo(s)') if sample is not None else ''}</div>
+          {probability_html}
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
 
 def gm_render_login_form(form_key="gm_public_login"):
     with st.form(form_key, clear_on_submit=False):
