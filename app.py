@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-21-v162-national-opponent-data-flags-navigation-parity"
+GM_BUILD = "2026-09-21-v163-national-data-integrity-flags-navigation"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -521,14 +521,14 @@ def gm_current_match_datetime():
         pass
     return ""
 
-def gm_team_badge_html(team_name, competition=None, team_id=None, size=24, show_name=True):
+def gm_team_badge_html(team_name, competition=None, team_id=None, size=24, show_name=True, league_id=None):
     # V160: seleções usam bandeira + nome pt-BR; clubes preservam o catálogo oficial.
     if competition == GM_NATIONAL_COMPETITION:
         flag = html.escape(gm_national_flag(team_name))
         name = html.escape(gm_national_name_ptbr(team_name))
         _payload = st.session_state.get("gm_games_direct_match") or {}
         _side_id = str(team_id or "").strip()
-        flag_url = gm_national_visual_url(team_name, _side_id, _payload.get("league_id"), 160)
+        flag_url = gm_national_visual_url(team_name, _side_id, league_id or _payload.get("league_id"), 160)
         if flag_url:
             icon = (f'<img src="{html.escape(flag_url, quote=True)}" alt="{flag}" loading="lazy" '
                     f'style="width:{int(size)+6}px;height:{int(size)}px;object-fit:cover;border-radius:3px;flex:0 0 auto">')
@@ -7642,6 +7642,7 @@ def gm_apifootball_pair_profiles(team_a, team_b, competition_name=None, limit_pe
             cards = ev.get("cards") or []
             if isinstance(cards, list):
                 yc = rc = 0
+                relevant_card_events = 0
                 for card in cards:
                     if not isinstance(card, dict):
                         continue
@@ -7650,13 +7651,19 @@ def gm_apifootball_pair_profiles(team_a, team_b, competition_name=None, limit_pe
                         continue
                     ct = _gm_api_norm(card.get("card"))
                     if "yellow" in ct:
-                        yc += 1
+                        yc += 1; relevant_card_events += 1
                     elif "red" in ct:
-                        rc += 1
-                if stat_value(stats, stat_aliases["Amarelos"], side) is None:
-                    add_metric(acc, "Amarelos", yc)
-                if stat_value(stats, stat_aliases["Vermelhos"], side) is None:
-                    add_metric(acc, "Vermelhos", rc)
+                        rc += 1; relevant_card_events += 1
+                # V163: lista vazia/sem eventos não prova que houve zero cartões;
+                # pode significar ausência de cobertura. Só usamos eventos como
+                # fallback quando há ao menos um cartão explicitamente registrado.
+                # Caso contrário o N da métrica fica menor e o mercado pode ficar
+                # Inconclusivo, em vez de fabricar média artificialmente baixa.
+                if relevant_card_events > 0:
+                    if stat_value(stats, stat_aliases["Amarelos"], side) is None:
+                        add_metric(acc, "Amarelos", yc)
+                    if stat_value(stats, stat_aliases["Vermelhos"], side) is None:
+                        add_metric(acc, "Vermelhos", rc)
             used_ids.append(str(ev.get("match_id") or ""))
 
         if acc.get("Jogos", 0) <= 0:
@@ -7699,6 +7706,45 @@ def gm_national_ranking_probabilities(home, away):
         "away": remaining * (1.0 - home_share),
     }
 
+def gm_national_victory_probabilities(home, away, df, scheduled_fixture=False):
+    """1X2 de seleções usando somente a base internacional real + contexto FIFA.
+
+    Não usa baseline de clubes, ClubElo de clubes nem perfil doméstico. Em escolha
+    manual não presume mando; em fixture oficial usa apenas um ajuste mínimo de
+    mando, pois campo neutro nem sempre está disponível no feed.
+    """
+    try:
+        rh = df[df["Time"] == home].iloc[0]
+        ra = df[df["Time"] == away].iloc[0]
+        hgf, hga = metric_value(rh, "Gols pró"), metric_value(rh, "Gols contra")
+        agf, aga = metric_value(ra, "Gols pró"), metric_value(ra, "Gols contra")
+        nh = int(float(rh.get("Jogos", 0) or 0)); na = int(float(ra.get("Jogos", 0) or 0))
+        if None in (hgf, hga, agf, aga) or min(nh, na) < 3:
+            return None
+        home_adj = 1.03 if scheduled_fixture else 1.0
+        lam_h = max(.18, min(3.4, ((float(hgf) + float(aga)) / 2.0) * home_adj))
+        lam_a = max(.18, min(3.4, ((float(agf) + float(hga)) / 2.0) / home_adj))
+        ph, pd, pa = _poisson_result_probs(lam_h, lam_a)
+        prior = gm_national_ranking_probabilities(home, away)
+        sample = min(nh, na)
+        if prior:
+            # Ranking é âncora contextual, não substituto da forma recente.
+            w = 0.24 if sample < 8 else (0.18 if sample < 12 else 0.14)
+            ph = ph*(1-w) + float(prior["home"])*w
+            pd = pd*(1-w) + float(prior["draw"])*w
+            pa = pa*(1-w) + float(prior["away"])*w
+        total = ph + pd + pa
+        if total <= 0:
+            return None
+        return {
+            "home": ph/total*100.0, "draw": pd/total*100.0, "away": pa/total*100.0,
+            "home_form": 50.0, "away_form": 50.0, "h2h_games": 0,
+            "expected_home_goals": lam_h, "expected_away_goals": lam_a,
+            "national_model": True,
+        }
+    except Exception:
+        return None
+
 def gm_blend_national_ranking(probs, home, away, sample):
     prior = gm_national_ranking_probabilities(home, away)
     if not probs or not prior:
@@ -7735,6 +7781,18 @@ def contextual_analysis_rows(team_a, team_b, competition_name, competition_df, r
     )
     low_results = min(ga, gb) < 6
     contextual = competition_name in CONTEXTUAL_COMPETITIONS
+
+    # V163: seleções jamais entram nas camadas domésticas/de clubes. A base que
+    # chega aqui já foi construída com partidas internacionais da própria seleção.
+    # Mantemos os valores e Ns reais; dado ausente continua ausente.
+    if competition_name == GM_NATIONAL_COMPETITION:
+        a = pd.Series(dict(base_a)); b = pd.Series(dict(base_b))
+        return a, b, {
+            "competition_games_home": ga, "competition_games_away": gb,
+            "h2h_games": 0, "home_profile": {}, "away_profile": {},
+            "home_relevance": .5, "away_relevance": .5,
+            "national_only": True, "data_recovery_debug": {},
+        }
 
     prof_a = load_team_domestic_profile(team_a, recent_games) if (contextual or low_results) else None
     prof_b = load_team_domestic_profile(team_b, recent_games) if (contextual or low_results) else None
@@ -12453,7 +12511,7 @@ def render_analysis():
                     teams,
                     index=teams.index(default_home),
                     key="home_widget",
-                    format_func=(lambda x: gm_national_display_name(x)) if league_name == GM_NATIONAL_COMPETITION else None,
+                    format_func=(lambda x: gm_national_display_name(x)) if league_name == GM_NATIONAL_COMPETITION else (lambda x: x),
                 )
             with manual_c2:
                 manual_team_b = st.selectbox(
@@ -12461,7 +12519,7 @@ def render_analysis():
                     teams,
                     index=teams.index(default_away),
                     key="away_widget",
-                    format_func=(lambda x: gm_national_display_name(x)) if league_name == GM_NATIONAL_COMPETITION else None,
+                    format_func=(lambda x: gm_national_display_name(x)) if league_name == GM_NATIONAL_COMPETITION else (lambda x: x),
                 )
 
             if manual_team_a == manual_team_b:
@@ -12575,20 +12633,22 @@ def render_analysis():
     # O modelo da própria competição é prioritário quando já há amostra. Quando
     # ela ainda é curta ou vazia, usamos a base contextual entre competições.
     comp_sample = min(int(float(raw_a.get("Jogos", 0) or 0)), int(float(raw_b.get("Jogos", 0) or 0)))
-    probs = victory_probabilities(team_a, team_b, df) if comp_sample >= 6 else None
-    if probs is None and analysis_context:
-        probs = contextual_victory_probabilities(team_a, team_b, a, b, analysis_context)
-    if probs is None:
-        probs = victory_probabilities(team_a, team_b, df)
-
-    if league_name == GM_NATIONAL_COMPETITION and probs:
-        probs = gm_blend_national_ranking(probs, team_a, team_b, comp_sample)
+    if league_name == GM_NATIONAL_COMPETITION:
+        _nat_payload = st.session_state.get("gm_games_direct_match") or {}
+        _nat_scheduled = bool(str(_nat_payload.get("fixture_id") or _nat_payload.get("match_id") or "").strip())
+        probs = gm_national_victory_probabilities(team_a, team_b, df, scheduled_fixture=_nat_scheduled)
+    else:
+        probs = victory_probabilities(team_a, team_b, df) if comp_sample >= 6 else None
+        if probs is None and analysis_context:
+            probs = contextual_victory_probabilities(team_a, team_b, a, b, analysis_context)
+        if probs is None:
+            probs = victory_probabilities(team_a, team_b, df)
 
     # Antes das odds, aplica uma camada independente de qualidade estrutural.
     # Isso corrige especialmente cruzamentos entre ligas: potencial ofensivo,
     # ClubElo/força global, nível doméstico e forma têm precedência sobre uma
     # amostra curta do torneio continental.
-    if probs:
+    if probs and league_name != GM_NATIONAL_COMPETITION:
         quality_prior = global_quality_prior(team_a, team_b, df=df, ctx=analysis_context)
         probs = calibrate_with_global_quality(
             probs, quality_prior, sample=comp_sample,
@@ -12598,7 +12658,11 @@ def render_analysis():
     # Mercado público entra apenas como calibrador, sem API key. Em torneios
     # com pouca amostra recebe peso moderado; em ligas maduras o modelo próprio
     # do GM SCORE permanece dominante.
-    market_odds = fetch_public_market_odds(team_a, team_b, league_name)
+    _market_allowed = True
+    if league_name == GM_NATIONAL_COMPETITION:
+        _nat_payload = st.session_state.get("gm_games_direct_match") or {}
+        _market_allowed = bool(str(_nat_payload.get("fixture_id") or _nat_payload.get("match_id") or "").strip())
+    market_odds = fetch_public_market_odds(team_a, team_b, league_name) if _market_allowed else None
     moneyline = market_odds if market_odds and not market_odds.get("error") else None
     if probs and moneyline:
         base_market_weight = 0.34 if comp_sample < 6 else 0.22
@@ -12608,13 +12672,13 @@ def render_analysis():
     # v65: aprende gradualmente o ambiente real de resultado da própria competição.
     # A camada só é ativada após 30 jogos concluídos e nunca supera 8% do 1X2 final.
     # O guardrail estrutural abaixo continua sendo a última proteção contra inversões.
-    if probs:
+    if probs and league_name != GM_NATIONAL_COMPETITION:
         probs = apply_competition_result_learning(probs, league_name, df)
 
     # Checagem final orientada por evidências independentes. Só atua quando pelo
     # menos dois sinais fortes concordam (ex.: H2H + nível da liga; Elo + mercado).
     # Isso evita que mando ou amostra curta invertam um favorito estrutural real.
-    if probs:
+    if probs and league_name != GM_NATIONAL_COMPETITION:
         probs = apply_evidence_consensus_guardrail(
             probs, quality_prior if 'quality_prior' in locals() else None,
             ctx=analysis_context, moneyline=moneyline,
@@ -15080,8 +15144,8 @@ def gm_render_games_page():
             _display_comp = "🌍 " + (_display_comp or "Seleções") + _rank_txt
             _home_display, _away_display = gm_national_display_name(home), gm_national_display_name(away)
         if comp == GM_NATIONAL_COMPETITION:
-            _home_html = gm_team_badge_html(home, GM_NATIONAL_COMPETITION, f.get("home_team_id"), size=20, show_name=True)
-            _away_html = gm_team_badge_html(away, GM_NATIONAL_COMPETITION, f.get("away_team_id"), size=20, show_name=True)
+            _home_html = gm_team_badge_html(home, GM_NATIONAL_COMPETITION, f.get("home_team_id"), size=20, show_name=True, league_id=f.get("league_id"))
+            _away_html = gm_team_badge_html(away, GM_NATIONAL_COMPETITION, f.get("away_team_id"), size=20, show_name=True, league_id=f.get("league_id"))
         else:
             _home_html, _away_html = html.escape(_home_display), html.escape(_away_display)
         card_html = '<div id="gm-game-{}" class="gm-game-card"><div class="gm-game-time">{}</div><div class="gm-game-body"><div class="gm-game-league">{}</div><div class="gm-game-teams">{} <span>×</span> {}</div></div></div>'.format(i, html.escape(tm), html.escape(_display_comp), _home_html, _away_html)
@@ -15101,7 +15165,8 @@ def gm_render_games_page():
                 # V92: identidade oficial da partida viaja junto com a navegação.
                 # Estes IDs servem apenas para resolver o confronto correto; não
                 # alteram fórmulas, probabilidades ou critérios estatísticos.
-                "match_id": str(f.get("match_id") or "").strip(),
+                "match_id": str(f.get("match_id") or f.get("fixture_id") or "").strip(),
+                "fixture_id": str(f.get("fixture_id") or f.get("match_id") or "").strip(),
                 "league_id": str(f.get("league_id") or "").strip(),
                 "tournament": str(f.get("tournament") or "").strip(),
                 "competition_weight": f.get("competition_weight"),
