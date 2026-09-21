@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-21-v171-admin-console-simplified-system"
+GM_BUILD = "2026-09-22-v172-unified-daily-picks-risk-odd3"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -2531,176 +2531,58 @@ def _gm_daily_pick_remove_cached_option(cache_key, kind, opt):
 
 
 def gm_render_admin_daily_pick_approval():
-    """Área privada do ADM para avaliar e publicar as Dicas do Dia."""
-    st.markdown("### 💡 Aprovação de dicas")
-    st.caption("O motor prepara alternativas privadas. Só a opção aprovada é publicada para os clientes e entra no histórico oficial.")
-    try:
-        rows = gm_daily_pick_recent(100)
-    except Exception:
-        st.warning("As Dicas do Dia ainda não estão ativas nesta instalação.")
-        return
-
-    today = datetime.now(BRASILIA_TZ).date()
-    def published_for(kind):
-        return [row for row in rows if str(row.get("pick_date") or "") == today.isoformat() and str(row.get("pick_kind") or "dica") == kind]
-
-    try:
-        gm_daily_pick_settle_pending(limit=100)
-    except Exception:
-        pass
-
-    cache_key = f"gm_daily_admin_options_{today.isoformat()}"
-    _has_prepared = isinstance(st.session_state.get(cache_key), dict) and bool(st.session_state.get(cache_key))
-
-    a1, a2 = st.columns(2)
-    _load_label = "🔄 Carregar mais opções" if _has_prepared else "💡 Preparar opções"
-    if a1.button(_load_label, use_container_width=True, key="gm_admin_daily_refresh_candidates"):
+    """V172: fila única e privada de Dicas do Dia para decisão do administrador."""
+    st.markdown("### 💡 Dicas do Dia — avaliação do ADM")
+    st.caption("Aqui aparecem as melhores oportunidades disponíveis do dia. Nada desta triagem aparece para o cliente antes da sua aprovação.")
+    today=datetime.now(BRASILIA_TZ).date(); cache_key=f"gm_daily_admin_options_{today.isoformat()}"
+    try: rows=gm_daily_pick_recent(100)
+    except Exception: st.warning("As Dicas do Dia ainda não estão ativas nesta instalação."); return
+    a1,a2=st.columns(2)
+    has=bool(st.session_state.get(cache_key))
+    if a1.button("🔎 Buscar melhores oportunidades" if not has else "➕ Carregar mais oportunidades",use_container_width=True,key="gm_admin_daily_refresh_candidates"):
         try:
-            if not _has_prepared:
-                with st.spinner("Preparando opções para avaliação do ADM..."):
-                    # V145: a Central abre imediatamente. O cálculo pesado só começa
-                    # por ação explícita do ADM, evitando travar navegação/reruns gerais.
-                    st.session_state[cache_key] = gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=3)
-            else:
-                with st.spinner("Montando mais opções com os dados já carregados..."):
-                    _cached_prepared = st.session_state.get(cache_key) or {}
-                    _expanded = gm_daily_pick_expand_cached_admin_options(_cached_prepared, per_kind=5)
-                    if _expanded.get("ok"):
-                        st.session_state[cache_key] = _expanded
-                    else:
-                        # Só usa a fonte novamente se a sessão realmente não possuir
-                        # a base preparada; nunca força atualização de odds neste botão.
-                        st.session_state[cache_key] = gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=1)
+            with st.spinner("Analisando jogos, probabilidades e odds reais do dia..."):
+                if has: st.session_state[cache_key]=gm_daily_pick_expand_cached_admin_options(st.session_state.get(cache_key) or {},per_kind=12)
+                else: st.session_state[cache_key]=gm_daily_pick_prepare_admin_options(force_refresh=False,per_kind=10)
             st.rerun()
-        except Exception as exc:
-            st.error("Não foi possível preparar as opções agora.")
-            st.caption(type(exc).__name__)
-    if a2.button("✅ Conferir resultados", use_container_width=True, key="gm_admin_daily_settle_now"):
+        except Exception as exc: st.error("Não foi possível preparar as oportunidades agora."); st.caption(type(exc).__name__)
+    if a2.button("✅ Conferir resultados",use_container_width=True,key="gm_admin_daily_settle_now"):
         try:
-            result = gm_daily_pick_settle_pending(limit=100)
-            if result.get("errors"):
-                st.error("Erro ao gravar resultado. Confirme a RPC v3 do V152 no Supabase.")
-                st.caption(" • ".join(result.get("errors")[:3]))
-            else:
-                st.success(f"Conferência concluída: {result.get('settled',0)} atualizada(s) · {result.get('pending',0)} ainda pendente(s).")
-            st.rerun()
-        except Exception as exc:
-            st.error("Não foi possível conferir os resultados agora.")
-            st.caption(type(exc).__name__)
-
-    prepared = st.session_state.get(cache_key) or {}
-    if not prepared:
-        st.info("Toque em **💡 Preparar opções** para calcular as alternativas do dia. A navegação permanece livre até você iniciar o processamento.")
+            result=gm_daily_pick_settle_pending(limit=100); st.success(f"Conferência: {result.get('settled',0)} atualizada(s) · {result.get('pending',0)} pendente(s)."); st.rerun()
+        except Exception as exc: st.error("Não foi possível conferir os resultados agora."); st.caption(type(exc).__name__)
+    prepared=st.session_state.get(cache_key) or {}
+    if not prepared: st.info("Use **Buscar melhores oportunidades** para montar a fila privada do dia."); return
+    if not prepared.get("ok"): st.warning("A fonte de odds/probabilidades não entregou dados suficientes agora."); return
+    opts=[o for o in ((prepared.get("options") or {}).get("dica") or []) if not _gm_daily_pick_is_discarded(o,today)]
+    if not opts:
+        meta=prepared.get("meta") or {}
+        st.warning("A grade foi consultada, mas nenhuma oportunidade com probabilidade estimada de pelo menos 70% e odd real ficou disponível nesta coleta.")
+        st.caption(f"Partidas oficiais: {int(meta.get('fixtures') or 0)} · previsões: {int(meta.get('predictions') or 0)} · odds: {int(meta.get('odds') or 0)} · candidatos válidos: {int(meta.get('candidates') or 0)}.")
         return
-    if not prepared.get("ok"):
-        reason = str(prepared.get("reason") or "indisponivel")
-        meta = prepared.get("meta") or {}
-        st.info("As opções privadas ainda não puderam ser preparadas.")
-        if reason == "source_error":
-            st.warning("A fonte oficial de probabilidades/odds não respondeu corretamente. Use Atualizar opções; o sistema não publica dica sem dados reais.")
-            if meta.get("error"):
-                st.caption(f"Diagnóstico da fonte: {meta.get('error')}")
-        else:
-            st.caption(f"Diagnóstico: {reason}")
-        return
-
-    option_map = prepared.get("options") or {}
-    meta = prepared.get("meta") or {}
-    total_options = sum(len(v or []) for v in option_map.values())
-    if total_options == 0:
-        st.warning("Nenhuma aprovação foi formada nesta atualização sem violar os critérios oficiais.")
-        st.caption(
-            "Fonte: "
-            f"{int(meta.get('fixtures') or 0)} partidas oficiais · "
-            f"{int(meta.get('predictions') or 0)} previsões · "
-            f"{int(meta.get('odds') or 0)} linhas de odds · "
-            f"{int(meta.get('candidates') or 0)} mercados candidatos. "
-            f"Busca direta recuperou {int(meta.get('direct_prediction_hits') or 0)} previsão(ões) e "
-            f"{int(meta.get('direct_odds_hits') or 0)} conjunto(s) de odds. "
-            f"Excluídos: {int(meta.get('excluded_past') or 0)} por horário/status e "
-            f"{int(meta.get('excluded_unknown_time') or 0)} sem horário confiável. "
-            "O piso de 75% permanece inalterado. "
-            f"Tempo da fonte: {float(meta.get('perf_source_seconds') or 0):.1f}s · "
-            f"tempo total: {float(meta.get('perf_total_seconds') or 0):.1f}s."
-        )
-        st.caption(
-            "V156: mercados negativos seguem removidos. Matadeira/Dica usam piso de 78%, "
-            "Bingo mantém 75%, e uma seleção usada não pode reaparecer em outra aposta."
-        )
-    for kind in ("matadeira", "dica", "bingo"):
-        label = GM_DAILY_PICK_PROFILES[kind]["label"]
-        published_count = len(published_for(kind))
-        opts = [o for o in (option_map.get(kind) or []) if not _gm_daily_pick_is_discarded(o, today)]
-        suffix = f" · {published_count} publicada(s) hoje" if published_count else ""
-        with st.expander(f"{label} — {len(opts)} opção(ões) para avaliar{suffix}", expanded=(kind == "matadeira")):
-            if not opts:
-                st.caption("Nenhuma alternativa atingiu os filtros mínimos nesta atualização.")
-            for idx, opt in enumerate(opts, 1):
-                legs = _gm_daily_sort_legs(opt.get("legs") or [])
-                total_odd = _gm_daily_num(opt.get("total_odd")) or 0.0
-                model_prob = _gm_daily_num(opt.get("model_probability")) or 0.0
-                st.markdown(f"**Opção {idx} · {_gm_daily_bet_type_label(opt.get('bet_type'), len(legs))} · odd {total_odd:.2f}**")
-                st.caption(f"Probabilidade combinada estimada: {model_prob:.1f}% · todas as pernas ≥ 75%")
-                for leg in legs:
-                    st.markdown(f"- **{leg.get('market')}** @ {(_gm_daily_num(leg.get('odd')) or 0):.2f} · {(_gm_daily_num(leg.get('probability')) or 0):.0f}% · {leg.get('home')} × {leg.get('away')} · {_gm_daily_time_label(leg.get('time'))}")
-                direct_bet_url, bet_link_invalid = gm_daily_pick_admin_bet_link(kind, idx, "gm_admin")
-                approve_col, discard_col = st.columns([2, 1])
-                if approve_col.button("✅ Aprovar e publicar", use_container_width=True, type="primary", key=f"gm_admin_approve_{kind}_{idx}", disabled=bet_link_invalid):
-                    try:
-                        publish_opt = dict(opt)
-                        publish_opt["direct_bet_url"] = direct_bet_url
-                        with st.spinner("Publicando..."):
-                            result = gm_daily_pick_publish_selected(publish_opt)
-                        if result.get("ok"):
-                            _gm_daily_pick_remove_cached_option(cache_key, kind, opt)
-                            news_ok = True
-                            try:
-                                gm_daily_pick_publish_news(kind, publish_opt)
-                            except Exception:
-                                news_ok = False
-                            st.toast("Dica publicada com sucesso.", icon="✅")
-                            if not news_ok:
-                                st.warning("A dica foi publicada, mas a Novidade automática não pôde ser criada.")
-                            st.rerun()
-                        else:
-                            st.warning("Esta alternativa não pôde ser publicada pelos critérios de segurança.")
-                    except Exception as exc:
-                        st.error("Falha ao publicar a dica aprovada.")
-                        st.caption(type(exc).__name__)
-                if discard_col.button("✕ Descartar", use_container_width=True, key=f"gm_admin_discard_{kind}_{idx}"):
-                    _gm_daily_pick_discard(opt, today)
-                    _gm_daily_pick_remove_cached_option(cache_key, kind, opt)
-                    st.toast("Opção descartada permanentemente.", icon="🗑️")
-                    st.rerun()
-                if idx < len(opts):
-                    st.divider()
-
-    st.markdown("### 🗂️ Histórico publicado")
-    st.caption("Dicas encerradas ficam visíveis ao público até você decidir excluí-las. Green e Red podem ser removidos individualmente.")
-    settled_rows = [r for r in rows if str(r.get("status") or "") in {"green", "red", "void"}]
-    settled_rows.sort(key=lambda r: str(r.get("pick_date") or ""), reverse=True)
-    if not settled_rows:
-        st.info("Ainda não há Dicas do Dia encerradas no histórico.")
-    else:
-        for hidx, row in enumerate(settled_rows[:60], 1):
-            kind = str(row.get("pick_kind") or "dica")
-            label = GM_DAILY_PICK_PROFILES.get(kind, {}).get("label", kind.title())
-            day = str(row.get("pick_date") or "—")
-            odd = _gm_daily_num(row.get("total_odd")) or 0.0
-            status = _gm_daily_status_badge(row.get("status"))
-            with st.expander(f"{status} · {label} · {day} · odd {odd:.2f}", expanded=False):
-                for leg in _gm_daily_sort_legs(row.get("legs") or []):
-                    st.caption(f"⚽ {leg.get('home')} × {leg.get('away')} · {leg.get('market')} @ {(_gm_daily_num(leg.get('odd')) or 0):.2f}")
-                st.warning("Excluir remove esta dica do histórico público e das métricas que usam o histórico publicado.")
-                if st.button("🗑️ Excluir do histórico", use_container_width=True, key=f"gm_admin_delete_daily_history_{hidx}_{day}_{kind}"):
-                    try:
-                        gm_daily_pick_delete_history(row)
-                        st.success("Dica excluída do histórico.")
-                        st.rerun()
-                    except Exception as exc:
-                        st.error("Não foi possível excluir esta dica do histórico.")
-                        st.caption(str(exc))
-
+    st.markdown(f"#### Oportunidades para avaliar · {len(opts)}")
+    for idx,opt in enumerate(opts,1):
+        legs=_gm_daily_sort_legs(opt.get("legs") or []); odd=_gm_daily_num(opt.get("total_odd")) or 0; prob=_gm_daily_num(opt.get("model_probability")) or 0
+        risk=_gm_daily_confidence_band(prob); official=odd<=3.0
+        stat_label="✅ Conta na estatística oficial" if official else "⚠️ Fora da estatística oficial (odd > 3,00)"
+        st.markdown(f"**#{idx} · Segurança {risk.lower()} · {prob:.0f}% · odd {odd:.2f}**")
+        st.caption(stat_label)
+        for leg in legs: st.markdown(f"- **{leg.get('market')}** @ {(_gm_daily_num(leg.get('odd')) or 0):.2f} · {(_gm_daily_num(leg.get('probability')) or 0):.0f}% · {leg.get('home')} × {leg.get('away')} · {_gm_daily_time_label(leg.get('time'))}")
+        direct_bet_url,invalid=gm_daily_pick_admin_bet_link("dica",idx,"gm_admin_v172")
+        c1,c2=st.columns([2,1])
+        if c1.button("✅ Aprovar e enviar aos clientes",use_container_width=True,type="primary",key=f"gm_admin_approve_dica_{idx}",disabled=invalid):
+            try:
+                publish_opt=dict(opt); publish_opt["pick_kind"]="dica"; publish_opt["direct_bet_url"]=direct_bet_url
+                result=gm_daily_pick_publish_selected(publish_opt)
+                if result.get("ok"):
+                    _gm_daily_pick_remove_cached_option(cache_key,"dica",opt)
+                    try: gm_daily_pick_publish_news("dica",publish_opt)
+                    except Exception: pass
+                    st.toast("Dica publicada para os clientes.",icon="✅"); st.rerun()
+                else: st.warning("A dica não pôde ser publicada.")
+            except Exception as exc: st.error("Falha ao publicar a dica."); st.caption(type(exc).__name__)
+        if c2.button("✕ Descartar",use_container_width=True,key=f"gm_admin_discard_dica_{idx}"):
+            _gm_daily_pick_discard(opt,today); _gm_daily_pick_remove_cached_option(cache_key,"dica",opt); st.rerun()
+        if idx<len(opts): st.divider()
 
 
 def gm_render_admin_vip_manager():
@@ -3731,7 +3613,7 @@ def gm_render_public_intro():
         .gm-v166-hero{position:relative;overflow:hidden;border:1px solid rgba(34,197,94,.50);border-radius:28px;padding:28px 24px 24px;margin:.15rem 0 1rem;background:radial-gradient(circle at 82% 16%,rgba(74,222,128,.24),transparent 28%),linear-gradient(120deg,#064e3b,#0f172a 58%,#022c22);box-shadow:0 22px 60px rgba(0,0,0,.28);color:#f8fafc}.gm-v166-k{font-size:.72rem;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#86efac}.gm-v166-title{font-size:clamp(2rem,6vw,3.5rem);font-weight:950;line-height:1.01;letter-spacing:-.05em;max-width:820px;margin:.5rem 0 .7rem}.gm-v166-title span{color:#4ade80}.gm-v166-copy{max-width:760px;color:#dbeafe;font-size:1rem;line-height:1.55}.gm-v166-trial{display:inline-flex;margin-top:16px;padding:9px 13px;border-radius:999px;background:#22c55e;color:#052e16;font-weight:950;font-size:.84rem}.gm-v166-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px;margin:1rem 0}.gm-v166-card{border:1px solid rgba(148,163,184,.20);border-radius:16px;padding:13px;background:rgba(30,41,59,.13)}.gm-v166-card b{display:block;font-size:.88rem;margin-bottom:4px}.gm-v166-card span{font-size:.74rem;opacity:.74;line-height:1.35}.gm-v166-flow{display:grid;grid-template-columns:repeat(6,1fr);gap:6px;margin:.8rem 0 1.2rem}.gm-v166-step{text-align:center;border:1px solid rgba(34,197,94,.25);border-radius:13px;padding:10px 6px;background:rgba(22,163,74,.07);font-size:.73rem;font-weight:800}.gm-v166-cta{display:grid;grid-template-columns:1.25fr .75fr;gap:10px;margin:1rem 0 1.4rem}.gm-v166-cta a{display:flex;align-items:center;justify-content:center;text-decoration:none!important;border-radius:14px;padding:13px;font-weight:900}.gm-v166-buy{background:#22c55e;color:#052e16!important;box-shadow:0 10px 28px rgba(34,197,94,.20)}.gm-v166-login{border:1px solid rgba(34,197,94,.45);color:inherit!important}.gm-v166-demo{border:1px solid rgba(34,197,94,.30);border-radius:20px;padding:16px;margin:.7rem 0 1rem;background:linear-gradient(145deg,rgba(22,128,58,.12),rgba(15,23,42,.35))}.gm-v166-demo-head{display:flex;justify-content:space-between;gap:10px;align-items:center}.gm-v166-lock{font-size:.72rem;font-weight:900;color:#86efac}.gm-v166-demo-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:11px}.gm-v166-metric{border-radius:12px;background:rgba(15,23,42,.65);padding:10px;text-align:center}.gm-v166-metric b{display:block;font-size:.8rem}.gm-v166-metric span{font-size:.68rem;color:#94a3b8}@media(max-width:760px){.gm-v166-grid{grid-template-columns:1fr 1fr}.gm-v166-flow{grid-template-columns:1fr 1fr 1fr}.gm-v166-cta{grid-template-columns:1fr}.gm-v166-demo-grid{grid-template-columns:1fr}.gm-v166-hero{padding:22px 17px}}@media(max-width:430px){.gm-v166-flow{grid-template-columns:1fr 1fr}}
         </style>
         <section class="gm-v166-hero"><div class="gm-v166-k">GM SCORE PRO • clubes + seleções</div><div class="gm-v166-title">Decisões mais inteligentes começam com <span>dados.</span></div><div class="gm-v166-copy">Histórico, contexto, probabilidades estimadas e oportunidades organizadas para você analisar cada confronto com muito mais informação — sem fabricar números quando a amostra não é suficiente.</div><div class="gm-v166-trial">🎁 CRIE SUA CONTA E TESTE O PRO GRÁTIS POR 6 HORAS</div></section>
-        <div class="gm-v166-grid"><div class="gm-v166-card"><b>🌎 Seleções nacionais</b><span>Histórico internacional separado dos clubes, contexto da competição e força FIFA quando disponível.</span></div><div class="gm-v166-card"><b>💡 Dicas do Dia</b><span>Matadeira, Dica Principal e Bingo com critérios estatísticos e mercados habilitados.</span></div><div class="gm-v166-card"><b>📊 Análise estatística</b><span>Resultado, gols, escanteios, cartões e demais métricas conforme cobertura real.</span></div><div class="gm-v166-card"><b>📈 Transparência</b><span>Inconclusivo, Cautela ou Conclusivo conforme o tamanho da amostra de cada métrica.</span></div></div>
+        <div class="gm-v166-grid"><div class="gm-v166-card"><b>🌎 Seleções nacionais</b><span>Histórico internacional separado dos clubes, contexto da competição e força FIFA quando disponível.</span></div><div class="gm-v166-card"><b>💡 Dicas do Dia</b><span>Dicas do Dia avaliadas pelo ADM, com nível de segurança, odd real e regra oficial até odd 3,00.</span></div><div class="gm-v166-card"><b>📊 Análise estatística</b><span>Resultado, gols, escanteios, cartões e demais métricas conforme cobertura real.</span></div><div class="gm-v166-card"><b>📈 Transparência</b><span>Inconclusivo, Cautela ou Conclusivo conforme o tamanho da amostra de cada métrica.</span></div></div>
         <h3>Como o GM SCORE transforma o jogo em análise</h3><div class="gm-v166-flow"><div class="gm-v166-step">⚽ Jogo</div><div class="gm-v166-step">🗂️ Histórico</div><div class="gm-v166-step">💪 Força</div><div class="gm-v166-step">🏆 Contexto</div><div class="gm-v166-step">🎯 Probabilidades</div><div class="gm-v166-step">⭐ Oportunidades</div></div>
         <div class="gm-v166-demo"><div class="gm-v166-demo-head"><div><b>🇧🇷 Brasil × Argentina 🇦🇷</b><br><small>Demonstração da experiência GM SCORE</small></div><div class="gm-v166-lock">🔒 INTELIGÊNCIA PRO</div></div><div class="gm-v166-demo-grid"><div class="gm-v166-metric"><b>Ranking + contexto</b><span>força histórica complementar</span></div><div class="gm-v166-metric"><b>Forma recente</b><span>amostra internacional própria</span></div><div class="gm-v166-metric"><b>Mercados e projeções</b><span>liberados conforme dados suficientes</span></div></div></div>
         <div class="gm-v166-cta"><a class="gm-v166-buy" href="#gm-acesso">🎁 Criar conta e testar 6h grátis</a><a class="gm-v166-login" href="#gm-login-top">🔐 Já sou cliente</a></div>
@@ -13648,21 +13530,11 @@ def gm_render_calibration_dashboard():
 # Se uma faixa não atingir os critérios, ela fica oficialmente sem seleção.
 # O Bingo é propositalmente EXCLUÍDO do aproveitamento principal.
 GM_DAILY_PICK_PROFILES = {
-    "matadeira": {
-        "label": "🛡️ Matadeira", "short": "Matadeira", "min": 1.50, "max": 1.89,
-        "preferred_min": 1.60, "preferred_max": 1.85,
-        "description": "Mais conservadora",
-    },
-    "dica": {
-        "label": "⭐ Dica do Dia", "short": "Dica", "min": 1.90, "max": 2.10,
-        "preferred_min": 1.90, "preferred_max": 2.10,
-        "description": "Risco intermediário",
-    },
-    "bingo": {
-        "label": "🎰 Bingo", "short": "Bingo", "min": 3.50, "max": None,
-        "preferred_min": 4.00, "preferred_max": None,
-        "description": "Mais arriscada",
-    },
+    # V172: os três valores históricos continuam aceitos no banco para compatibilidade,
+    # mas toda a experiência passa a ser uma única categoria: Dicas do Dia.
+    "matadeira": {"label":"💡 Dicas do Dia","short":"Dica","min":1.01,"max":None,"preferred_min":1.20,"preferred_max":3.00,"description":"Seleção aprovada pelo ADM"},
+    "dica":      {"label":"💡 Dicas do Dia","short":"Dica","min":1.01,"max":None,"preferred_min":1.20,"preferred_max":3.00,"description":"Seleção aprovada pelo ADM"},
+    "bingo":     {"label":"💡 Dicas do Dia","short":"Dica","min":1.01,"max":None,"preferred_min":1.20,"preferred_max":3.00,"description":"Seleção aprovada pelo ADM"},
 }
 
 
@@ -13899,11 +13771,10 @@ def _gm_daily_prob_over_05_from_over15(prob_over15):
 
 
 def _gm_daily_market_specs():
-    """Mercados com odd pré-jogo REAL disponível no provedor atual.
+    """Mercados com probabilidade do provedor e odd pré-jogo real.
 
-    A diversidade oficial das oportunidades só usa mercados cujo preço vem do
-    bookmaker. Mercados estatísticos como escanteios/cartões/finalizações/1T/2T
-    podem reforçar a leitura, mas não recebem odd inventada.
+    V172 reabre mercados Under somente quando AMBOS os campos existem na resposta
+    real da partida. Campo ausente simplesmente não gera candidato.
     """
     return [
         ("1", "Vitória da casa", "prob_HW", "odd_1"),
@@ -13913,11 +13784,14 @@ def _gm_daily_market_specs():
         ("12", "Sem empate", "prob_HW_AW", "odd_12"),
         ("O0.5", "Mais de 0,5 gol", "__derived_o05__", "o+0.5"),
         ("O1.5", "Mais de 1,5 gols", "prob_O_1", "o+1.5"),
+        ("U1.5", "Menos de 1,5 gols", "prob_U_1", "o-1.5"),
         ("O2.5", "Mais de 2,5 gols", "prob_O", "o+2.5"),
+        ("U2.5", "Menos de 2,5 gols", "prob_U", "o-2.5"),
         ("O3.5", "Mais de 3,5 gols", "prob_O_3", "o+3.5"),
+        ("U3.5", "Menos de 3,5 gols", "prob_U_3", "o-3.5"),
         ("BTTS_Y", "Ambas marcam — Sim", "prob_bts", "bts_yes"),
+        ("BTTS_N", "Ambas marcam — Não", "prob_ots", "bts_no"),
     ]
-
 
 def _gm_daily_market_family(code):
     code = str(code or "").upper().strip()
@@ -14028,8 +13902,15 @@ def gm_daily_pick_candidates(target_date, cutoff_at=None):
     }
     candidates = []
     excluded_past = excluded_status = excluded_unknown_time = 0
+    official_ids = {str(x) for x in (payload.get("official_fixture_ids") or []) if str(x)}
     for pred in payload.get("predictions") or []:
-        if not isinstance(pred, dict) or str(pred.get("league_id") or "") not in allowed_ids:
+        if not isinstance(pred, dict):
+            continue
+        pred_mid = str(pred.get("match_id") or "").strip()
+        # V172: a grade oficial é a autoridade. Alguns lotes do provedor retornam
+        # league_id divergente/ausente; se o match_id está na grade oficial, não o
+        # descartamos por esse detalhe de mapeamento.
+        if pred_mid not in official_ids and str(pred.get("league_id") or "") not in allowed_ids:
             continue
         home, away = str(pred.get("match_hometeam_name") or "").strip(), str(pred.get("match_awayteam_name") or "").strip()
         if not home or not away or not valid_fixture_team(home) or not valid_fixture_team(away):
@@ -14400,212 +14281,92 @@ def gm_daily_pick_candidate_options(candidates, pick_kind="dica", limit=5, histo
     return options
 
 
-def gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=1):
-    """Prepara opções do dia para o ADM sem gravar candidatos em gm_daily_picks."""
-    _perf_started = time.perf_counter()
-    # V125: evita round-trip de autenticação em cada ação administrativa.
-    profile = gm_auth_get_profile(force=False)
-    if (profile or {}).get("role") != "admin":
-        return {"ok": False, "reason": "admin_only"}
-    today = datetime.now(BRASILIA_TZ).date()
-    if today < GM_DAILY_PICK_RESET_DATE:
-        return {"ok": False, "reason": "reset_window", "options": {}, "rows": []}
-    recent_rows = gm_daily_pick_recent(100)
-    existing_rows = [r for r in recent_rows if str(r.get("pick_date") or "") == today.isoformat()]
-    # V124: uma categoria pode ter várias publicações no mesmo dia.
-    # Publicações existentes não encerram mais a busca por novas alternativas.
-    missing = ["matadeira", "dica", "bingo"]
-    if force_refresh:
+def _gm_daily_pick_unified_options(candidates, limit=8, initial_avoid_legs=None):
+    """V172: melhores oportunidades do dia para triagem privada do ADM.
+
+    Não força publicação. O piso da vitrine é 70% e odds são sempre reais. A ordem
+    prioriza probabilidade, coerência com a probabilidade implícita e depois preço.
+    Odds > 3,00 podem aparecer, mas são marcadas fora da estatística oficial.
+    """
+    avoid=set(initial_avoid_legs or set())
+    pool=[]
+    for c in candidates or []:
         try:
-            gm_daily_pick_source_payload.clear()
+            p=float(c.get("probability") or 0); odd=float(c.get("odd") or 0); edge=float(c.get("edge") or -999)
         except Exception:
-            pass
+            continue
+        sig=(str(c.get("match_id") or ""),str(c.get("market_code") or ""))
+        if not sig[0] or not sig[1] or sig in avoid or p < 70.0 or odd <= 1.01:
+            continue
+        # tolerância evita oportunidades em que o modelo contradiz fortemente o preço.
+        if edge < -7.0:
+            continue
+        score=p + max(-4.0,min(8.0,edge))*0.55 - max(0.0,odd-3.0)*1.5
+        pool.append((score,p,edge,-odd,dict(c)))
+    pool.sort(key=lambda x:(x[0],x[1],x[2],x[3]),reverse=True)
+    out=[]; used=set(avoid); used_matches=set()
+    # primeira passagem favorece variedade de partidas
+    for pass_no in (0,1):
+        for _,p,edge,_,c in pool:
+            sig=(str(c.get("match_id") or ""),str(c.get("market_code") or ""))
+            if sig in used: continue
+            mid=sig[0]
+            if pass_no==0 and mid in used_matches: continue
+            opt=_gm_daily_combo_payload([c],"simple","dica")
+            opt["pick_kind"]="dica"
+            opt["official_stats"]=float(opt.get("total_odd") or 0)<=3.0
+            opt["risk_label"]=_gm_daily_confidence_band(p)
+            out.append(opt); used.add(sig); used_matches.add(mid)
+            if len(out)>=max(1,min(int(limit),12)): return out
+    return out
+
+def gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=8):
+    """V172: prepara uma fila única de Dicas do Dia para avaliação privada do ADM."""
+    _perf_started=time.perf_counter()
+    profile=gm_auth_get_profile(force=False)
+    if (profile or {}).get("role")!="admin": return {"ok":False,"reason":"admin_only"}
+    today=datetime.now(BRASILIA_TZ).date()
+    if force_refresh:
+        try: gm_daily_pick_source_payload.clear()
+        except Exception: pass
         _gm_daily_pick_disk_cache_clear(today.isoformat())
-
-    cutoff_at = datetime.now(BRASILIA_TZ) + timedelta(minutes=10)
-    _source_started = time.perf_counter()
-
-    # V148: a base de candidatos também é persistida por 30 min. O horário de
-    # corte é reaplicado abaixo, portanto jogos que ficaram próximos do início
-    # não são reutilizados indevidamente.
-    cached_candidate_pack = None if force_refresh else _gm_daily_pick_disk_cache_load(today.isoformat(), "candidates")
-    if cached_candidate_pack:
-        raw_candidates = [dict(c) for c in (cached_candidate_pack.get("candidates") or []) if isinstance(c, dict)]
-        cutoff_iso = cutoff_at.isoformat()
-        candidates = []
-        for c in raw_candidates:
-            try:
-                ko = datetime.fromisoformat(str(c.get("kickoff_at") or ""))
-            except Exception:
-                ko = None
-            if ko is not None and ko > cutoff_at:
-                candidates.append(c)
-        meta = dict(cached_candidate_pack.get("meta") or {})
-        meta["persistent_candidate_cache_hit"] = True
-        meta["cutoff_at"] = cutoff_iso
-        meta["candidates"] = len(candidates)
-    else:
-        candidates, meta = gm_daily_pick_candidates(today, cutoff_at=cutoff_at)
-        if not (meta or {}).get("error"):
-            _gm_daily_pick_disk_cache_save(
-                today.isoformat(),
-                {"candidates": candidates, "meta": meta},
-                "candidates",
-            )
-    _source_seconds = time.perf_counter() - _source_started
-    if meta.get("error"):
-        return {"ok": False, "reason": "source_error", "meta": meta}
-    history_market_counts, history_family_counts, history_kind_market_counts = _gm_daily_recent_market_rotation(recent_rows, today)
-    published_legs = set()
+    recent_rows=gm_daily_pick_recent(100)
+    existing_rows=[r for r in recent_rows if str(r.get("pick_date") or "")==today.isoformat()]
+    cutoff_at=datetime.now(BRASILIA_TZ)+timedelta(minutes=10)
+    _source_started=time.perf_counter()
+    candidates,meta=gm_daily_pick_candidates(today,cutoff_at=cutoff_at)
+    _source_seconds=time.perf_counter()-_source_started
+    if meta.get("error"): return {"ok":False,"reason":"source_error","meta":meta}
+    published_legs=set()
     for row in existing_rows:
-        for leg in (row.get("legs") or []):
-            mid = str((leg or {}).get("match_id") or "").strip()
-            code = str((leg or {}).get("market_code") or "").strip()
-            if mid and code:
-                published_legs.add((mid, code))
-    # V127: descartes são persistentes. Gera uma fila mais profunda para que, ao
-    # descartar uma bet, novas alternativas possam ocupar seu lugar sem ela reaparecer.
-    discarded_signatures = _gm_daily_pick_load_discarded(today, force=force_refresh)
-    options = {}
-    # V156: exclusividade absoluta por seleção (match_id + market_code).
-    # O que já foi publicado ou reservado por uma opção desta preparação não
-    # pode aparecer em nenhuma outra Matadeira, Dica Principal ou Bingo.
-    reserved_legs = set(published_legs)
-    for kind in missing:
-        discarded_kind_count = sum(1 for sig in discarded_signatures if sig)
-        raw_limit = min(60, max(per_kind * 6, per_kind + discarded_kind_count))
-        generated = gm_daily_pick_candidate_options(
-            candidates,
-            kind,
-            limit=raw_limit,
-            history_market_counts=history_market_counts,
-            history_family_counts=history_family_counts,
-            history_kind_market_counts=history_kind_market_counts,
-            initial_avoid_legs=reserved_legs,
-        )
-        _published_option_sigs = {
-            _gm_daily_pick_option_signature({
-                "legs": (r.get("legs") or []),
-                "pick_kind": str(r.get("pick_kind") or "dica"),
-            })
-            for r in existing_rows
-            if str(r.get("pick_kind") or "dica") == kind
-        }
-        accepted = []
-        for o in generated:
-            sig = _gm_daily_pick_option_signature(o)
-            leg_sigs = {
-                (str((leg or {}).get("match_id") or "").strip(),
-                 str((leg or {}).get("market_code") or "").strip())
-                for leg in (o.get("legs") or [])
-            }
-            leg_sigs.discard(("", ""))
-            if sig in discarded_signatures or sig in _published_option_sigs:
-                continue
-            if leg_sigs & reserved_legs:
-                continue
-            accepted.append(o)
-            reserved_legs.update(leg_sigs)
-            if len(accepted) >= per_kind:
-                break
-        options[kind] = accepted
-    meta = dict(meta or {})
-    meta["perf_source_seconds"] = round(_source_seconds, 3)
-    meta["perf_total_seconds"] = round(time.perf_counter() - _perf_started, 3)
-    meta["perf_options_per_kind"] = int(per_kind)
-    # V144: preserva a base já coletada/analisada na sessão ADM. Assim, pedir mais
-    # opções não repete as consultas de odds/previsões das partidas do dia.
-    return {"ok": True, "reason": "prepared", "options": options, "meta": meta, "rows": existing_rows, "candidates": candidates}
+        for leg in row.get("legs") or []:
+            sig=(str((leg or {}).get("match_id") or "").strip(),str((leg or {}).get("market_code") or "").strip())
+            if sig!=("",""): published_legs.add(sig)
+    discarded=_gm_daily_pick_load_discarded(today,force=force_refresh)
+    raw=_gm_daily_pick_unified_options(candidates,limit=max(8,int(per_kind)),initial_avoid_legs=published_legs)
+    accepted=[o for o in raw if _gm_daily_pick_option_signature(o) not in discarded]
+    meta=dict(meta or {}); meta["perf_source_seconds"]=round(_source_seconds,3); meta["perf_total_seconds"]=round(time.perf_counter()-_perf_started,3)
+    return {"ok":True,"reason":"prepared","options":{"dica":accepted},"meta":meta,"rows":existing_rows,"candidates":candidates}
 
 
-def gm_daily_pick_expand_cached_admin_options(prepared, per_kind=5):
-    """V148: acrescenta novas opções sobre a base pronta, sem refazer coleta pesada."""
-    _perf_started = time.perf_counter()
-    profile = gm_auth_get_profile(force=False)
-    if (profile or {}).get("role") != "admin":
-        return {"ok": False, "reason": "admin_only"}
-    if not isinstance(prepared, dict) or not prepared.get("ok"):
-        return {"ok": False, "reason": "cache_unavailable"}
+def gm_daily_pick_expand_cached_admin_options(prepared, per_kind=12):
+    """V172: amplia a fila única usando a base já carregada."""
+    if not isinstance(prepared,dict) or not prepared.get("ok"): return {"ok":False,"reason":"cache_unavailable"}
+    today=datetime.now(BRASILIA_TZ).date(); candidates=[dict(c) for c in prepared.get("candidates") or [] if isinstance(c,dict)]
+    recent=gm_daily_pick_recent(100); existing=[r for r in recent if str(r.get("pick_date") or "")==today.isoformat()]
+    reserved=set()
+    for r in existing:
+        for leg in r.get("legs") or []:
+            sig=(str((leg or {}).get("match_id") or ""),str((leg or {}).get("market_code") or ""));
+            if sig!=("",""): reserved.add(sig)
+    current=[dict(o) for o in ((prepared.get("options") or {}).get("dica") or []) if isinstance(o,dict)]
+    for o in current:
+        for leg in o.get("legs") or []: reserved.add((str(leg.get("match_id") or ""),str(leg.get("market_code") or "")))
+    more=_gm_daily_pick_unified_options(candidates,limit=max(4,int(per_kind)),initial_avoid_legs=reserved)
+    discarded=_gm_daily_pick_load_discarded(today,force=False)
+    combined=[o for o in current+more if _gm_daily_pick_option_signature(o) not in discarded]
+    result=dict(prepared); result["options"]={"dica":combined}; result["rows"]=existing; result["reason"]="expanded_cached"; return result
 
-    candidates = [dict(c) for c in (prepared.get("candidates") or []) if isinstance(c, dict)]
-    if not candidates:
-        return {"ok": False, "reason": "cache_unavailable"}
-
-    today = datetime.now(BRASILIA_TZ).date()
-    recent_rows = gm_daily_pick_recent(100)
-    existing_rows = [r for r in recent_rows if str(r.get("pick_date") or "") == today.isoformat()]
-    history_market_counts, history_family_counts, history_kind_market_counts = _gm_daily_recent_market_rotation(recent_rows, today)
-
-    published_legs = set()
-    for row in existing_rows:
-        for leg in (row.get("legs") or []):
-            mid = str((leg or {}).get("match_id") or "").strip()
-            code = str((leg or {}).get("market_code") or "").strip()
-            if mid and code:
-                published_legs.add((mid, code))
-
-    discarded_signatures = _gm_daily_pick_load_discarded(today, force=False)
-    current_options = prepared.get("options") or {}
-    options = {}
-
-    # V156: "Carregar mais" também respeita exclusividade GLOBAL.
-    # Primeiro reserva todas as pernas já publicadas e todas as opções visíveis,
-    # independentemente da categoria.
-    global_reserved_legs = set(published_legs)
-    cleaned_current = {}
-    for _kind in ("matadeira", "dica", "bingo"):
-        cleaned_current[_kind] = [
-            dict(o) for o in (current_options.get(_kind) or [])
-            if isinstance(o, dict) and _gm_daily_pick_option_signature(o) not in discarded_signatures
-        ]
-        for opt in cleaned_current[_kind]:
-            for leg in (opt.get("legs") or []):
-                mid = str((leg or {}).get("match_id") or "").strip()
-                code = str((leg or {}).get("market_code") or "").strip()
-                if mid and code:
-                    global_reserved_legs.add((mid, code))
-
-    for kind in ("matadeira", "dica", "bingo"):
-        existing_opts = cleaned_current[kind]
-        generated = gm_daily_pick_candidate_options(
-            candidates,
-            kind,
-            limit=8,
-            history_market_counts=history_market_counts,
-            history_family_counts=history_family_counts,
-            history_kind_market_counts=history_kind_market_counts,
-            initial_avoid_legs=global_reserved_legs,
-        )
-        for opt in generated:
-            sig = _gm_daily_pick_option_signature(opt)
-            leg_sigs = {
-                (str((leg or {}).get("match_id") or "").strip(),
-                 str((leg or {}).get("market_code") or "").strip())
-                for leg in (opt.get("legs") or [])
-            }
-            leg_sigs.discard(("", ""))
-            if not sig or sig in discarded_signatures:
-                continue
-            if leg_sigs & global_reserved_legs:
-                continue
-            if any(_gm_daily_pick_option_signature(x) == sig for x in existing_opts):
-                continue
-            existing_opts.append(opt)
-            global_reserved_legs.update(leg_sigs)
-            break
-        options[kind] = existing_opts
-
-    meta = dict(prepared.get("meta") or {})
-    meta["perf_expand_seconds"] = round(time.perf_counter() - _perf_started, 3)
-    meta["progressive_expand_v148"] = True
-    return {
-        "ok": True,
-        "reason": "expanded_cached",
-        "options": options,
-        "meta": meta,
-        "rows": existing_rows,
-        "candidates": candidates,
-    }
 
 def gm_daily_pick_publish_selected(choice):
     """Publica somente uma alternativa explicitamente aprovada pelo administrador."""
@@ -14618,11 +14379,11 @@ def gm_daily_pick_publish_selected(choice):
     today = datetime.now(BRASILIA_TZ).date()
     if today < GM_DAILY_PICK_RESET_DATE:
         return {"ok": False, "reason": "reset_window"}
-    pick_kind = str(choice.get("pick_kind") or "").strip()
-    if pick_kind not in {"matadeira", "dica", "bingo"}:
-        return {"ok": False, "reason": "invalid_kind"}
+    # V172: novas publicações usam somente o tipo compatível `dica`; tipos antigos
+    # permanecem apenas no histórico para não exigir migração destrutiva.
+    pick_kind = "dica"
     legs = [dict(x) for x in (choice.get("legs") or []) if isinstance(x, dict)]
-    if not legs or any(float(x.get("probability") or 0.0) < 75.0 for x in legs):
+    if not legs or any(float(x.get("probability") or 0.0) < 70.0 for x in legs):
         return {"ok": False, "reason": "probability_floor"}
     # V124: não bloqueia uma segunda publicação da mesma categoria no mesmo dia.
     # A identidade de cada aposta permanece no registro individual retornado pela RPC.
@@ -14641,7 +14402,8 @@ def gm_daily_pick_publish_selected(choice):
         "p_model_meta": {
             "build": GM_BUILD,
             "pick_kind": pick_kind,
-            "approval_flow": "admin_manual_v57",
+            "approval_flow": "admin_manual_v172_unified",
+            "official_stats": float(choice.get("total_odd") or 0) <= 3.0,
             "approved_at": datetime.now(BRASILIA_TZ).isoformat(),
             "model_probability": choice.get("model_probability"),
             "score": choice.get("score"),
@@ -14853,448 +14615,55 @@ def _gm_daily_status_badge(status): return {"green":"🟢 GREEN","red":"🔴 RED
 def _gm_daily_bet_type_label(value, legs_count=0): return f"Múltipla ({int(legs_count or 0)} jogos)" if str(value)=="multiple" else {"simple":"Simples","double":"Dupla","triple":"Tripla","none":"Sem seleção"}.get(str(value),str(value or "—").title())
 
 
-def _gm_daily_pick_card(row, target_date, pick_kind, is_admin=False):
-    profile=GM_DAILY_PICK_PROFILES[pick_kind]
-    display_label = profile["label"] if (is_admin or pick_kind != "dica") else "📊 Dica Principal"
-    if not row: st.info(f"{display_label}: ainda não preparada para este dia."); return
-    if str(row.get("status"))=="no_pick": st.info(f"{display_label}: hoje não houve combinação que atingisse os critérios de qualidade. Nenhuma aposta foi forçada."); return
+def _gm_daily_pick_card(row, target_date, pick_kind="dica", is_admin=False):
+    if not row: return
     legs=_gm_daily_sort_legs(row.get("legs") or []); total_odd=_gm_daily_num(row.get("total_odd")) or 0.0; btype=_gm_daily_bet_type_label(row.get("bet_type"),len(legs))
-    bookmaker=str(row.get("bookmaker") or "").strip()
-    title_meta=" • ".join(x for x in (bookmaker, profile.get("description")) if x)
-    title_suffix=f'<span class="gm-pick-muted" style="font-weight:600;margin-left:.45rem">{html.escape(title_meta)}</span>' if title_meta else ""
-    card=[f'<div class="gm-pick-card gm-kind-{pick_kind}"><div class="gm-pick-head"><div><div class="gm-pick-title">{html.escape(display_label)}{title_suffix}</div><div class="gm-pick-muted">{target_date:%d/%m/%Y} • {html.escape(btype)} • {_gm_daily_status_badge(row.get("status"))}</div></div><div><div class="gm-pick-muted">ODD TOTAL</div><div class="gm-pick-odd">{total_odd:.2f}</div></div></div>']
+    probs=[_gm_daily_num(x.get("probability")) for x in legs]; probs=[p for p in probs if p is not None]
+    model_prob=1.0
+    for p in probs: model_prob*=p/100.0
+    model_prob=model_prob*100 if probs else None
+    risk=_gm_daily_confidence_band(model_prob) if model_prob is not None else "—"
+    official=total_odd<=3.0
+    stat_txt="Conta na estatística oficial" if official else "Fora da contagem oficial · odd acima de 3,00"
+    st.markdown(f"**💡 Dica do Dia · Segurança {risk.lower()} · odd {total_odd:.2f}**")
+    st.caption(f"{target_date:%d/%m/%Y} · {btype} · {_gm_daily_status_badge(row.get('status'))} · {stat_txt}")
     for leg in legs:
-        leg_odd=_gm_daily_num(leg.get("odd")) or 0.0; time_label=_gm_daily_time_label(leg.get("time"))
-        prob=_gm_daily_num(leg.get("probability")); conf=str(leg.get("confidence_band") or (_gm_daily_confidence_band(prob) if prob is not None else ""))
-        prob_txt=(f" • prob. estimada {prob:.0f}% • {html.escape(conf)}" if prob is not None else "")
-        leg_comp = str(leg.get("competition") or "")
-        game_text = f"{str(leg.get('home') or '')} × {str(leg.get('away') or '')}"
-        card.append(f'<div class="gm-pick-leg"><div class="gm-pick-market">{html.escape(str(leg.get("market") or ""))}<span style="float:right">{leg_odd:.2f}</span></div><div class="gm-pick-muted">🕒 {html.escape(time_label)} • ⚽ {html.escape(game_text)} • {html.escape(leg_comp)}{prob_txt}</div></div>')
-    card.append('</div>'); st.markdown("".join(card),unsafe_allow_html=True)
-    direct_url = _gm_daily_row_direct_bet_url(row)
+        p=_gm_daily_num(leg.get("probability")); ptxt=f" · {p:.0f}%" if p is not None else ""
+        st.markdown(f"- **{leg.get('market')}** @ {(_gm_daily_num(leg.get('odd')) or 0):.2f}{ptxt} · {leg.get('home')} × {leg.get('away')} · {_gm_daily_time_label(leg.get('time'))}")
+    direct_url=_gm_daily_row_direct_bet_url(row)
     if direct_url:
-        safe_url = html.escape(direct_url, quote=True)
-        st.markdown(f'''<a class="gm-score-bet-cta" href="{safe_url}" target="_blank" rel="noopener noreferrer"><span class="gm-score-bet-target">🎯</span><span><strong>Ir para a aposta</strong><small>GM SCORE</small></span><span class="gm-score-bet-arrow">›</span></a>''', unsafe_allow_html=True)
+        safe_url=html.escape(direct_url,quote=True); st.markdown(f'<a class="gm-score-bet-cta" href="{safe_url}" target="_blank" rel="noopener noreferrer"><strong>🎯 Ir para a aposta</strong></a>',unsafe_allow_html=True)
 
 
 def gm_render_daily_pick_page():
+    """V172: cliente vê somente dicas que o ADM aprovou; nunca vê a triagem administrativa."""
     st.markdown("## 💡 Dicas do Dia")
-    try:
-        profile=gm_auth_get_profile()
-    except Exception:
-        profile=None
-    # V75: esta aba é sempre a experiência do cliente, inclusive quando acessada pelo ADM.
-    # Toda função administrativa fica isolada na Central Administrativa, aberta pela aba Conta.
-    is_admin=False
-    st.markdown('''<div class="gm-risk-rule"><span class="gm-risk-green">QUANTO MAIOR A ODD</span><span class="gm-risk-arrow">→</span><span class="gm-risk-red">MENORES AS CHANCES</span></div>''',unsafe_allow_html=True)
-
-    if is_admin:
-        try:
-            gm_daily_pick_settle_pending(limit=40)
-        except Exception:
-            pass
-
-    try:
-        rows=gm_daily_pick_recent(100)
-    except Exception:
-        st.warning("As Oportunidades GM ainda não estão ativas nesta instalação.")
-        if is_admin:
-            st.caption("Confirme que as RPCs v2 das Oportunidades do Dia estão ativas no Supabase.")
-        return
-
+    st.caption("Somente dicas aprovadas pelo GM SCORE. O risco exibido é uma estimativa pré-jogo, não garantia de resultado.")
+    try: rows=gm_daily_pick_recent(120)
+    except Exception: st.warning("As Dicas do Dia não puderam ser carregadas agora."); return
     today=datetime.now(BRASILIA_TZ).date(); yesterday=today-timedelta(days=1)
-    if today < GM_DAILY_PICK_RESET_DATE:
-        st.info(f"Novo ciclo das Dicas do Dia começa em {GM_DAILY_PICK_RESET_DATE:%d/%m/%Y}. O histórico anterior foi encerrado.")
-        return
-    def lookup_all(day,kind):
-        return [r for r in rows if str(r.get("pick_date") or "")==day.isoformat() and str(r.get("pick_kind") or "dica")==kind]
-
-    def lookup(day,kind):
-        matches = lookup_all(day, kind)
-        return matches[0] if matches else None
-
-    if is_admin:
-        st.markdown("### 🧑‍💼 Aprovação do administrador")
-        st.caption("Estas opções são privadas. Nada abaixo fica visível aos clientes até você tocar em **Aprovar e publicar**.")
-        cache_key=f"gm_daily_admin_options_{today.isoformat()}"
-        if cache_key not in st.session_state:
-            try:
-                with st.spinner("Preparando opções para avaliação do ADM..."):
-                    st.session_state[cache_key]=gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=5)
-            except Exception as exc:
-                st.session_state[cache_key]={"ok":False,"reason":type(exc).__name__}
-
-        a1,a2=st.columns(2)
-        if a1.button("🔄 Atualizar opções para aprovação",use_container_width=True,key="gm_daily_pick_refresh_candidates"):
-            try:
-                with st.spinner("Atualizando odds e probabilidades..."):
-                    st.session_state[cache_key]=gm_daily_pick_prepare_admin_options(force_refresh=True, per_kind=5)
-                st.rerun()
-            except Exception as exc:
-                st.error("Não foi possível atualizar as opções agora."); st.caption(type(exc).__name__)
-        if a2.button("✅ Conferir resultados publicados",use_container_width=True,key="gm_daily_pick_settle_now"):
-            try:
-                result=gm_daily_pick_settle_pending(limit=100)
-                if result.get("errors"):
-                    st.error("Erro ao gravar resultado. Confirme a RPC v3 do V152 no Supabase.")
-                    st.caption(" • ".join(result.get("errors")[:3]))
-                else:
-                    st.success(f"Conferência concluída: {result.get('settled',0)} atualizada(s) · {result.get('pending',0)} pendente(s).")
-                st.rerun()
-            except Exception as exc:
-                st.error("Não foi possível conferir os resultados agora."); st.caption(type(exc).__name__)
-
-        prepared=st.session_state.get(cache_key) or {}
-        if not prepared.get("ok"):
-            if prepared.get("reason")=="source_error":
-                st.warning("A fonte de odds/probabilidades não respondeu de forma completa. Tente atualizar novamente.")
-            else:
-                st.info("As opções privadas ainda não puderam ser preparadas.")
-        else:
-            option_map=prepared.get("options") or {}
-            for kind in ("matadeira","dica","bingo"):
-                published_count = len(lookup_all(today, kind))
-                if published_count:
-                    st.caption(f"{GM_DAILY_PICK_PROFILES[kind]['label']}: {published_count} publicada(s) hoje · você pode aprovar outras.")
-                opts=[o for o in (option_map.get(kind) or []) if not _gm_daily_pick_is_discarded(o, today)]
-                with st.expander(f"{GM_DAILY_PICK_PROFILES[kind]['label']} — {len(opts)} opção(ões) para avaliar",expanded=(kind=="matadeira")):
-                    if not opts:
-                        st.caption("Nenhuma alternativa atingiu os filtros mínimos nesta atualização.")
-                    for idx,opt in enumerate(opts,1):
-                        legs=_gm_daily_sort_legs(opt.get("legs") or [])
-                        total_odd=_gm_daily_num(opt.get("total_odd")) or 0.0
-                        model_prob=_gm_daily_num(opt.get("model_probability")) or 0.0
-                        st.markdown(f"**Opção {idx} · {_gm_daily_bet_type_label(opt.get('bet_type'),len(legs))} · odd {total_odd:.2f}**")
-                        st.caption(f"Probabilidade combinada estimada: {model_prob:.1f}% · todas as pernas ≥ 75%")
-                        for leg in legs:
-                            st.markdown(f"- **{leg.get('market')}** @ {(_gm_daily_num(leg.get('odd')) or 0):.2f} · {(_gm_daily_num(leg.get('probability')) or 0):.0f}% · {leg.get('home')} × {leg.get('away')} · {_gm_daily_time_label(leg.get('time'))}")
-                        direct_bet_url, bet_link_invalid = gm_daily_pick_admin_bet_link(kind, idx, "gm_daily")
-                        approve_col, discard_col = st.columns([2,1])
-                        if approve_col.button("✅ Aprovar e publicar",use_container_width=True,type="primary",key=f"gm_approve_{kind}_{idx}",disabled=bet_link_invalid):
-                            try:
-                                publish_opt=dict(opt)
-                                publish_opt["direct_bet_url"]=direct_bet_url
-                                with st.spinner("Publicando..."):
-                                    result=gm_daily_pick_publish_selected(publish_opt)
-                                if result.get("ok"):
-                                    _gm_daily_pick_remove_cached_option(cache_key, kind, opt)
-                                    st.toast("Oportunidade publicada com sucesso.", icon="✅")
-                                    st.rerun()
-                                else:
-                                    st.warning("Esta alternativa não pôde ser publicada pelos critérios de segurança.")
-                            except Exception as exc:
-                                st.error("Falha ao publicar a oportunidade aprovada."); st.caption(type(exc).__name__)
-                        if discard_col.button("✕ Descartar",use_container_width=True,key=f"gm_discard_{kind}_{idx}"):
-                            _gm_daily_pick_discard(opt, today)
-                            _gm_daily_pick_remove_cached_option(cache_key, kind, opt)
-                            st.toast("Opção descartada permanentemente.", icon="🗑️")
-                            st.rerun()
-                        if idx < len(opts):
-                            st.divider()
-
-    st.markdown('''
-    <style>
-    .gm-risk-rule{display:flex;justify-content:center;align-items:center;gap:12px;flex-wrap:wrap;background:#0e151d;border:1px solid rgba(148,163,184,.20);border-radius:14px;padding:12px 14px;margin:.55rem 0 1rem;font-weight:950;letter-spacing:.02em;text-align:center}.gm-risk-green{color:#34e681}.gm-risk-red{color:#fb7185}.gm-risk-arrow{color:#94a3b8}
-    .gm-pick-card{background:linear-gradient(145deg,#0d1718,#0b1118);border:1px solid rgba(34,197,94,.62);border-radius:18px;padding:16px;margin:.65rem 0 1rem;box-shadow:0 12px 30px rgba(0,0,0,.18)}.gm-kind-matadeira{border-color:rgba(52,230,129,.72)}.gm-kind-dica{border-color:rgba(250,204,21,.55)}.gm-kind-bingo{border-color:rgba(251,113,133,.58)}
-    .gm-pick-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.gm-pick-title{font-weight:950;font-size:1.1rem;color:#34e681}.gm-pick-odd{font-size:1.6rem;font-weight:950;color:#34e681}.gm-pick-leg{background:#111b25;border:1px solid rgba(148,163,184,.12);border-radius:12px;padding:10px 12px;margin-top:8px}.gm-pick-muted{color:#94a3b8;font-size:.76rem}.gm-pick-market{color:#f8fafc;font-weight:850}.gm-pick-history{display:flex;gap:7px;flex-wrap:wrap;margin-top:8px}.gm-pick-dot{padding:7px 9px;border-radius:10px;background:#101923;border:1px solid rgba(148,163,184,.12);font-size:.75rem;font-weight:800}.gm-score-bet-cta{display:flex;align-items:center;justify-content:center;gap:9px;width:min(100%,360px);min-height:44px;margin:.45rem auto .9rem;padding:7px 14px;border:1px solid rgba(52,230,129,.72);border-radius:13px;background:#0d1419;color:#f8fafc!important;text-decoration:none!important;box-shadow:none}.gm-score-bet-cta:hover{background:#101b1c;border-color:#34e681}.gm-score-bet-target{color:#34e681;font-size:1rem}.gm-score-bet-cta strong{display:block;font-size:.88rem;line-height:1.05}.gm-score-bet-cta small{display:block;margin-top:3px;color:#34e681;font-size:.57rem;font-weight:900;letter-spacing:.16em}.gm-score-bet-arrow{margin-left:4px;color:#34e681;font-size:1.25rem;font-weight:900}
-    </style>''',unsafe_allow_html=True)
-
-    if is_admin:
-        st.markdown("### 📅 Hoje — publicado para clientes")
-    # V146: cada aprovação é um card próprio. Não existe limite de uma publicação
-    # por categoria: 3 Matadeiras + 2 Dicas + 1 Bingo => 6 cards no cliente Pro.
-    for kind in ("matadeira","dica","bingo"):
-        today_rows = lookup_all(today, kind)
-        if not today_rows:
-            _gm_daily_pick_card(None,today,kind,is_admin=is_admin)
-        else:
-            for pick_number, row in enumerate(today_rows, 1):
-                if len(today_rows) > 1:
-                    st.caption(f"{GM_DAILY_PICK_PROFILES[kind]['short']} #{pick_number}")
-                _gm_daily_pick_card(row,today,kind,is_admin=is_admin)
-
-    with st.expander("📆 Ontem — seleções e resultados",expanded=False):
-        found=False
-        for kind in ("matadeira","dica","bingo"):
-            kind_rows=lookup_all(yesterday,kind)
-            if not kind_rows: continue
-            found=True; label=GM_DAILY_PICK_PROFILES[kind]["label"]
-            for pick_number,row in enumerate(kind_rows,1):
-                numbered = f" #{pick_number}" if len(kind_rows) > 1 else ""
-                if str(row.get("status"))=="no_pick": st.markdown(f"**{label}{numbered}: ⚫ Sem seleção**"); continue
-                odd=_gm_daily_num(row.get("total_odd")) or 0.0; st.markdown(f"**{label}{numbered} · {_gm_daily_status_badge(row.get('status'))} · odd {odd:.2f}**")
-                for leg in _gm_daily_sort_legs(row.get("legs") or []): st.caption(f"🕒 {_gm_daily_time_label(leg.get('time'))} • ⚽ {leg.get('home')} × {leg.get('away')} — {leg.get('market')} @ {(_gm_daily_num(leg.get('odd')) or 0.0):.2f}")
-        if not found: st.caption("Ainda não há oportunidades registradas para ontem.")
-
-    standard=[r for r in rows if str(r.get("pick_kind") or "dica") in {"matadeira","dica"} and str(r.get("status") or "") in {"green","red"}]
-    unique_dates=[]
-    for r in standard:
-        d=str(r.get("pick_date") or "")
-        if d and d not in unique_dates: unique_dates.append(d)
-        if len(unique_dates)>=10: break
-    perf=[r for r in standard if str(r.get("pick_date") or "") in set(unique_dates)]
-    st.markdown("### 📊 Aproveitamento — últimos 10 dias")
-    st.caption("Calculado somente com **Matadeira + Dica do Dia oficialmente aprovadas e publicadas**. O **Bingo não entra** nesta porcentagem.")
-    if not perf:
-        st.caption("O histórico começa a aparecer conforme Matadeira e Dica publicadas forem encerradas.")
+    def day_rows(day):
+        return [r for r in rows if str(r.get("pick_date") or "")==day.isoformat() and str(r.get("pick_kind") or "dica") in {"matadeira","dica","bingo"}]
+    current=day_rows(today)
+    if not current: st.info("Ainda não há Dicas do Dia aprovadas para hoje.")
     else:
-        greens=sum(1 for r in perf if str(r.get("status"))=="green"); reds=sum(1 for r in perf if str(r.get("status"))=="red"); m1,m2,m3=st.columns(3); m1.metric("Greens",greens); m2.metric("Reds",reds); m3.metric("Aproveitamento",f"{100*greens/max(1,greens+reds):.0f}%")
-        chips=[]
-        for d in unique_dates:
-            day_rows=[r for r in perf if str(r.get("pick_date") or "")==d]; dg=sum(1 for r in day_rows if str(r.get("status"))=="green"); dr=sum(1 for r in day_rows if str(r.get("status"))=="red")
-            try: label=datetime.fromisoformat(d).strftime("%d/%m")
-            except Exception: label=d[-5:]
-            icon="🟢" if dr==0 and dg>0 else "🔴" if dg==0 and dr>0 else "🟡"; chips.append(f'<span class="gm-pick-dot">{icon} {html.escape(label)} · {dg}/{dg+dr}</span>')
-        st.markdown('<div class="gm-pick-history">'+''.join(chips)+'</div>',unsafe_allow_html=True)
-
-    if is_admin:
-        with st.expander("ℹ️ Como funcionam as oportunidades"):
-            st.markdown("- O motor prepara várias alternativas privadas para o **ADM** e exige **75%+ em cada perna** da vitrine.\n- **Só a alternativa aprovada** é gravada em `gm_daily_picks` e mostrada aos clientes.\n- **Matadeira:** odd oficial entre **1,50 e 1,89**.\n- **Dica do Dia:** odd oficial entre **1,90 e 2,10**.\n- **Bingo:** múltipla de **4 a 10 jogos**, odd mínima **3,50**.\n- Mercados elegíveis continuam exigindo **odd pré-jogo real**; o GM SCORE não inventa cotação.\n- O aproveitamento oficial usa apenas Matadeira + Dica publicadas; o Bingo permanece separado.")
-            st.caption("Quanto maior a odd, menor tende a ser a probabilidade conjunta. Odds e probabilidades são estimativas pré-jogo, não garantia de retorno. Aposte com responsabilidade.")
-
-
-
-@st.cache_data(ttl=900, show_spinner=False)
-def gm_games_prepared_fixtures(target_date):
-    """Agenda já validada/deduplicada para renderização rápida.
-
-    V121: a V120 recalculava identidade oficial, roster e deduplicação em TODO
-    rerun do Streamlit, inclusive ao tocar em widgets sem relação com a agenda.
-    Esta camada memoriza somente o resultado visual da mesma pipeline existente.
-    O botão Atualizar jogos invalida explicitamente este cache.
-    """
-    fixtures = load_fixtures_for_date(target_date) or []
-    safe = []
-    for f in fixtures:
-        comp = str((f or {}).get("competition") or "")
-        if comp not in COMPETITIONS:
-            continue
-        if not valid_daily_fixture(f) or not fixture_matches_selected_date(f, target_date):
-            continue
-        if comp != GM_NATIONAL_COMPETITION and not gm_fixture_matches_official_league_roster(f):
-            continue
-        _merge_fixture_unique(safe, dict(f))
-    unique = []
-    for fixture in safe:
-        ff = dict(fixture)
-        comp = str(ff.get("competition") or "")
-        if comp == GM_NATIONAL_COMPETITION:
-            home_identity = {"name": str(ff.get("home") or ""), "id": str(ff.get("home_team_id") or "")}
-            away_identity = {"name": str(ff.get("away") or ""), "id": str(ff.get("away_team_id") or "")}
-        else:
-            home_identity = gm_fixture_official_team_identity(ff.get("home"), comp, ff.get("home_team_id"))
-            away_identity = gm_fixture_official_team_identity(ff.get("away"), comp, ff.get("away_team_id"))
-        ff["home"] = home_identity.get("name") or gm_fixture_canonical_team_name(ff.get("home"))
-        ff["away"] = away_identity.get("name") or gm_fixture_canonical_team_name(ff.get("away"))
-        if home_identity.get("id"):
-            ff["home_team_id"] = home_identity.get("id")
-        if away_identity.get("id"):
-            ff["away_team_id"] = away_identity.get("id")
-        _merge_fixture_unique(unique, ff)
-    return sorted(unique, key=lambda f: (str(f.get("time") or "99:99"), str(f.get("competition") or ""), _fixture_identity_key(f.get("home")), _fixture_identity_key(f.get("away"))))
-
-def gm_render_games_page():
-    """Agenda única das competições GM SCORE, sem alterar fontes ou cálculos."""
-    st.markdown("## ⚽ Jogos")
-    st.caption("Todos os jogos das competições GM SCORE em ordem de horário de Brasília.")
-    target_date = st.selectbox("📅 Data dos jogos", _date_options, key="gm_games_page_date", format_func=_agenda_date_label)
-    if st.button("🔄 Atualizar jogos", use_container_width=True, key=f"gm_games_refresh_{target_date}"):
-        for _fn in (load_apifootball_prediction_fixtures_for_date, load_apifootball_national_fixtures_for_date, load_apifootball_competition_fixtures_for_date, load_apifootball_all_competitions_fixtures_for_date, load_apifootball_fixtures_for_date, load_sofascore_fixtures_for_date, load_espn_fixtures_for_date, load_thesportsdb_fixtures_for_date, load_fixtures_for_date, gm_games_prepared_fixtures):
-            try: _fn.clear()
-            except Exception: pass
-        st.rerun()
-    try:
-        with st.spinner("Carregando jogos do dia..."):
-            safe = gm_games_prepared_fixtures(target_date) or []
-    except Exception:
-        safe = []
-    if not safe:
-        st.info("Nenhum jogo das competições GM SCORE foi localizado para esta data.")
-        return
-    st.markdown(f"### {len(safe)} jogo(s) · {_agenda_date_label(target_date)}")
-    for i, f in enumerate(safe):
-        comp = str(f.get("competition") or ""); home = str(f.get("home") or ""); away = str(f.get("away") or ""); tm = str(f.get("time") or "—")
-        _display_comp = str(f.get("tournament") or "").strip() if comp == GM_NATIONAL_COMPETITION else competition_display_name(comp)
-        _home_display, _away_display = home, away
-        if comp == GM_NATIONAL_COMPETITION:
-            _rh, _ra = gm_fifa_rank(home), gm_fifa_rank(away)
-            _rank_txt = f" · FIFA #{_rh if _rh is not None else '—'} × #{_ra if _ra is not None else '—'}"
-            _display_comp = "🌍 " + (_display_comp or "Seleções") + _rank_txt
-            _home_display, _away_display = gm_national_display_name(home), gm_national_display_name(away)
-        if comp == GM_NATIONAL_COMPETITION:
-            _home_html = gm_team_badge_html(home, GM_NATIONAL_COMPETITION, f.get("home_team_id"), size=20, show_name=True, league_id=f.get("league_id"))
-            _away_html = gm_team_badge_html(away, GM_NATIONAL_COMPETITION, f.get("away_team_id"), size=20, show_name=True, league_id=f.get("league_id"))
-        else:
-            _home_html, _away_html = html.escape(_home_display), html.escape(_away_display)
-        card_html = '<div id="gm-game-{}" class="gm-game-card"><div class="gm-game-time">{}</div><div class="gm-game-body"><div class="gm-game-league">{}</div><div class="gm-game-teams">{} <span>×</span> {}</div></div></div>'.format(i, html.escape(tm), html.escape(_display_comp), _home_html, _away_html)
-        st.markdown(card_html, unsafe_allow_html=True)
-        if st.button("📊 Analisar", use_container_width=False, key=f"gm_games_analyze_{target_date}_{i}_{clean_col(comp)}"):
-            # V81: transporta o contexto completo do jogo e neutraliza o gm_view=games
-            # que pode permanecer na URL da navegação mobile. Sem isso, o query param
-            # poderia devolver o usuário imediatamente à agenda após o rerun.
-            # V90: payload persistente e atômico da partida. A tela dedicada não
-            # depende mais dos widgets/seletores da Home para descobrir o confronto.
-            st.session_state["gm_games_direct_match"] = {
-                "competition": comp,
-                "home": home,
-                "away": away,
-                "date": target_date.isoformat() if hasattr(target_date, "isoformat") else str(target_date),
-                "time": tm,
-                # V92: identidade oficial da partida viaja junto com a navegação.
-                # Estes IDs servem apenas para resolver o confronto correto; não
-                # alteram fórmulas, probabilidades ou critérios estatísticos.
-                "match_id": str(f.get("match_id") or f.get("fixture_id") or "").strip(),
-                "fixture_id": str(f.get("fixture_id") or f.get("match_id") or "").strip(),
-                "league_id": str(f.get("league_id") or "").strip(),
-                "tournament": str(f.get("tournament") or "").strip(),
-                "competition_weight": f.get("competition_weight"),
-                "home_fifa_rank": f.get("home_fifa_rank"),
-                "away_fifa_rank": f.get("away_fifa_rank"),
-                "fifa_ranking_as_of": f.get("fifa_ranking_as_of"),
-                "home_team_id": str(f.get("home_team_id") or "").strip(),
-                "away_team_id": str(f.get("away_team_id") or "").strip(),
-            }
-            # V91: hidrata imediatamente o mesmo estado usado pela análise normal.
-            # O payload continua como fonte persistente, mas a abertura não depende
-            # de um segundo rerun para consumir _goto_*.
-            st.session_state.selected_competition = comp
-            st.session_state.selected_home = home
-            st.session_state.selected_away = away
-            st.session_state.loaded_home = home
-            st.session_state.loaded_away = away
-            st.session_state.loaded_competition = comp
-            st.session_state.league_widget = comp
-            st.session_state.main_league_widget = comp
-            st.session_state["_main_games_hidden_competition"] = comp
-            st.session_state["_synced_loaded_signature"] = f"{comp}|{home}|{away}"
-            try:
-                _comp_key = clean_col(str(comp))
-                st.session_state[f"main_fixture_date_{_comp_key}"] = target_date
-                st.session_state[f"main_match_choice_{_comp_key}"] = "📅 Jogos da data"
-            except Exception:
-                pass
-            # Limpa resíduos do mecanismo antigo para que não sobrescrevam o payload.
-            st.session_state.pop("_goto_comp", None)
-            st.session_state.pop("_goto_home", None)
-            st.session_state.pop("_goto_away", None)
-            st.session_state.pop("_goto_date", None)
-            st.session_state["gm_games_return_date"] = target_date
-            st.session_state["gm_games_return_label"] = _agenda_date_label(target_date)
-            st.session_state["gm_games_return_index"] = i
-            st.session_state["gm_analysis_origin"] = "games"
-            # V83: cada abertura de uma partida é uma nova navegação. O Streamlit
-            # pode preservar o scroll da agenda anterior; este sinal força a análise
-            # a começar no topo sem perder a data usada no botão de retorno.
-            st.session_state["gm_analysis_scroll_top"] = True
-            st.session_state["gm_main_view"] = "analysis"
-            try:
-                # V158: espelho público e mínimo do fixture para sobreviver à recriação
-                # da sessão do navegador. Não contém token, segredo ou dado de usuário.
-                st.query_params["gm_view"] = "analysis"
-                st.query_params["gm_match_comp"] = comp
-                st.query_params["gm_match_home"] = home
-                st.query_params["gm_match_away"] = away
-                st.query_params["gm_match_id"] = str(f.get("match_id") or "")
-                st.query_params["gm_match_league"] = str(f.get("league_id") or "")
-                st.query_params["gm_match_tournament"] = str(f.get("tournament") or "")
-                st.query_params["gm_match_date"] = target_date.isoformat() if hasattr(target_date, "isoformat") else str(target_date)
-                st.query_params["gm_match_time"] = tm
-                st.query_params["gm_match_home_id"] = str(f.get("home_team_id") or "")
-                st.query_params["gm_match_away_id"] = str(f.get("away_team_id") or "")
-            except Exception:
-                pass
-            st.rerun()
-
-    # V84: ao voltar de uma análise, restaura a região da agenda onde o usuário
-    # estava. A data permanece no selectbox e o card escolhido vira a âncora.
-    _restore_index = st.session_state.pop("gm_games_restore_index", None)
-    if _restore_index is not None:
-        try:
-            _restore_index = int(_restore_index)
-            components.html(
-                f"""
-                <script>
-                (() => {{
-                  const reveal = () => {{
-                    try {{
-                      const doc = window.parent.document;
-                      const el = doc.getElementById('gm-game-{_restore_index}');
-                      if (el) el.scrollIntoView({{block:'center', inline:'nearest', behavior:'instant'}});
-                    }} catch (e) {{}}
-                  }};
-                  reveal(); setTimeout(reveal, 100); setTimeout(reveal, 350); setTimeout(reveal, 700);
-                }})();
-                </script>
-                """, height=0, scrolling=False
-            )
-        except Exception:
-            pass
-
-
-def gm_render_news_page():
-    """Feed compacto de novidades, mantendo as mesmas RPCs e estados de leitura."""
-    st.markdown("## 📰 Novidades")
-    st.caption("Atualizações, lançamentos e avisos do GM SCORE.")
-    try:
-        rows = gm_list_news() or []
-    except Exception:
-        st.warning("Não foi possível carregar as novidades agora.")
-        return
-    hidden = set(st.session_state.get("gm_news_hidden_session", []))
-    rows = [r for r in rows if str((r or {}).get("id") or "") not in hidden]
-
-    # V80: novidades não lidas têm prioridade visual. Dentro de cada grupo,
-    # a ordem permanece cronológica da publicação mais recente para a mais antiga.
-    def _gm_news_sort_key(row):
-        try:
-            ts = pd.to_datetime((row or {}).get("published_at"), utc=True, errors="coerce")
-            published_ts = float(ts.timestamp()) if not pd.isna(ts) else float("-inf")
-        except Exception:
-            published_ts = float("-inf")
-        is_unread = 0 if bool((row or {}).get("is_read")) else 1
-        return (is_unread, published_ts)
-
-    rows = sorted(rows, key=_gm_news_sort_key, reverse=True)
-    if not rows:
-        st.info("Nenhuma novidade publicada no momento.")
-        return
-
-    st.markdown('''<style>
-    .gm-news-feed-card{position:relative;background:linear-gradient(145deg,rgba(15,24,32,.96),rgba(9,15,21,.98));border:1px solid rgba(148,163,184,.18);border-radius:16px;padding:13px 14px 12px;margin:.45rem 0 .22rem;overflow:hidden}
-    .gm-news-feed-card.new{border-color:rgba(52,230,129,.42);box-shadow:inset 3px 0 0 #34e681}
-    .gm-news-feed-card.featured{background:linear-gradient(145deg,rgba(12,42,31,.88),rgba(9,18,22,.98))}
-    .gm-news-feed-top{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:7px}
-    .gm-news-feed-category{font-size:.70rem;font-weight:900;letter-spacing:.055em;text-transform:uppercase;color:#34e681}
-    .gm-news-feed-state{font-size:.66rem;font-weight:850;color:#94a3b8;background:rgba(148,163,184,.09);padding:3px 7px;border-radius:999px}
-    .gm-news-feed-title{font-size:1.02rem;font-weight:900;line-height:1.22;color:#f8fafc;margin:0 0 5px}
-    .gm-news-feed-msg{font-size:.84rem;line-height:1.42;color:#c5ced8;margin:0;white-space:pre-wrap}
-    .gm-news-feed-meta{font-size:.68rem;color:#7f8997;margin-top:9px}
-    @media(max-width:768px){.gm-news-feed-card{padding:12px 12px 11px;border-radius:14px}.gm-news-feed-title{font-size:.96rem}.gm-news-feed-msg{font-size:.80rem}}
-    </style>''', unsafe_allow_html=True)
-
-    for row in rows:
-        news_id = str(row.get("id") or "")
-        title = str(row.get("title") or "Novidade")
-        message = str(row.get("message") or "")
-        category = str(row.get("category") or "novidade")
-        category_label = str(GM_NEWS_CATEGORIES.get(category, "🆕 Novidade"))
-        is_read = bool(row.get("is_read"))
-        featured = bool(row.get("is_featured"))
-        classes = "gm-news-feed-card" + (" new" if not is_read else "") + (" featured" if featured else "")
-        state = "NOVA" if not is_read else "LIDA"
-        feature_badge = " • DESTAQUE" if featured else ""
-        card = f'''<div class="{classes}"><div class="gm-news-feed-top"><div class="gm-news-feed-category">{html.escape(category_label)}</div><div class="gm-news-feed-state">{state}{feature_badge}</div></div><div class="gm-news-feed-title">{html.escape(title)}</div><div class="gm-news-feed-msg">{html.escape(message)}</div><div class="gm-news-feed-meta">{html.escape(gm_news_format_datetime(row.get("published_at")))}</div></div>'''
-        st.markdown(card, unsafe_allow_html=True)
-        c1, c2, _ = st.columns([1.1, 1, 2.8])
-        with c1:
-            if not is_read and news_id and st.button("✓ Lida", key=f"gm_news_page_read_{news_id}"):
-                try:
-                    gm_news_rpc("gm_mark_news_read", {"p_news_id": news_id}); gm_invalidate_unread_news_cache(); st.rerun()
-                except Exception:
-                    st.warning("Não foi possível atualizar a leitura agora.")
-        with c2:
-            if news_id and st.button("Ocultar", key=f"gm_news_page_hide_{news_id}"):
-                hidden_now = set(st.session_state.get("gm_news_hidden_session", [])); hidden_now.add(news_id); st.session_state["gm_news_hidden_session"] = list(hidden_now); st.rerun()
+        for row in current: _gm_daily_pick_card(row,today)
+    with st.expander("📆 Ontem — dicas e resultados",expanded=False):
+        prev=day_rows(yesterday)
+        if not prev: st.caption("Ainda não há dicas registradas para ontem.")
+        for row in prev: _gm_daily_pick_card(row,yesterday)
+    settled=[r for r in rows if str(r.get("status") or "") in {"green","red"} and (_gm_daily_num(r.get("total_odd")) or 999)<=3.0]
+    unique=[]
+    for r in settled:
+        d=str(r.get("pick_date") or "")
+        if d and d not in unique: unique.append(d)
+        if len(unique)>=10: break
+    perf=[r for r in settled if str(r.get("pick_date") or "") in set(unique)]
+    st.markdown("### 📊 Aproveitamento oficial — últimos 10 dias")
+    st.caption("Conta somente Dicas do Dia aprovadas e encerradas com **odd até 3,00**. Dicas acima de 3,00 continuam visíveis no histórico, mas não alteram o percentual oficial.")
+    if perf:
+        g=sum(str(r.get("status"))=="green" for r in perf); red=sum(str(r.get("status"))=="red" for r in perf); a,b,c=st.columns(3); a.metric("Greens",g); b.metric("Reds",red); c.metric("Aproveitamento",f"{100*g/max(1,g+red):.0f}%")
+    else: st.caption("O histórico oficial aparecerá conforme as dicas com odd até 3,00 forem encerradas.")
 
 
 def gm_render_daily_pick_free_page():
@@ -15335,7 +14704,7 @@ def gm_render_daily_pick_free_page():
         for idx, row in enumerate(current):
             kind = str(row.get("pick_kind") or "dica")
             profile = GM_DAILY_PICK_PROFILES.get(kind, GM_DAILY_PICK_PROFILES["dica"])
-            label = "📊 Dica Principal" if kind == "dica" else profile.get("label", "Dica do Dia")
+            label = "💡 Dica do Dia"
             legs = _gm_daily_sort_legs(row.get("legs") or [])
             total_odd = _gm_daily_num(row.get("total_odd")) or 0.0
             btype = _gm_daily_bet_type_label(row.get("bet_type"), len(legs))
@@ -15408,9 +14777,7 @@ def gm_render_daily_pick_free_page():
 
     for row in past[:30]:
         kind = str(row.get("pick_kind") or "dica")
-        label = GM_DAILY_PICK_PROFILES.get(kind, {}).get("label", "Dica do Dia")
-        if kind == "dica":
-            label = "📊 Dica Principal"
+        label = "💡 Dica do Dia"
         status = _gm_daily_status_badge(row.get("status"))
         odd = _gm_daily_num(row.get("total_odd")) or 0.0
         date_txt = str(row.get("pick_date") or "")
@@ -15429,8 +14796,8 @@ def gm_render_daily_pick_free_page():
 
     settled_standard = [
         r for r in past
-        if str(r.get("pick_kind") or "dica") in {"matadeira", "dica"}
-        and str(r.get("status") or "") in {"green", "red"}
+        if str(r.get("status") or "") in {"green", "red"}
+        and (_gm_daily_num(r.get("total_odd")) or 999) <= 3.0
     ]
     if settled_standard:
         greens = sum(1 for r in settled_standard if str(r.get("status")) == "green")
