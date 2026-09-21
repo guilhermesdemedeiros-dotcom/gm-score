@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-21-v160-national-teams-ptbr-visual-context"
+GM_BUILD = "2026-09-21-v161-national-flags-share-navigation-state"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -113,15 +113,15 @@ GM_FIFA_PTBR_NAMES = {
     "Chile":"Chile", "Peru":"Peru",
 }
 GM_FIFA_FLAGS = {
-    "Spain":"🇪🇸", "Argentina":"🇦🇷", "France":"🇫🇷", "England":"🏴", "Brazil":"🇧🇷",
+    "Spain":"🇪🇸", "Argentina":"🇦🇷", "France":"🇫🇷", "England":"🇬🇧", "Brazil":"🇧🇷",
     "Morocco":"🇲🇦", "Portugal":"🇵🇹", "Belgium":"🇧🇪", "Netherlands":"🇳🇱", "Mexico":"🇲🇽",
     "Colombia":"🇨🇴", "Germany":"🇩🇪", "Croatia":"🇭🇷", "Switzerland":"🇨🇭", "Italy":"🇮🇹",
     "United States":"🇺🇸", "Japan":"🇯🇵", "Senegal":"🇸🇳", "Norway":"🇳🇴", "Uruguay":"🇺🇾",
     "Denmark":"🇩🇰", "Iran":"🇮🇷", "Austria":"🇦🇹", "Egypt":"🇪🇬", "Ecuador":"🇪🇨",
     "Nigeria":"🇳🇬", "Türkiye":"🇹🇷", "Australia":"🇦🇺", "Algeria":"🇩🇿", "Canada":"🇨🇦",
     "Côte d'Ivoire":"🇨🇮", "Korea Republic":"🇰🇷", "Ukraine":"🇺🇦", "Paraguay":"🇵🇾",
-    "Russia":"🇷🇺", "Poland":"🇵🇱", "Sweden":"🇸🇪", "Wales":"🏴", "Hungary":"🇭🇺",
-    "Serbia":"🇷🇸", "DR Congo":"🇨🇩", "Scotland":"🏴", "Cameroon":"🇨🇲", "Panama":"🇵🇦",
+    "Russia":"🇷🇺", "Poland":"🇵🇱", "Sweden":"🇸🇪", "Wales":"🇬🇧", "Hungary":"🇭🇺",
+    "Serbia":"🇷🇸", "DR Congo":"🇨🇩", "Scotland":"🇬🇧", "Cameroon":"🇨🇲", "Panama":"🇵🇦",
     "Slovakia":"🇸🇰", "Greece":"🇬🇷", "Venezuela":"🇻🇪", "Czechia":"🇨🇿", "Chile":"🇨🇱", "Peru":"🇵🇪",
 }
 
@@ -178,6 +178,34 @@ def gm_national_flag(name):
 def gm_national_display_name(name, with_flag=True):
     label = gm_national_name_ptbr(name)
     return f"{gm_national_flag(name)} {label}" if with_flag else label
+
+# V161 — imagem de bandeira confiável para cards/cabeçalho/compartilhamento.
+# Emojis continuam nos controles nativos do Streamlit; imagens usam ISO/FlagCDN,
+# incluindo subdivisões britânicas que frequentemente não renderizam como emoji.
+GM_FIFA_FLAG_CODES = {
+    "Spain":"es", "Argentina":"ar", "France":"fr", "England":"gb-eng", "Brazil":"br",
+    "Morocco":"ma", "Portugal":"pt", "Belgium":"be", "Netherlands":"nl", "Mexico":"mx",
+    "Colombia":"co", "Germany":"de", "Croatia":"hr", "Switzerland":"ch", "Italy":"it",
+    "United States":"us", "Japan":"jp", "Senegal":"sn", "Norway":"no", "Uruguay":"uy",
+    "Denmark":"dk", "Iran":"ir", "Austria":"at", "Egypt":"eg", "Ecuador":"ec",
+    "Nigeria":"ng", "Türkiye":"tr", "Australia":"au", "Algeria":"dz", "Canada":"ca",
+    "Côte d'Ivoire":"ci", "Korea Republic":"kr", "Ukraine":"ua", "Paraguay":"py", "Russia":"ru",
+    "Poland":"pl", "Sweden":"se", "Wales":"gb-wls", "Hungary":"hu", "Serbia":"rs",
+    "DR Congo":"cd", "Scotland":"gb-sct", "Cameroon":"cm", "Panama":"pa", "Slovakia":"sk",
+    "Greece":"gr", "Venezuela":"ve", "Czechia":"cz", "Chile":"cl", "Peru":"pe",
+}
+
+def gm_national_flag_url(name, width=160):
+    canonical = gm_fifa_team_key(name)
+    code = GM_FIFA_FLAG_CODES.get(canonical, "")
+    if not code:
+        return ""
+    try:
+        width = int(width)
+    except Exception:
+        width = 160
+    width = 80 if width <= 80 else (160 if width <= 160 else 320)
+    return f"https://flagcdn.com/w{width}/{code}.png"
 
 def gm_national_fixture_eligible(home, away):
     """Regra GM SCORE: Top-25 enfrenta qualquer seleção A; fora do Top-25,
@@ -462,7 +490,12 @@ def gm_team_badge_html(team_name, competition=None, team_id=None, size=24, show_
     if competition == GM_NATIONAL_COMPETITION:
         flag = html.escape(gm_national_flag(team_name))
         name = html.escape(gm_national_name_ptbr(team_name))
-        icon = f'<span aria-hidden="true" style="font-size:{max(18,int(size))}px;line-height:1;display:inline-flex;align-items:center;justify-content:center">{flag}</span>'
+        flag_url = gm_national_flag_url(team_name, 160)
+        if flag_url:
+            icon = (f'<img src="{html.escape(flag_url, quote=True)}" alt="{flag}" loading="lazy" '
+                    f'style="width:{int(size)+6}px;height:{int(size)}px;object-fit:cover;border-radius:3px;flex:0 0 auto">')
+        else:
+            icon = f'<span aria-hidden="true" style="font-size:{max(18,int(size))}px;line-height:1;display:inline-flex;align-items:center;justify-content:center">{flag}</span>'
         text = f'<span>{name}</span>' if show_name else ''
         return f'<span class="gm-team-with-badge" style="display:inline-flex;align-items:center;gap:7px;min-width:0">{icon}{text}</span>'
     visual = gm_team_visual(team_name, competition, team_id)
@@ -11891,16 +11924,20 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
     # depende mais de permissão CORS do servidor externo dos escudos.
     home_visual = gm_team_visual(team_a, league_name, gm_current_match_team_id(team_a, "home"))
     away_visual = gm_team_visual(team_b, league_name, gm_current_match_team_id(team_b, "away"))
-    home_logo = gm_badge_data_uri(home_visual.get("badge"))
-    away_logo = gm_badge_data_uri(away_visual.get("badge"))
+    if league_name == GM_NATIONAL_COMPETITION:
+        home_logo = gm_badge_data_uri(gm_national_flag_url(team_a, 320))
+        away_logo = gm_badge_data_uri(gm_national_flag_url(team_b, 320))
+    else:
+        home_logo = gm_badge_data_uri(home_visual.get("badge"))
+        away_logo = gm_badge_data_uri(away_visual.get("badge"))
     league_visual = gm_league_visual(league_name)
     league_logo = gm_badge_data_uri(league_visual.get("logo"))
     match_datetime = gm_current_match_datetime()
     data = _json.dumps({
-        "title": f"{team_a} × {team_b}",
-        "league": str(league_name),
-        "home": team_a,
-        "away": team_b,
+        "title": f"{gm_national_name_ptbr(team_a) if league_name == GM_NATIONAL_COMPETITION else team_a} × {gm_national_name_ptbr(team_b) if league_name == GM_NATIONAL_COMPETITION else team_b}",
+        "league": str((st.session_state.get("gm_games_direct_match") or {}).get("tournament") or league_name) if league_name == GM_NATIONAL_COMPETITION else str(league_name),
+        "home": gm_national_name_ptbr(team_a) if league_name == GM_NATIONAL_COMPETITION else team_a,
+        "away": gm_national_name_ptbr(team_b) if league_name == GM_NATIONAL_COMPETITION else team_b,
         "home_logo": home_logo,
         "away_logo": away_logo,
         "league_logo": league_logo,
@@ -12465,6 +12502,11 @@ def render_analysis():
             st.session_state.selected_away = None
             st.session_state.pop("_main_games_hidden_competition", None)
             st.session_state.pop("_synced_loaded_signature", None)
+            st.session_state.pop("gm_games_direct_match", None)
+            if st.session_state.get("gm_analysis_origin") == "manual":
+                st.session_state.pop("gm_analysis_origin", None)
+            st.session_state.pop("home_widget", None)
+            st.session_state.pop("away_widget", None)
             st.rerun()
     else:
         if _games_direct_view:
@@ -14993,7 +15035,12 @@ def gm_render_games_page():
             _rank_txt = f" · FIFA #{_rh if _rh is not None else '—'} × #{_ra if _ra is not None else '—'}"
             _display_comp = "🌍 " + (_display_comp or "Seleções") + _rank_txt
             _home_display, _away_display = gm_national_display_name(home), gm_national_display_name(away)
-        card_html = '<div id="gm-game-{}" class="gm-game-card"><div class="gm-game-time">{}</div><div class="gm-game-body"><div class="gm-game-league">{}</div><div class="gm-game-teams">{} × {}</div></div></div>'.format(i, html.escape(tm), html.escape(_display_comp), html.escape(_home_display), html.escape(_away_display))
+        if comp == GM_NATIONAL_COMPETITION:
+            _home_html = gm_team_badge_html(home, GM_NATIONAL_COMPETITION, f.get("home_team_id"), size=20, show_name=True)
+            _away_html = gm_team_badge_html(away, GM_NATIONAL_COMPETITION, f.get("away_team_id"), size=20, show_name=True)
+        else:
+            _home_html, _away_html = html.escape(_home_display), html.escape(_away_display)
+        card_html = '<div id="gm-game-{}" class="gm-game-card"><div class="gm-game-time">{}</div><div class="gm-game-body"><div class="gm-game-league">{}</div><div class="gm-game-teams">{} <span>×</span> {}</div></div></div>'.format(i, html.escape(tm), html.escape(_display_comp), _home_html, _away_html)
         st.markdown(card_html, unsafe_allow_html=True)
         if st.button("📊 Analisar", use_container_width=False, key=f"gm_games_analyze_{target_date}_{i}_{clean_col(comp)}"):
             # V81: transporta o contexto completo do jogo e neutraliza o gm_view=games
@@ -15393,14 +15440,14 @@ def gm_render_app_navigation(profile):
         news_unread = gm_unread_news_count()
     except Exception:
         news_unread = 0
-    try:
-        base_params = dict(st.query_params)
-    except Exception:
-        base_params = {}
+    # V161: navegação não herda parâmetros de uma partida anterior. Query params
+    # de fixture eram a principal causa de voltar/pesquisar e a interface reabrir
+    # um confronto antigo ou parecer não responder.
     links = []
     for view, icon, label in items:
-        params = dict(base_params)
-        params["gm_view"] = view
+        params = {"gm_view": view}
+        if view == "analysis":
+            params["gm_reset_analysis"] = "1"
         href = "?" + urlencode(params, doseq=True)
         active = " gm-mobile-nav-active" if current == view else ""
         badge_html = ""
@@ -15475,7 +15522,16 @@ def gm_render_games_return_button():
         st.session_state["gm_games_restore_index"] = st.session_state.get("gm_games_return_index")
         st.session_state["gm_main_view"] = "games"
         st.session_state.pop("gm_analysis_origin", None)
+        st.session_state.pop("gm_games_direct_match", None)
+        st.session_state.pop("_main_games_hidden_competition", None)
+        st.session_state.pop("_synced_loaded_signature", None)
         try:
+            # Retorno à agenda deve deixar apenas o destino; nunca o fixture antigo.
+            for _k in list(st.query_params.keys()):
+                try:
+                    del st.query_params[_k]
+                except Exception:
+                    pass
             st.query_params["gm_view"] = "games"
         except Exception:
             pass
@@ -15540,6 +15596,20 @@ except Exception:
 
 # V141: a barra inferior padrão permanece ativa dentro da Central Administrativa.
 _gm_requested_view = str(st.query_params.get("gm_view", "") or "").strip()
+# V161: tocar em Início significa iniciar uma navegação limpa. Remove somente
+# estado de confronto/interface; autenticação, plano e caches estatísticos ficam intactos.
+if _gm_requested_view == "analysis" and str(st.query_params.get("gm_reset_analysis", "") or "") == "1":
+    for _k in ("selected_home", "selected_away", "loaded_home", "loaded_away",
+               "gm_games_direct_match", "gm_analysis_origin", "_main_games_hidden_competition",
+               "_synced_loaded_signature", "home_widget", "away_widget"):
+        try:
+            st.session_state.pop(_k, None)
+        except Exception:
+            pass
+    try:
+        del st.query_params["gm_reset_analysis"]
+    except Exception:
+        pass
 if _gm_requested_view in {"analysis", "games", "daily_pick", "news", "account", "admin_results"}:
     st.session_state["gm_main_view"] = _gm_requested_view
     if _gm_profile_after_gate and _gm_profile_after_gate.get("role") == "admin":
