@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-21-v164-session-state-navigation-guard"
+GM_BUILD = "2026-09-21-v165-full-share-vertical-team-identity"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -3857,8 +3857,10 @@ def gm_render_match_hero(team_a, team_b, league_name, season_text, probs=None, u
     """Cabeçalho visual da partida real, sem alterar nenhum cálculo do modelo."""
     team_a_html = _gm_safe_html(team_a)
     team_b_html = _gm_safe_html(team_b)
-    team_a_visual = gm_team_badge_html(team_a, league_name, team_id=gm_current_match_team_id(team_a, "home"), size=38)
-    team_b_visual = gm_team_badge_html(team_b, league_name, team_id=gm_current_match_team_id(team_b, "away"), size=38)
+    team_a_visual = gm_team_badge_html(team_a, league_name, team_id=gm_current_match_team_id(team_a, "home"), size=54, show_name=False)
+    team_b_visual = gm_team_badge_html(team_b, league_name, team_id=gm_current_match_team_id(team_b, "away"), size=54, show_name=False)
+    team_a_label = _gm_safe_html(gm_national_name_ptbr(team_a) if league_name == GM_NATIONAL_COMPETITION else team_a)
+    team_b_label = _gm_safe_html(gm_national_name_ptbr(team_b) if league_name == GM_NATIONAL_COMPETITION else team_b)
     league_html = _gm_safe_html(league_name)
     league_visual = gm_league_visual(league_name)
     league_logo = str(league_visual.get("logo") or "")
@@ -3920,14 +3922,20 @@ def gm_render_match_hero(team_a, team_b, league_name, season_text, probs=None, u
         <section class="gm-real-match">
           <div class="gm-real-kicker">Partida carregada • análise VIP</div>
           <div class="gm-match-identity" style="display:grid;grid-template-columns:minmax(0,1fr) minmax(150px,.82fr) minmax(0,1fr);align-items:center;gap:8px;margin:.65rem 0 .35rem">
-            <div style="display:flex;justify-content:center;align-items:center;min-width:0">{team_a_visual}</div>
+            <div style="display:flex;flex-direction:column;justify-content:center;align-items:center;min-width:0;text-align:center;gap:8px">
+              <div style="height:58px;display:flex;align-items:center;justify-content:center">{team_a_visual}</div>
+              <div style="width:100%;font-size:clamp(.82rem,3vw,1rem);font-weight:850;color:#f8fafc;line-height:1.15;white-space:normal;overflow-wrap:anywhere">{team_a_label}</div>
+            </div>
             <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-width:0;text-align:center">
               <div style="height:38px;display:flex;align-items:center;justify-content:center">{league_logo_html}</div>
               <div style="width:100%;font-size:.74rem;font-weight:900;color:#cbd5e1;line-height:1.15;margin-top:3px;text-align:center;white-space:normal;overflow-wrap:anywhere">{league_title}</div>
               <div style="font-size:1.38rem;font-weight:950;color:#24e58b;line-height:1;margin-top:7px">×</div>
               <div style="font-size:.69rem;font-weight:750;color:#94a3b8;line-height:1.2;margin-top:7px">{_gm_safe_html(match_datetime) if match_datetime else ''}</div>
             </div>
-            <div style="display:flex;justify-content:center;align-items:center;min-width:0">{team_b_visual}</div>
+            <div style="display:flex;flex-direction:column;justify-content:center;align-items:center;min-width:0;text-align:center;gap:8px">
+              <div style="height:58px;display:flex;align-items:center;justify-content:center">{team_b_visual}</div>
+              <div style="width:100%;font-size:clamp(.82rem,3vw,1rem);font-weight:850;color:#f8fafc;line-height:1.15;white-space:normal;overflow-wrap:anywhere">{team_b_label}</div>
+            </div>
           </div>
           <div class="gm-real-meta" style="text-align:center">{season_html}{(' • dados até ' + pd.Timestamp(updated_until).strftime('%d/%m/%Y')) if updated_until is not None and not pd.isna(updated_until) else ''}{(' • amostra mínima: ' + str(int(sample)) + ' jogo(s)') if sample is not None else ''}</div>
           {probability_html}
@@ -12016,13 +12024,15 @@ def _gm_share_highlights(team_a, team_b, probs, opportunities, expectations):
 
 
 def render_share_button(team_a, team_b, league_name, probs, opportunities, expectations, a, b, df=None, sample_games=0):
-    """V93: arte com brasões oficiais do confronto e até 8 probabilidades entre 70% e 95%."""
+    """V165: compartilhamento integral da análise, em uma única arte vertical.
+
+    A imagem espelha os dados disponíveis nos Mercados Essenciais em sequência:
+    resultado, gols, escanteios, cartões e demais métricas suportadas. Não recalcula
+    probabilidades e não cria dados ausentes; apenas desenha o que o painel já possui.
+    """
     import json as _json
 
-    highlights = _gm_share_highlights(team_a, team_b, probs, opportunities, expectations)
-    # V94: reutiliza exatamente os mesmos brasões resolvidos para o cabeçalho da
-    # partida e os incorpora no payload da arte. O canvas do navegador não
-    # depende mais de permissão CORS do servidor externo dos escudos.
+    sections = gm_share_market_sections(team_a, team_b, probs, expectations, a, b, df, sample_games)
     home_visual = gm_team_visual(team_a, league_name, gm_current_match_team_id(team_a, "home"))
     away_visual = gm_team_visual(team_b, league_name, gm_current_match_team_id(team_b, "away"))
     if league_name == GM_NATIONAL_COMPETITION:
@@ -12040,51 +12050,62 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
         "league": str((st.session_state.get("gm_games_direct_match") or {}).get("tournament") or league_name) if league_name == GM_NATIONAL_COMPETITION else str(league_name),
         "home": gm_national_name_ptbr(team_a) if league_name == GM_NATIONAL_COMPETITION else team_a,
         "away": gm_national_name_ptbr(team_b) if league_name == GM_NATIONAL_COMPETITION else team_b,
-        "home_logo": home_logo,
-        "away_logo": away_logo,
-        "league_logo": league_logo,
-        "match_datetime": match_datetime,
-        "highlights": highlights,
+        "home_logo": home_logo, "away_logo": away_logo, "league_logo": league_logo,
+        "match_datetime": match_datetime, "sections": sections,
+        "sample": int(sample_games or 0),
     }, ensure_ascii=False)
 
-    st.caption("A imagem compartilhada resume até 8 destaques com probabilidade estimada entre 70% e 95%.")
+    st.caption("A imagem compartilhada leva a análise completa disponível: Resultado, Gols, Escanteios, Cartões e demais dados calculados para a partida.")
     html = f"""
     <div style='font-family:Inter,Arial,sans-serif'>
-      <button id='shareBtn' style='width:100%;padding:12px 16px;border:1px solid #1fe387;border-radius:12px;background:linear-gradient(90deg,#08783f,#10b865);color:white;font-size:16px;font-weight:800;cursor:pointer'>📲 Compartilhar resumo GM SCORE</button>
+      <button id='shareBtn' style='width:100%;padding:12px 16px;border:1px solid #1fe387;border-radius:12px;background:linear-gradient(90deg,#08783f,#10b865);color:white;font-size:16px;font-weight:800;cursor:pointer'>📲 Compartilhar análise completa GM SCORE</button>
       <div id='msg' style='font-size:12px;color:#94a3b8;margin-top:6px'></div>
     </div>
     <script>
     const D = {data};
-    const C={{bg:'#07100f',panel:'#0b1716',border:'#176e4b',green:'#24e58b',text:'#f8fafc',muted:'#a8b4c2',soft:'#263845'}};
+    const C={{bg:'#07100f',panel:'#0b1716',card:'#101d2a',border:'#176e4b',green:'#24e58b',text:'#f8fafc',muted:'#a8b4c2',soft:'#263845'}};
     function rr(c,x,y,w,h,r,fill,stroke=null,lw=1){{const q=Math.min(r,w/2,h/2);c.beginPath();c.moveTo(x+q,y);c.arcTo(x+w,y,x+w,y+h,q);c.arcTo(x+w,y+h,x,y+h,q);c.arcTo(x,y+h,x,y,q);c.arcTo(x,y,x+w,y,q);c.closePath();if(fill){{c.fillStyle=fill;c.fill();}}if(stroke){{c.lineWidth=lw;c.strokeStyle=stroke;c.stroke();}}}}
     function tx(c,v,x,y,size=28,weight='400',color=C.text,align='left'){{c.save();c.fillStyle=color;c.font=`${{weight}} ${{size}}px Arial`;c.textAlign=align;c.textBaseline='alphabetic';c.fillText(String(v),x,y);c.restore();}}
+    function fit(c,v,x,y,maxW,size=28,min=15,weight='800',color=C.text,align='center'){{let z=size;c.save();while(z>min){{c.font=`${{weight}} ${{z}}px Arial`;if(c.measureText(String(v)).width<=maxW)break;z--;}}c.fillStyle=color;c.font=`${{weight}} ${{z}}px Arial`;c.textAlign=align;c.fillText(String(v),x,y);c.restore();}}
     function wrap(c,v,x,y,maxW,lineH,size=22,weight='700',color=C.text){{c.save();c.fillStyle=color;c.font=`${{weight}} ${{size}}px Arial`;let line='',yy=y;for(const w of String(v).split(' ')){{const t=line+w+' ';if(c.measureText(t).width>maxW&&line){{c.fillText(line.trim(),x,yy);yy+=lineH;line=w+' ';}}else line=t;}}if(line)c.fillText(line.trim(),x,yy);c.restore();return yy;}}
     function loadImg(src){{return new Promise(resolve=>{{if(!src)return resolve(null);const i=new Image();if(/^https?:/i.test(src))i.crossOrigin='anonymous';i.onload=()=>resolve(i);i.onerror=()=>resolve(null);i.src=src;}});}}
+    function sectionHeight(s){{const n=(s.rows||[]).length;return 82 + Math.ceil(n/2)*92 + 24;}}
     document.getElementById('shareBtn').onclick=async()=>{{
-      const W=1080,H=1180+Math.max(0,D.highlights.length-3)*128,scale=2;
+      const W=1080, headerH=455, sectionGap=24, footerH=120;
+      const contentH=(D.sections||[]).reduce((sum,s)=>sum+sectionHeight(s)+sectionGap,0);
+      const H=headerH+contentH+footerH, scale=2;
       const canvas=document.createElement('canvas');canvas.width=W*scale;canvas.height=H*scale;const c=canvas.getContext('2d');c.scale(scale,scale);c.fillStyle=C.bg;c.fillRect(0,0,W,H);
-      tx(c,'GM',70,82,50,'900','#fff');tx(c,'SCORE',165,82,50,'900',C.green);tx(c,'ANÁLISE • ESTATÍSTICAS • PROBABILIDADES',70,118,18,'700','#93e9bc');
-      rr(c,60,160,960,260,22,C.panel,C.border,2);
+      tx(c,'GM',70,72,48,'900','#fff');tx(c,'SCORE',160,72,48,'900',C.green);tx(c,'ANÁLISE COMPLETA',1010,70,20,'800',C.green,'right');
+      rr(c,60,120,960,285,22,C.panel,C.border,2);
       const [hi,ai,li]=await Promise.all([loadImg(D.home_logo),loadImg(D.away_logo),loadImg(D.league_logo)]);
-      // V98: coluna central realmente independente dos clubes.
-      // Logo, competição, × e data/hora compartilham exatamente o mesmo eixo X.
-      const CX=540, LEAGUE_MAX_W=300;
-      if(li)c.drawImage(li,CX-29,174,58,58);
-      let leagueSize=20;
-      c.save();c.font=`800 ${{leagueSize}}px Arial`;
-      while(leagueSize>14 && c.measureText(String(D.league).toUpperCase()).width>LEAGUE_MAX_W){{leagueSize--;c.font=`800 ${{leagueSize}}px Arial`;}}
-      c.restore();
-      tx(c,String(D.league).toUpperCase(),CX,258,leagueSize,'800',C.muted,'center');
-      tx(c,'×',CX,302,40,'900',C.green,'center');
-      if(D.match_datetime)tx(c,D.match_datetime,CX,336,17,'700',C.muted,'center');
-      if(hi)c.drawImage(hi,218,218,92,92);else tx(c,'⚽',264,285,58,'700',C.muted,'center');
-      if(ai)c.drawImage(ai,770,218,92,92);else tx(c,'⚽',816,285,58,'700',C.muted,'center');
-      tx(c,D.home,264,355,27,'800',C.text,'center');tx(c,D.away,816,355,27,'800',C.text,'center');
-      let y=475;tx(c,'DESTAQUES DA ANÁLISE',70,y,29,'900',C.text);tx(c,'70%–95%',1010,y,22,'900',C.green,'right');y+=35;
-      if(!D.highlights.length){{rr(c,60,y,960,150,18,C.panel,C.border,1);tx(c,'Nenhum mercado ficou na faixa de 70% a 95%.',540,y+72,24,'700',C.muted,'center');tx(c,'A análise completa continua disponível no GM SCORE.',540,y+108,18,'500',C.muted,'center');y+=180;}}
-      else{{D.highlights.forEach((r,idx)=>{{rr(c,60,y,960,112,18,C.panel,C.border,1);wrap(c,r.label,88,y+42,690,28,23,'800',C.text);if(r.base)tx(c,r.base,88,y+84,16,'600',C.muted);tx(c,`${{Math.round(r.chance)}}%`,980,y+66,34,'900',C.green,'right');y+=128;}});}}
-      tx(c,'Probabilidades estatísticas. Não representam garantia de resultado.',70,H-78,17,'500',C.muted);tx(c,'GM SCORE',1010,H-78,22,'900',C.green,'right');
-      canvas.toBlob(async blob=>{{const safe=(D.home+'-x-'+D.away).replace(/[^a-z0-9áàãâéêíóôõúç_-]+/gi,'-').replace(/-+/g,'-');const file=new File([blob],`GM-SCORE-${{safe}}.jpg`,{{type:'image/jpeg'}});try{{if(navigator.share&&(!navigator.canShare||navigator.canShare({{files:[file]}}))){{await navigator.share({{title:`GM SCORE — ${{D.title}}`,text:`GM SCORE — ${{D.league}} — ${{D.title}}`,files:[file]}});document.getElementById('msg').innerText='Resumo criado. Escolha onde compartilhar.';}}else{{const dl=document.createElement('a');dl.href=URL.createObjectURL(blob);dl.download=file.name;dl.click();document.getElementById('msg').innerText='Resumo criado e salvo.';}}}}catch(e){{document.getElementById('msg').innerText='Compartilhamento cancelado.';}}}},'image/jpeg',.94);
+      const CX=540;
+      if(li)c.drawImage(li,CX-28,140,56,56);
+      fit(c,String(D.league).toUpperCase(),CX,220,320,19,13,'800',C.muted,'center');
+      tx(c,'×',CX,282,42,'900',C.green,'center');
+      if(D.match_datetime)tx(c,D.match_datetime,CX,318,17,'700',C.muted,'center');
+      if(D.sample)tx(c,`Amostra mínima: ${{D.sample}} jogo(s)`,CX,350,16,'600',C.muted,'center');
+      // Identidade vertical: símbolo/bandeira em cima e nome centralizado abaixo.
+      if(hi)c.drawImage(hi,190,178,110,82);else tx(c,'⚽',245,245,58,'700',C.muted,'center');
+      if(ai)c.drawImage(ai,780,178,110,82);else tx(c,'⚽',835,245,58,'700',C.muted,'center');
+      fit(c,D.home,245,302,300,29,17,'850',C.text,'center');
+      fit(c,D.away,835,302,300,29,17,'850',C.text,'center');
+      tx(c,'Probabilidades e projeções exibidas pelo GM SCORE',540,386,16,'600',C.muted,'center');
+
+      let y=445;
+      for(const s of (D.sections||[])){{
+        const h=sectionHeight(s);rr(c,60,y,960,h,20,C.panel,C.border,1.5);
+        tx(c,s.title,88,y+48,27,'900',C.text);
+        const rows=s.rows||[];let ry=y+76;
+        for(let i=0;i<rows.length;i+=2){{
+          const pair=rows.slice(i,i+2);
+          pair.forEach((r,j)=>{{const x=82+j*470,w=446;rr(c,x,ry,w,76,14,C.card,C.soft,1);fit(c,r[0],x+20,ry+30,w-145,17,12,'650',C.muted,'left');fit(c,r[1],x+w-20,ry+52,w-40,24,15,'850',C.text,'right');}});
+          ry+=92;
+        }}
+        y+=h+sectionGap;
+      }}
+      tx(c,'Dados ausentes não são inventados; mercados sem base suficiente permanecem fora do cálculo.',70,H-68,15,'500',C.muted);
+      tx(c,'GM SCORE',1010,H-68,22,'900',C.green,'right');
+      canvas.toBlob(async blob=>{{const safe=(D.home+'-x-'+D.away).replace(/[^a-z0-9áàãâéêíóôõúç_-]+/gi,'-').replace(/-+/g,'-');const file=new File([blob],`GM-SCORE-${{safe}}.jpg`,{{type:'image/jpeg'}});try{{if(navigator.share&&(!navigator.canShare||navigator.canShare({{files:[file]}}))){{await navigator.share({{title:`GM SCORE — ${{D.title}}`,text:`GM SCORE — ${{D.league}} — ${{D.title}}`,files:[file]}});document.getElementById('msg').innerText='Análise completa criada. Escolha onde compartilhar.';}}else{{const dl=document.createElement('a');dl.href=URL.createObjectURL(blob);dl.download=file.name;dl.click();document.getElementById('msg').innerText='Análise completa criada e salva.';}}}}catch(e){{document.getElementById('msg').innerText='Compartilhamento cancelado.';}}}},'image/jpeg',.94);
     }};
     </script>
     """
