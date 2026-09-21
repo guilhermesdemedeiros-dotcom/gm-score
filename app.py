@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-21-v170-admin-workspace-clients"
+GM_BUILD = "2026-09-21-v171-admin-console-simplified-system"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -3241,135 +3241,32 @@ def gm_render_admin_bets_results_page():
 
 
 def gm_render_admin_panel(profile):
-    """Painel administrativo organizado por função. Validações continuam no Supabase."""
+    """V171: backoffice dedicado, compacto e orientado às tarefas do ADM."""
     if not profile or profile.get("role") != "admin":
         st.error("Acesso administrativo não autorizado.")
         return
 
-    # V141: Central compacta; ferramentas administrativas ficam somente aqui.
-    # V140: st.tabs executa o conteúdo de TODAS as abas em cada rerun, inclusive
-    # diagnósticos pesados do sistema. O seletor abaixo mantém a mesma separação
-    # administrativa, mas executa somente a seção escolhida.
+    st.markdown("## 🛠️ Central ADM")
+    st.caption("Gestão do GM SCORE · ambiente exclusivo da administração")
+
     _admin_sections = [
-        "⚽ Jogos / Sistema",
+        "👥 Clientes / VIP",
         "💡 Dicas do Dia",
         "⭐ Apostas do ADM",
         "📰 Novidades",
         "⭐ Avaliações",
-        "👥 Clientes / VIP",
+        "⚙️ Sistema",
     ]
+    _current = st.session_state.get("gm_admin_active_section")
+    if _current not in _admin_sections:
+        st.session_state["gm_admin_active_section"] = _admin_sections[0]
     _admin_section = st.radio(
-        "Área administrativa",
-        _admin_sections,
-        horizontal=True,
-        key="gm_admin_active_section",
-        label_visibility="collapsed",
+        "Área administrativa", _admin_sections, horizontal=True,
+        key="gm_admin_active_section", label_visibility="collapsed",
     )
-    if _admin_section == "⚽ Jogos / Sistema":
-        with st.expander("🧭 Verificação da versão carregada", expanded=False):
-            try:
-                _gm_runtime_file = os.path.basename(os.path.abspath(__file__))
-            except Exception:
-                _gm_runtime_file = "app.py"
-            try:
-                _gm_runtime_mtime = datetime.fromtimestamp(os.path.getmtime(__file__), tz=timezone.utc).astimezone(ZoneInfo("America/Sao_Paulo"))
-                _gm_runtime_mtime_txt = _gm_runtime_mtime.strftime("%d/%m/%Y %H:%M:%S")
-            except Exception:
-                _gm_runtime_mtime_txt = "indisponível"
-            st.markdown(f"**Build carregada:** `{GM_BUILD}`")
-            st.caption(f"Arquivo em execução: `{_gm_runtime_file}` • modificado: {_gm_runtime_mtime_txt} (Brasília)")
-        gm_render_auth_test_console()
-        st.markdown("### ⚽ Jogos e operação do sistema")
-        st.caption("Controles administrativos de atualização e diagnóstico. A experiência normal de Jogos permanece idêntica à do cliente VIP.")
-        gm_admin_fixture_date = st.date_input(
-            "Data para reconstruir",
-            value=datetime.now(BRASILIA_TZ).date(),
-            key="gm_admin_fixture_rebuild_date",
-            help="A atualização reconstrói somente a data escolhida e reaplica todas as validações da agenda.",
-        )
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("🔄 Atualizar partidas", use_container_width=True, type="primary", key="gm_admin_games_refresh"):
-                with st.spinner("Reconstruindo a agenda e validando as partidas..."):
-                    for _fn_name in (
-                        "load_apifootball_prediction_fixtures_for_date",
-                        "load_apifootball_competition_fixtures_for_date",
-                        "load_apifootball_all_competitions_fixtures_for_date",
-                        "load_apifootball_fixtures_for_date",
-                        "load_sofascore_fixtures_for_date",
-                        "load_espn_fixtures_for_date",
-                        "load_thesportsdb_fixtures_for_date",
-                        "load_fixtures_for_date",
-                        "gm_games_prepared_fixtures",
-                    ):
-                        _fn = globals().get(_fn_name)
-                        try:
-                            if _fn is not None and hasattr(_fn, "clear"):
-                                _fn.clear()
-                        except Exception:
-                            pass
-                    try:
-                        _official = load_apifootball_all_competitions_fixtures_for_date(gm_admin_fixture_date) or []
-                    except Exception:
-                        _official = []
-                    try:
-                        _aggregated = load_fixtures_for_date(gm_admin_fixture_date) or []
-                    except Exception:
-                        _aggregated = []
-                    try:
-                        _final = gm_games_prepared_fixtures(gm_admin_fixture_date) or []
-                    except Exception:
-                        _final = []
-                    _wrong_date = sum(1 for _f in _aggregated if not fixture_matches_selected_date(_f, gm_admin_fixture_date))
-                    _invalid = sum(1 for _f in _aggregated if not valid_daily_fixture(_f))
-                    _roster_rejected = sum(1 for _f in _aggregated if valid_daily_fixture(_f) and fixture_matches_selected_date(_f, gm_admin_fixture_date) and not gm_fixture_matches_official_league_roster(_f))
-                    _competitions = len({str((_f or {}).get("competition") or "") for _f in _final if (_f or {}).get("competition")})
-                    st.session_state["gm_admin_fixture_last_report"] = {
-                        "date": gm_admin_fixture_date.isoformat(),
-                        "official": len(_official),
-                        "aggregated": len(_aggregated),
-                        "final": len(_final),
-                        "wrong_date": _wrong_date,
-                        "invalid": _invalid,
-                        "roster_rejected": _roster_rejected,
-                        "competitions": _competitions,
-                        "updated_at": datetime.now(BRASILIA_TZ).strftime("%d/%m/%Y %H:%M:%S"),
-                    }
-                st.success(f"Agenda de {gm_admin_fixture_date.strftime('%d/%m/%Y')} reconstruída e validada.")
-        with c2:
-            if st.button("🔄 Sincronizar resultados", use_container_width=True, key="gm_admin_results_sync"):
-                try:
-                    _sync = gm_calibration_auto_settle(limit=30, force=True)
-                    st.success(f"Sincronização concluída: {_sync.get('settled', 0)} resultado(s) atualizado(s).")
-                except Exception as exc:
-                    st.warning("Não foi possível concluir a sincronização agora.")
-                    st.caption(f"Detalhe: {type(exc).__name__}")
-        _fixture_report = st.session_state.get("gm_admin_fixture_last_report")
-        if isinstance(_fixture_report, dict):
-            st.markdown("#### Relatório da última atualização")
-            r1, r2, r3, r4 = st.columns(4)
-            r1.metric("APIfootball oficial", int(_fixture_report.get("official", 0)))
-            r2.metric("Registros agregados", int(_fixture_report.get("aggregated", 0)))
-            r3.metric("Agenda válida", int(_fixture_report.get("final", 0)))
-            r4.metric("Competições", int(_fixture_report.get("competitions", 0)))
-            _discarded = int(_fixture_report.get("wrong_date", 0)) + int(_fixture_report.get("invalid", 0)) + int(_fixture_report.get("roster_rejected", 0))
-            st.caption(
-                f"Validação: {_fixture_report.get('wrong_date', 0)} fora da data · "
-                f"{_fixture_report.get('invalid', 0)} inválidos · "
-                f"{_fixture_report.get('roster_rejected', 0)} incompatíveis com a competição · "
-                f"{_discarded} descarte(s) detectado(s) · atualizado em {_fixture_report.get('updated_at', '—')}."
-            )
-            if int(_fixture_report.get("official", 0)) == 0 and int(_fixture_report.get("final", 0)) > 0:
-                st.warning("A fonte oficial não retornou partidas nesta atualização. A agenda exibida dependeu das fontes complementares e merece conferência.")
-            elif int(_fixture_report.get("final", 0)) == 0:
-                st.info("Nenhuma partida válida permaneceu para a data após as validações.")
-            else:
-                st.success("A agenda final foi reconstruída com as barreiras de data, competição, identidade e deduplicação ativas.")
 
-        st.markdown("#### Diagnóstico das competições")
-        gm_render_apifootball_league_audit()
-        gm_render_apifootball_stat_audit()
-        gm_render_calibration_dashboard()
+    if _admin_section == "👥 Clientes / VIP":
+        gm_render_admin_vip_manager()
     elif _admin_section == "💡 Dicas do Dia":
         gm_render_admin_daily_pick_approval()
     elif _admin_section == "⭐ Apostas do ADM":
@@ -3378,8 +3275,67 @@ def gm_render_admin_panel(profile):
         gm_render_admin_news_manager()
     elif _admin_section == "⭐ Avaliações":
         gm_render_admin_reviews_manager()
-    elif _admin_section == "👥 Clientes / VIP":
-        gm_render_admin_vip_manager()
+    elif _admin_section == "⚙️ Sistema":
+        st.markdown("### ⚙️ Sistema")
+        st.caption("Versão carregada e atualização operacional centralizada.")
+        try:
+            _runtime_file = os.path.basename(os.path.abspath(__file__))
+            _mtime = datetime.fromtimestamp(os.path.getmtime(__file__), tz=timezone.utc).astimezone(ZoneInfo("America/Sao_Paulo"))
+            _mtime_txt = _mtime.strftime("%d/%m/%Y %H:%M:%S")
+        except Exception:
+            _runtime_file, _mtime_txt = "app.py", "indisponível"
+        st.info(f"Versão carregada: {GM_BUILD}")
+        st.caption(f"Arquivo: {_runtime_file} · carregado/modificado: {_mtime_txt} (Brasília)")
+        st.markdown("#### Atualização geral")
+        st.caption("Um único comando limpa os caches operacionais, reconstrói a agenda de hoje e executa a calibração automática disponível.")
+        if st.button("🔄 ATUALIZAR / SINCRONIZAR SISTEMA", type="primary", use_container_width=True, key="gm_admin_sync_all_v171"):
+            _steps = []
+            with st.spinner("Atualizando o GM SCORE..."):
+                cache_names = (
+                    "load_apifootball_prediction_fixtures_for_date",
+                    "load_apifootball_competition_fixtures_for_date",
+                    "load_apifootball_all_competitions_fixtures_for_date",
+                    "load_apifootball_fixtures_for_date",
+                    "load_sofascore_fixtures_for_date",
+                    "load_espn_fixtures_for_date",
+                    "load_thesportsdb_fixtures_for_date",
+                    "load_fixtures_for_date",
+                    "gm_games_prepared_fixtures",
+                )
+                cleared = 0
+                for _name in cache_names:
+                    _fn = globals().get(_name)
+                    try:
+                        if _fn is not None and hasattr(_fn, "clear"):
+                            _fn.clear(); cleared += 1
+                    except Exception:
+                        pass
+                _steps.append(("Caches e fontes", True, f"{cleared} rotina(s) reiniciada(s)"))
+                _today = datetime.now(BRASILIA_TZ).date()
+                try:
+                    _official = load_apifootball_all_competitions_fixtures_for_date(_today) or []
+                    _final = gm_games_prepared_fixtures(_today) or []
+                    _steps.append(("Agenda / ligas", True, f"{len(_final)} jogo(s) válido(s) · {len(_official)} registro(s) APIfootball"))
+                except Exception as _exc:
+                    _steps.append(("Agenda / ligas", False, type(_exc).__name__))
+                try:
+                    _cal = gm_calibration_auto_settle(limit=50, force=True)
+                    _steps.append(("Calibração automática", True, "rotina executada"))
+                except Exception as _exc:
+                    _steps.append(("Calibração automática", False, type(_exc).__name__))
+            st.session_state["gm_admin_sync_report_v171"] = {"when": datetime.now(BRASILIA_TZ).strftime("%d/%m/%Y %H:%M:%S"), "steps": _steps}
+
+        _report = st.session_state.get("gm_admin_sync_report_v171")
+        if isinstance(_report, dict):
+            st.markdown("#### Última execução")
+            for _label, _ok, _detail in _report.get("steps", []):
+                (st.success if _ok else st.error)(f"{'✓' if _ok else '✕'} {_label} · {_detail}")
+            st.caption(f"Executado em {_report.get('when', '—')}.")
+        with st.expander("Diagnóstico técnico", expanded=False):
+            st.caption("Consultas de auditoria ficam recolhidas; o uso diário deve ser feito pelo botão de atualização geral acima.")
+            gm_render_apifootball_league_audit()
+            gm_render_apifootball_stat_audit()
+            gm_render_calibration_dashboard()
 
     st.markdown("---")
     st.caption("🛡️ Conta administrativa dedicada ao backoffice GM SCORE.")
@@ -3388,7 +3344,6 @@ def gm_render_admin_panel(profile):
         st.session_state.pop("gm_admin_panel_open", None)
         st.session_state.pop("gm_main_view", None)
         st.rerun()
-
 
 
 def gm_render_auth_test_console():
@@ -4196,6 +4151,16 @@ def gm_render_public_portal():
                 st.caption(str(profile.get("nome") or profile.get("email") or "GM SCORE"))
                 tier = gm_product_tier(profile)
                 st.success("🛠️ GM SCORE ADM" if state == "admin" else ("⭐ GM SCORE PRO" if tier == "pro" else "○ GM SCORE FREE"))
+
+                # V171: conta administrativa dedicada. Sem navegação/recursos de cliente na lateral.
+                if state == "admin":
+                    st.caption("Central administrativa")
+                    if st.button("🚪 Sair", use_container_width=True, key="gm_sidebar_admin_logout"):
+                        gm_auth_sign_out()
+                        st.session_state.pop("gm_admin_panel_open", None)
+                        st.session_state.pop("gm_main_view", None)
+                        st.rerun()
+                    return True
 
                 # Renovação simples para clientes que já estão com o VIP ativo.
                 # Reutiliza exatamente o checkout individual já existente:
