@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-21-v158-national-direct-match-recovery"
+GM_BUILD = "2026-09-21-v159-national-teams-manual-and-date-routing"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -11249,6 +11249,16 @@ def load_competition_fixtures_for_date(competition, target_date):
 
     fixtures = []
 
+    # V159: seleções não possuem um league_id único. A agenda focada usa a
+    # descoberta internacional por DATA, que inclui amistosos + jogos oficiais e
+    # preserva tournament/fixture IDs. Isso faz quarta, quinta etc. refletirem
+    # exatamente a data escolhida, sem depender de existir jogo internacional hoje.
+    if competition == GM_NATIONAL_COMPETITION:
+        try:
+            fixtures.extend(load_apifootball_national_fixtures_for_date(target_date) or [])
+        except Exception:
+            pass
+
     # v42: fonte de recuperação principal para partidas futuras. O endpoint
     # get_predictions já abastece a seleção diária e retorna confrontos/horários
     # mesmo quando o calendário get_events vem incompleto.
@@ -11310,7 +11320,7 @@ def load_competition_fixtures_for_date(competition, target_date):
             or not fixture_matches_selected_date(f, target_date)
         ):
             continue
-        if not gm_fixture_matches_official_league_roster(f):
+        if competition != GM_NATIONAL_COMPETITION and not gm_fixture_matches_official_league_roster(f):
             continue
         ff = dict(f)
         if competition in STRICT_OFFICIAL_ROSTERS:
@@ -11418,7 +11428,7 @@ if "selected_away" not in st.session_state:
 # Mantidas fora da sidebar para que a navegação lateral possa ficar exclusiva
 # para conta/VIP/Admin sem remover dependências da agenda de jogos.
 _brasilia_today = datetime.now(BRASILIA_TZ).date()
-_date_options = [_brasilia_today + timedelta(days=i) for i in range(7)]
+_date_options = [_brasilia_today + timedelta(days=i) for i in range(14)]
 
 def _agenda_date_label(d):
     if d == _brasilia_today:
@@ -11442,7 +11452,25 @@ def load_current_season():
         home = str(payload.get("home") or st.session_state.get("selected_home") or st.session_state.get("loaded_home") or "").strip()
         away = str(payload.get("away") or st.session_state.get("selected_away") or st.session_state.get("loaded_away") or "").strip()
         if not home or not away:
-            raise RuntimeError("contexto do confronto de seleções não foi preservado; volte à aba Jogos e abra a partida novamente")
+            # V159: seleções também podem ser escolhidas manualmente. Sem um fixture
+            # previamente aberto, devolve o Top-50 oficial como roster navegável;
+            # nenhum dado estatístico é inventado. Após escolher duas seleções, o
+            # rerun volta aqui e carrega os perfis históricos reais do par.
+            rows = []
+            for team, (rank, points) in sorted(GM_FIFA_TOP50.items(), key=lambda kv: kv[1][0]):
+                row = {m: None for m in DISPLAY_METRICS}
+                row["Time"] = team
+                row["Jogos"] = 0
+                row["FIFA_Rank"] = int(rank)
+                row["FIFA_Points"] = float(points)
+                rows.append(row)
+            out = pd.DataFrame(rows)
+            out.attrs["updated_until"] = None
+            out.attrs["matches"] = []
+            out.attrs["season_source"] = "FIFA Top 50 · seleção manual"
+            out.attrs["fifa_ranking_as_of"] = GM_FIFA_RANKING_AS_OF
+            out.attrs["national_manual_roster"] = True
+            return out
         pair = gm_apifootball_pair_profiles(
             home, away, competition_name=None, limit_per_team=max(12, int(period or 10)),
             lookback_days=900,
@@ -12272,7 +12300,10 @@ def render_analysis():
                 st.info("Nenhum jogo profissional masculino encontrado para esta competição na data selecionada. Você ainda pode usar **🎯 Selecionar equipes**.")
 
         else:
-            st.caption("Escolha qualquer confronto entre as equipes profissionais da competição, mesmo sem jogo marcado nesta data.")
+            if league_name == GM_NATIONAL_COMPETITION:
+                st.caption("Escolha manualmente duas seleções do Top 50 FIFA. A elegibilidade final mantém a regra GM SCORE: Top 25 × qualquer seleção elegível; fora do Top 25, ambas precisam estar no Top 50.")
+            else:
+                st.caption("Escolha qualquer confronto entre as equipes profissionais da competição, mesmo sem jogo marcado nesta data.")
             manual_c1, manual_c2 = st.columns(2)
             with manual_c1:
                 manual_team_a = st.selectbox(
@@ -12299,6 +12330,22 @@ def render_analysis():
             ):
                 st.session_state.selected_home = manual_team_a
                 st.session_state.selected_away = manual_team_b
+                if league_name == GM_NATIONAL_COMPETITION:
+                    st.session_state["gm_games_direct_match"] = {
+                        "competition": GM_NATIONAL_COMPETITION,
+                        "home": manual_team_a,
+                        "away": manual_team_b,
+                        "date": "",
+                        "time": "",
+                        "match_id": "",
+                        "league_id": "",
+                        "tournament": "Seleção manual",
+                        "home_team_id": "",
+                        "away_team_id": "",
+                        "fifa_ranking_as_of": GM_FIFA_RANKING_AS_OF,
+                    }
+                    # Manual não é navegação da agenda; evita o modo dedicado de retorno.
+                    st.session_state["gm_analysis_origin"] = "manual"
                 st.session_state.loaded_home = manual_team_a
                 st.session_state.loaded_away = manual_team_b
                 st.session_state.loaded_competition = league_name
@@ -14831,7 +14878,7 @@ def gm_games_prepared_fixtures(target_date):
             continue
         if not valid_daily_fixture(f) or not fixture_matches_selected_date(f, target_date):
             continue
-        if not gm_fixture_matches_official_league_roster(f):
+        if comp != GM_NATIONAL_COMPETITION and not gm_fixture_matches_official_league_roster(f):
             continue
         _merge_fixture_unique(safe, dict(f))
     unique = []
