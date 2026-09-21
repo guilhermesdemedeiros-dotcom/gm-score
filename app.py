@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-20-v156-more-options-exclusive-legs"
+GM_BUILD = "2026-09-21-v157-national-teams-fifa-layer"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -69,6 +69,111 @@ GM_APIFOOTBALL_FIXED_LEAGUE_IDS = {
     "UEFA Europa League": "4",
     "UEFA Conference League": "683",
 }
+
+# V157 — Seleções masculinas principais.
+# Snapshot oficial FIFA de 20/07/2026. A próxima atualização oficial anunciada
+# pela FIFA é 07/10/2026; este bloco deve ser atualizado quando a nova lista sair.
+GM_FIFA_RANKING_AS_OF = "2026-07-20"
+GM_FIFA_TOP50 = {
+    "Spain": (1, 1995.88), "Argentina": (2, 1970.37), "France": (3, 1948.97),
+    "England": (4, 1922.83), "Brazil": (5, 1804.92), "Morocco": (6, 1803.99),
+    "Portugal": (7, 1787.85), "Belgium": (8, 1778.36), "Netherlands": (9, 1775.54),
+    "Mexico": (10, 1754.30), "Colombia": (11, 1739.89), "Germany": (12, 1726.22),
+    "Croatia": (13, 1723.05), "Switzerland": (14, 1710.88), "Italy": (15, 1704.73),
+    "United States": (16, 1690.33), "Japan": (17, 1673.68), "Senegal": (18, 1653.43),
+    "Norway": (19, 1651.29), "Uruguay": (20, 1634.70), "Denmark": (21, 1619.47),
+    "Iran": (22, 1609.85), "Austria": (23, 1598.82), "Egypt": (24, 1597.04),
+    "Ecuador": (25, 1592.59), "Nigeria": (26, 1585.02), "Türkiye": (27, 1582.54),
+    "Australia": (28, 1581.51), "Algeria": (29, 1576.80), "Canada": (30, 1571.34),
+    "Côte d'Ivoire": (31, 1565.47), "Korea Republic": (32, 1558.72),
+    "Ukraine": (33, 1549.29), "Paraguay": (34, 1542.48), "Russia": (35, 1529.60),
+    "Poland": (36, 1526.18), "Sweden": (37, 1525.58), "Wales": (38, 1516.95),
+    "Hungary": (39, 1506.39), "Serbia": (40, 1502.13), "DR Congo": (41, 1495.48),
+    "Scotland": (42, 1491.22), "Cameroon": (43, 1481.24), "Panama": (44, 1478.41),
+    "Slovakia": (45, 1473.66), "Greece": (46, 1473.19), "Venezuela": (47, 1469.18),
+    "Czechia": (48, 1467.26), "Chile": (49, 1458.20), "Peru": (50, 1457.69),
+}
+GM_NATIONAL_COMPETITION = "Seleções - Internacional"
+
+GM_FIFA_TEAM_ALIASES = {
+    "spain":"Spain", "espana":"Spain",
+    "argentina":"Argentina", "france":"France", "franca":"France",
+    "england":"England", "inglaterra":"England", "brazil":"Brazil", "brasil":"Brazil",
+    "morocco":"Morocco", "marrocos":"Morocco", "portugal":"Portugal",
+    "belgium":"Belgium", "belgica":"Belgium", "netherlands":"Netherlands", "holanda":"Netherlands",
+    "mexico":"Mexico", "colombia":"Colombia", "germany":"Germany", "alemanha":"Germany",
+    "croatia":"Croatia", "croacia":"Croatia", "switzerland":"Switzerland", "suica":"Switzerland",
+    "italy":"Italy", "italia":"Italy", "united states":"United States", "usa":"United States",
+    "united states of america":"United States", "japan":"Japan", "japao":"Japan",
+    "senegal":"Senegal", "norway":"Norway", "noruega":"Norway", "uruguay":"Uruguay",
+    "denmark":"Denmark", "dinamarca":"Denmark", "iran":"Iran", "ir iran":"Iran",
+    "austria":"Austria", "egypt":"Egypt", "egito":"Egypt", "ecuador":"Ecuador",
+    "nigeria":"Nigeria", "turkiye":"Türkiye", "turkey":"Türkiye", "turquia":"Türkiye",
+    "australia":"Australia", "algeria":"Algeria", "argelia":"Algeria", "canada":"Canada",
+    "cote d ivoire":"Côte d'Ivoire", "ivory coast":"Côte d'Ivoire",
+    "korea republic":"Korea Republic", "south korea":"Korea Republic", "coreia do sul":"Korea Republic",
+    "ukraine":"Ukraine", "ucrania":"Ukraine", "paraguay":"Paraguay", "russia":"Russia", "russia":"Russia",
+    "poland":"Poland", "polonia":"Poland", "sweden":"Sweden", "suecia":"Sweden",
+    "wales":"Wales", "pais de gales":"Wales", "hungary":"Hungary", "hungria":"Hungary",
+    "serbia":"Serbia", "dr congo":"DR Congo", "congo dr":"DR Congo", "congo democratic republic":"DR Congo",
+    "scotland":"Scotland", "escocia":"Scotland", "cameroon":"Cameroon", "camaroes":"Cameroon",
+    "panama":"Panama", "slovakia":"Slovakia", "eslovaquia":"Slovakia",
+    "greece":"Greece", "grecia":"Greece", "venezuela":"Venezuela",
+    "czechia":"Czechia", "czech republic":"Czechia", "republica tcheca":"Czechia",
+    "chile":"Chile", "peru":"Peru",
+}
+
+def gm_fifa_team_key(name):
+    key = _gm_api_norm(name)
+    return GM_FIFA_TEAM_ALIASES.get(key, str(name or "").strip())
+
+def gm_fifa_rank(name):
+    canonical = gm_fifa_team_key(name)
+    item = GM_FIFA_TOP50.get(canonical)
+    return int(item[0]) if item else None
+
+def gm_fifa_points(name):
+    canonical = gm_fifa_team_key(name)
+    item = GM_FIFA_TOP50.get(canonical)
+    return float(item[1]) if item else None
+
+def gm_national_fixture_eligible(home, away):
+    """Regra GM SCORE: Top-25 enfrenta qualquer seleção A; fora do Top-25,
+    ambas precisam estar no Top-50."""
+    rh, ra = gm_fifa_rank(home), gm_fifa_rank(away)
+    if (rh is not None and rh <= 25) or (ra is not None and ra <= 25):
+        return True
+    return bool(rh is not None and rh <= 50 and ra is not None and ra <= 50)
+
+def gm_national_competition_weight(league_name):
+    """Peso contextual; não cria estatística nem transforma ausência em dado."""
+    n = _gm_api_norm(league_name)
+    if "world cup" in n and "qualification" not in n:
+        return 1.00
+    if any(x in n for x in ("euro championship", "copa america", "africa cup", "asian cup", "gold cup")):
+        return 0.96
+    if "qualification" in n or "qualif" in n:
+        return 0.92
+    if "nations league" in n:
+        return 0.90
+    if "friendly" in n or "friendlies" in n:
+        return 0.72
+    return 0.86
+
+def gm_is_senior_mens_international_league(league_name):
+    n = _gm_api_norm(league_name)
+    if not n:
+        return False
+    blocked = ("women", "woman", "u17", "u18", "u19", "u20", "u21", "u23",
+               "under 17", "under 19", "under 20", "under 21", "youth",
+               "olympic", "club", "clubs")
+    if any(x in n for x in blocked):
+        return False
+    signals = ("world cup", "qualification", "qualifiers", "nations league",
+               "friendlies", "friendly", "copa america", "euro championship",
+               "africa cup", "asian cup", "gold cup", "ofc nations",
+               "fifa series", "gulf cup", "eaff", "asean championship")
+    return any(x in n for x in signals)
 
 st.set_page_config(
     page_title="GM SCORE",
@@ -4272,6 +4377,7 @@ COMPETITIONS = {
     "UEFA Champions League": {"kind": "open_results", "id": "champions", "season": "europe"},
     "UEFA Europa League": {"kind": "open_results", "id": "europa", "season": "europe"},
     "UEFA Conference League": {"kind": "open_results", "id": "conference", "season": "europe"},
+    GM_NATIONAL_COMPETITION: {"kind": "national_teams", "id": "national", "season": "calendar"},
 }
 
 FD_STATS = {
@@ -4412,6 +4518,7 @@ COMPETITION_ICONS = {
     "CONMEBOL Libertadores": "🏆", "CONMEBOL Sul-Americana": "🏆",
     "UEFA Champions League": "🏆", "UEFA Europa League": "🏆",
     "UEFA Conference League": "🏆",
+    GM_NATIONAL_COMPETITION: "🌍",
 }
 
 # Força relativa aproximada do nível competitivo da liga doméstica.
@@ -7338,11 +7445,16 @@ def gm_apifootball_pair_profiles(team_a, team_b, competition_name=None, limit_pe
             item["_gm_selected_league"] = str(item.get("league_id") or "") == str(league_id or "")
             finished.append(item)
         finished.sort(key=lambda x: (1 if x.get("_gm_selected_league") else 0, str(x.get("match_date") or "")), reverse=True)
-        official = [x for x in finished if x.get("_gm_official")]
-        chosen = official[:int(limit_per_team)]
-        if len(chosen) < min(8, int(limit_per_team)):
-            used = {str(x.get("match_id") or "") for x in chosen}
-            chosen += [x for x in finished if str(x.get("match_id") or "") not in used][:int(limit_per_team)-len(chosen)]
+        if competition_name == GM_NATIONAL_COMPETITION or competition_name is None:
+            # V157: para seleções, amistosos também representam fase recente.
+            # Mantemos todos os jogos A reais em ordem cronológica, sem duplicar.
+            chosen = finished[:int(limit_per_team)]
+        else:
+            official = [x for x in finished if x.get("_gm_official")]
+            chosen = official[:int(limit_per_team)]
+            if len(chosen) < min(8, int(limit_per_team)):
+                used = {str(x.get("match_id") or "") for x in chosen}
+                chosen += [x for x in finished if str(x.get("match_id") or "") not in used][:int(limit_per_team)-len(chosen)]
 
         acc = empty_team(team_name)
         detailed = 0
@@ -7433,6 +7545,39 @@ def gm_apifootball_pair_profiles(team_a, team_b, competition_name=None, limit_pe
     aid = resolve_from_league(team_a) or resolve_from_h2h(team_a)
     bid = resolve_from_league(team_b) or resolve_from_h2h(team_b)
     return {team_a: profile(team_a, aid), team_b: profile(team_b, bid), "_error": None}
+
+
+
+def gm_national_ranking_probabilities(home, away):
+    """Prior conservador derivado dos pontos FIFA; nunca substitui a amostra real."""
+    ph, pa = gm_fifa_points(home), gm_fifa_points(away)
+    if ph is None or pa is None:
+        return None
+    diff = max(-450.0, min(450.0, ph - pa))
+    home_share = 1.0 / (1.0 + 10.0 ** (-diff / 520.0))
+    # Reserva empate explícito para manter o mesmo formato 1-X-2 do app.
+    draw = max(0.20, min(0.30, 0.27 - abs(diff) / 5000.0))
+    remaining = 1.0 - draw
+    return {
+        "home": remaining * home_share,
+        "draw": draw,
+        "away": remaining * (1.0 - home_share),
+    }
+
+def gm_blend_national_ranking(probs, home, away, sample):
+    prior = gm_national_ranking_probabilities(home, away)
+    if not probs or not prior:
+        return probs
+    # Ranking funciona como contexto histórico/força, não como modelo dominante.
+    w = 0.22 if int(sample or 0) < 8 else 0.14
+    out = {}
+    for key in ("home", "draw", "away"):
+        try:
+            out[key] = (1.0 - w) * float(probs.get(key, 0)) + w * float(prior.get(key, 0))
+        except Exception:
+            return probs
+    s = sum(out.values()) or 1.0
+    return {k: v / s for k, v in out.items()}
 
 
 def contextual_analysis_rows(team_a, team_b, competition_name, competition_df, recent_games=10):
@@ -10676,6 +10821,65 @@ def load_apifootball_fixtures_for_date(target_date):
     return fixtures
 
 
+
+@st.cache_data(ttl=900, show_spinner=False)
+def load_apifootball_national_fixtures_for_date(target_date):
+    """Seleções A masculinas: jogos oficiais + amistosos, filtrados pelo ranking FIFA."""
+    if isinstance(target_date, pd.Timestamp):
+        target_date = target_date.date()
+    if isinstance(target_date, datetime):
+        target_date = target_date.date()
+    try:
+        target_date = pd.to_datetime(target_date).date()
+    except Exception:
+        return []
+
+    payload, err = gm_apifootball_request(
+        "get_events",
+        **{"from": target_date.isoformat(), "to": target_date.isoformat()},
+        timezone="America/Sao_Paulo",
+    )
+    if err or not isinstance(payload, list):
+        return []
+
+    out = []
+    for ev in payload:
+        if not isinstance(ev, dict):
+            continue
+        home = str(ev.get("match_hometeam_name") or "").strip()
+        away = str(ev.get("match_awayteam_name") or "").strip()
+        league_name = str(ev.get("league_name") or "").strip()
+        if not home or not away or not gm_is_senior_mens_international_league(league_name):
+            continue
+        if not gm_national_fixture_eligible(home, away):
+            continue
+        raw_date = str(ev.get("match_date") or "").strip()
+        try:
+            event_date = pd.to_datetime(raw_date, errors="coerce").date()
+        except Exception:
+            event_date = None
+        if event_date != target_date:
+            continue
+        out.append({
+            "competition": GM_NATIONAL_COMPETITION,
+            "tournament": league_name or "Seleções",
+            "competition_weight": gm_national_competition_weight(league_name),
+            "home": home, "away": away,
+            "home_fifa_rank": gm_fifa_rank(home), "away_fifa_rank": gm_fifa_rank(away),
+            "home_fifa_points": gm_fifa_points(home), "away_fifa_points": gm_fifa_points(away),
+            "fifa_ranking_as_of": GM_FIFA_RANKING_AS_OF,
+            "time": str(ev.get("match_time") or "").strip(),
+            "br_date": event_date,
+            "match_id": str(ev.get("match_id") or "").strip(),
+            "league_id": str(ev.get("league_id") or "").strip(),
+            "home_team_id": str(ev.get("match_hometeam_id") or "").strip(),
+            "away_team_id": str(ev.get("match_awayteam_id") or "").strip(),
+            "status": str(ev.get("match_status") or "").strip(),
+            "source": "APIfootball · seleções",
+        })
+    return out
+
+
 @st.cache_data(ttl=600, show_spinner=False)
 def load_apifootball_competition_fixtures_for_date(competition, target_date):
     """Consulta DIRETAMENTE uma competição por league_id + data.
@@ -10819,6 +11023,13 @@ def load_fixtures_for_date(target_date):
     # mapeamento por nome e corrige omissões pontuais (ex.: Premier League).
     try:
         fixtures.extend(load_apifootball_fixtures_for_date(today))
+    except Exception:
+        pass
+
+    # V157: Data FIFA e demais datas internacionais — seleções A masculinas,
+    # incluindo amistosos e partidas oficiais, sob a regra FIFA Top-25/Top-50.
+    try:
+        fixtures.extend(load_apifootball_national_fixtures_for_date(today))
     except Exception:
         pass
 
@@ -11223,6 +11434,36 @@ used_year = current_season_year(config["season"])
 period = int(st.session_state.get("analysis_period", 10))
 
 def load_current_season():
+    # V157: seleções não possuem "temporada de liga". Para um confronto vindo da
+    # agenda, construímos a base das duas seleções com jogos internacionais reais
+    # recentes via APIfootball. Amistosos entram na forma; jogos oficiais também.
+    if config.get("kind") == "national_teams":
+        payload = st.session_state.get("gm_games_direct_match") or {}
+        home = str(payload.get("home") or st.session_state.get("selected_home") or "").strip()
+        away = str(payload.get("away") or st.session_state.get("selected_away") or "").strip()
+        if not home or not away:
+            raise RuntimeError("selecione um confronto de seleções na aba Jogos")
+        pair = gm_apifootball_pair_profiles(
+            home, away, competition_name=None, limit_per_team=max(12, int(period or 10)),
+            lookback_days=900,
+        )
+        rows = []
+        for team in (home, away):
+            prof = pair.get(team) if isinstance(pair, dict) else None
+            row = dict((prof or {}).get("row") or {})
+            if not row:
+                row = {m: None for m in DISPLAY_METRICS}
+                row["Time"] = team; row["Jogos"] = 0
+            row["Time"] = team
+            rows.append(row)
+        out = pd.DataFrame(rows)
+        out.attrs["updated_until"] = None
+        out.attrs["matches"] = []
+        out.attrs["season_source"] = "APIfootball · seleções internacionais"
+        out.attrs["fifa_ranking_as_of"] = GM_FIFA_RANKING_AS_OF
+        out.attrs["national_tournament"] = str(payload.get("tournament") or "")
+        return out
+
     def roster_only_fallback(errors):
         roster = CURRENT_TEAM_ROSTERS.get(league_name)
         if not roster:
@@ -12068,6 +12309,17 @@ def render_analysis():
 
     if loaded_home and loaded_away:
         st.caption(f"✅ Jogo carregado: {loaded_home} × {loaded_away}")
+        if league_name == GM_NATIONAL_COMPETITION:
+            _nat_payload = st.session_state.get("gm_games_direct_match") or {}
+            _nat_tournament = str(_nat_payload.get("tournament") or "Seleções").strip()
+            _rh, _ra = gm_fifa_rank(loaded_home), gm_fifa_rank(loaded_away)
+            _w = gm_national_competition_weight(_nat_tournament)
+            st.caption(
+                f"🌍 {_nat_tournament} · Ranking FIFA {GM_FIFA_RANKING_AS_OF}: "
+                f"#{_rh if _rh is not None else 'fora do Top 50'} × "
+                f"#{_ra if _ra is not None else 'fora do Top 50'} · "
+                f"peso contextual {int(round(_w*100))}%"
+            )
         if not _games_direct_view and st.button("↩️ Escolher outro confronto", use_container_width=True, key="choose_another_match"):
             st.session_state.loaded_home = None
             st.session_state.loaded_away = None
@@ -12104,6 +12356,9 @@ def render_analysis():
         probs = contextual_victory_probabilities(team_a, team_b, a, b, analysis_context)
     if probs is None:
         probs = victory_probabilities(team_a, team_b, df)
+
+    if league_name == GM_NATIONAL_COMPETITION and probs:
+        probs = gm_blend_national_ranking(probs, team_a, team_b, comp_sample)
 
     # Antes das odds, aplica uma camada independente de qualidade estrutural.
     # Isso corrige especialmente cruzamentos entre ligas: potencial ofensivo,
@@ -14557,8 +14812,12 @@ def gm_games_prepared_fixtures(target_date):
     for fixture in safe:
         ff = dict(fixture)
         comp = str(ff.get("competition") or "")
-        home_identity = gm_fixture_official_team_identity(ff.get("home"), comp, ff.get("home_team_id"))
-        away_identity = gm_fixture_official_team_identity(ff.get("away"), comp, ff.get("away_team_id"))
+        if comp == GM_NATIONAL_COMPETITION:
+            home_identity = {"name": str(ff.get("home") or ""), "id": str(ff.get("home_team_id") or "")}
+            away_identity = {"name": str(ff.get("away") or ""), "id": str(ff.get("away_team_id") or "")}
+        else:
+            home_identity = gm_fixture_official_team_identity(ff.get("home"), comp, ff.get("home_team_id"))
+            away_identity = gm_fixture_official_team_identity(ff.get("away"), comp, ff.get("away_team_id"))
         ff["home"] = home_identity.get("name") or gm_fixture_canonical_team_name(ff.get("home"))
         ff["away"] = away_identity.get("name") or gm_fixture_canonical_team_name(ff.get("away"))
         if home_identity.get("id"):
@@ -14574,7 +14833,7 @@ def gm_render_games_page():
     st.caption("Todos os jogos das competições GM SCORE em ordem de horário de Brasília.")
     target_date = st.selectbox("📅 Data dos jogos", _date_options, key="gm_games_page_date", format_func=_agenda_date_label)
     if st.button("🔄 Atualizar jogos", use_container_width=True, key=f"gm_games_refresh_{target_date}"):
-        for _fn in (load_apifootball_prediction_fixtures_for_date, load_apifootball_competition_fixtures_for_date, load_apifootball_all_competitions_fixtures_for_date, load_apifootball_fixtures_for_date, load_sofascore_fixtures_for_date, load_espn_fixtures_for_date, load_thesportsdb_fixtures_for_date, load_fixtures_for_date, gm_games_prepared_fixtures):
+        for _fn in (load_apifootball_prediction_fixtures_for_date, load_apifootball_national_fixtures_for_date, load_apifootball_competition_fixtures_for_date, load_apifootball_all_competitions_fixtures_for_date, load_apifootball_fixtures_for_date, load_sofascore_fixtures_for_date, load_espn_fixtures_for_date, load_thesportsdb_fixtures_for_date, load_fixtures_for_date, gm_games_prepared_fixtures):
             try: _fn.clear()
             except Exception: pass
         st.rerun()
@@ -14589,7 +14848,12 @@ def gm_render_games_page():
     st.markdown(f"### {len(safe)} jogo(s) · {_agenda_date_label(target_date)}")
     for i, f in enumerate(safe):
         comp = str(f.get("competition") or ""); home = str(f.get("home") or ""); away = str(f.get("away") or ""); tm = str(f.get("time") or "—")
-        card_html = '<div id="gm-game-{}" class="gm-game-card"><div class="gm-game-time">{}</div><div class="gm-game-body"><div class="gm-game-league">{}</div><div class="gm-game-teams">{} × {}</div></div></div>'.format(i, html.escape(tm), html.escape(competition_display_name(comp)), html.escape(home), html.escape(away))
+        _display_comp = str(f.get("tournament") or "").strip() if comp == GM_NATIONAL_COMPETITION else competition_display_name(comp)
+        if comp == GM_NATIONAL_COMPETITION:
+            _rh, _ra = gm_fifa_rank(home), gm_fifa_rank(away)
+            _rank_txt = f" · FIFA #{_rh if _rh is not None else '—'} × #{_ra if _ra is not None else '—'}"
+            _display_comp = "🌍 " + (_display_comp or "Seleções") + _rank_txt
+        card_html = '<div id="gm-game-{}" class="gm-game-card"><div class="gm-game-time">{}</div><div class="gm-game-body"><div class="gm-game-league">{}</div><div class="gm-game-teams">{} × {}</div></div></div>'.format(i, html.escape(tm), html.escape(_display_comp), html.escape(home), html.escape(away))
         st.markdown(card_html, unsafe_allow_html=True)
         if st.button("📊 Analisar", use_container_width=False, key=f"gm_games_analyze_{target_date}_{i}_{clean_col(comp)}"):
             # V81: transporta o contexto completo do jogo e neutraliza o gm_view=games
@@ -14608,6 +14872,11 @@ def gm_render_games_page():
                 # alteram fórmulas, probabilidades ou critérios estatísticos.
                 "match_id": str(f.get("match_id") or "").strip(),
                 "league_id": str(f.get("league_id") or "").strip(),
+                "tournament": str(f.get("tournament") or "").strip(),
+                "competition_weight": f.get("competition_weight"),
+                "home_fifa_rank": f.get("home_fifa_rank"),
+                "away_fifa_rank": f.get("away_fifa_rank"),
+                "fifa_ranking_as_of": f.get("fifa_ranking_as_of"),
                 "home_team_id": str(f.get("home_team_id") or "").strip(),
                 "away_team_id": str(f.get("away_team_id") or "").strip(),
             }
