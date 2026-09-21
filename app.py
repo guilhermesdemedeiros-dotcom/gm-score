@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-21-v167-public-login-fast-access"
+GM_BUILD = "2026-09-21-v168-clean-login-admin-trial"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -2840,6 +2840,27 @@ def gm_render_admin_vip_manager():
             if suspended_now:
                 st.caption("⏸️ PRO suspenso pelo ADM · login e validade original preservados.")
 
+            # V168: teste manual de 6 horas pelo ADM. A autorização real fica no
+            # RPC security-definer do Supabase; o app apenas solicita a operação.
+            trial_until_raw = row.get("trial_until")
+            trial_active = False
+            if trial_until_raw:
+                try:
+                    trial_active = pd.to_datetime(trial_until_raw, utc=True) > pd.Timestamp.now(tz="UTC")
+                except Exception:
+                    trial_active = False
+            trial_caption = gm_admin_format_datetime(trial_until_raw) if trial_until_raw else "—"
+            if trial_active:
+                st.caption(f"🎁 Teste de 6h ativo · até {trial_caption}")
+            if st.button("🎁 Liberar 6 horas de teste", use_container_width=True, key=f"gm_admin_trial6h_{uid}"):
+                try:
+                    gm_admin_rpc("gm_admin_grant_trial_6h_v168", {"p_user_id": uid})
+                    st.success("Teste PRO de 6 horas liberado para o cliente.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error("Não foi possível liberar o teste de 6 horas.")
+                    st.caption(str(exc))
+
             with st.expander("Mais ações", expanded=False):
                 courtesy_days = st.selectbox(
                     "Cortesia",
@@ -4225,16 +4246,6 @@ def gm_render_public_portal():
     # V167: acesso rápido para clientes existentes antes da landing comercial.
     # O login fica disponível no primeiro viewport e pode ser aberto com um toque,
     # sem obrigar o cliente a percorrer a página pública.
-    st.markdown(
-        """
-        <style>
-        .gm-v167-access{border:1px solid rgba(34,197,94,.38);border-radius:18px;padding:12px 14px;margin:.15rem 0 .65rem;background:linear-gradient(135deg,rgba(22,163,74,.11),rgba(15,23,42,.20));}
-        .gm-v167-access b{font-size:.92rem}.gm-v167-access span{display:block;margin-top:2px;color:#94a3b8;font-size:.74rem}
-        </style>
-        <div id="gm-login-top" class="gm-v167-access"><b>🔐 Já tem uma conta GM SCORE?</b><span>Entre direto por aqui. Não precisa procurar o login no fim da página.</span></div>
-        """,
-        unsafe_allow_html=True,
-    )
     _login_col, _signup_col = st.columns(2)
     with _login_col:
         if st.button("🔐 ENTRAR NA MINHA CONTA", type="primary", use_container_width=True, key="gm_v167_top_login"):
