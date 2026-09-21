@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-21-v161-national-flags-share-navigation-state"
+GM_BUILD = "2026-09-21-v162-national-opponent-data-flags-navigation-parity"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -206,6 +206,42 @@ def gm_national_flag_url(name, width=160):
         width = 160
     width = 80 if width <= 80 else (160 if width <= 160 else 320)
     return f"https://flagcdn.com/w{width}/{code}.png"
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def gm_national_team_visual(league_id, team_id, team_name):
+    """Resolve a identidade visual real de uma seleção pelo torneio/ID da API.
+
+    Importante para adversários fora do Top 50: não depende do ranking FIFA nem
+    de um mapa manual de países. Se a API não entregar imagem, o chamador usa
+    a bandeira conhecida ou fallback neutro.
+    """
+    lid, tid = str(league_id or "").strip(), str(team_id or "").strip()
+    if lid:
+        try:
+            teams, err = gm_apifootball_league_teams(lid)
+            if not err:
+                target = _gm_api_norm(team_name)
+                for row in teams or []:
+                    if not isinstance(row, dict):
+                        continue
+                    rid = str(row.get("team_key") or row.get("team_id") or "").strip()
+                    rname = str(row.get("team_name") or "").strip()
+                    if (tid and rid == tid) or (target and _gm_api_norm(rname) == target):
+                        badge = str(row.get("team_badge") or row.get("team_logo") or "").strip()
+                        if not badge.lower().startswith("https://"):
+                            badge = ""
+                        return {"id": rid or tid, "name": rname or str(team_name or ""), "badge": badge}
+        except Exception:
+            pass
+    return {"id": tid, "name": str(team_name or ""), "badge": ""}
+
+def gm_national_visual_url(team_name, team_id=None, league_id=None, width=160):
+    """Bandeira/identidade visual: Top 50 usa bandeira nacional; demais usam API."""
+    flag = gm_national_flag_url(team_name, width)
+    if flag:
+        return flag
+    visual = gm_national_team_visual(league_id, team_id, team_name)
+    return str((visual or {}).get("badge") or "")
 
 def gm_national_fixture_eligible(home, away):
     """Regra GM SCORE: Top-25 enfrenta qualquer seleção A; fora do Top-25,
@@ -490,7 +526,9 @@ def gm_team_badge_html(team_name, competition=None, team_id=None, size=24, show_
     if competition == GM_NATIONAL_COMPETITION:
         flag = html.escape(gm_national_flag(team_name))
         name = html.escape(gm_national_name_ptbr(team_name))
-        flag_url = gm_national_flag_url(team_name, 160)
+        _payload = st.session_state.get("gm_games_direct_match") or {}
+        _side_id = str(team_id or "").strip()
+        flag_url = gm_national_visual_url(team_name, _side_id, _payload.get("league_id"), 160)
         if flag_url:
             icon = (f'<img src="{html.escape(flag_url, quote=True)}" alt="{flag}" loading="lazy" '
                     f'style="width:{int(size)+6}px;height:{int(size)}px;object-fit:cover;border-radius:3px;flex:0 0 auto">')
@@ -7312,7 +7350,7 @@ def load_fd_historical_team_profile(competition_name, team_name, recent_games=12
     }
 
 @st.cache_data(ttl=21600, show_spinner=False)
-def gm_apifootball_pair_profiles(team_a, team_b, competition_name=None, limit_per_team=20, lookback_days=520):
+def gm_apifootball_pair_profiles(team_a, team_b, competition_name=None, limit_per_team=20, lookback_days=520, team_a_id=None, team_b_id=None):
     """Fonte estatística primária do GM SCORE via APIfootball.
 
     A resolução usa primeiro o ``league_id`` fixo auditado + ``get_teams`` e os
@@ -7636,8 +7674,11 @@ def gm_apifootball_pair_profiles(team_a, team_b, competition_name=None, limit_pe
             "source":"APIfootball · fonte primária validada",
         }
 
-    aid = resolve_from_league(team_a) or resolve_from_h2h(team_a)
-    bid = resolve_from_league(team_b) or resolve_from_h2h(team_b)
+    # V162: partidas de seleções transportam os IDs oficiais do fixture. Isso é
+    # essencial quando o adversário permitido pela regra Top-25 está fora do Top 50:
+    # buscamos o histórico real pelo ID em vez de depender de ranking/nome/H2H.
+    aid = str(team_a_id or "").strip() or resolve_from_league(team_a) or resolve_from_h2h(team_a)
+    bid = str(team_b_id or "").strip() or resolve_from_league(team_b) or resolve_from_h2h(team_b)
     return {team_a: profile(team_a, aid), team_b: profile(team_b, bid), "_error": None}
 
 
@@ -11568,6 +11609,8 @@ def load_current_season():
         pair = gm_apifootball_pair_profiles(
             home, away, competition_name=None, limit_per_team=max(12, int(period or 10)),
             lookback_days=900,
+            team_a_id=str(payload.get("home_team_id") or "").strip(),
+            team_b_id=str(payload.get("away_team_id") or "").strip(),
         )
         rows = []
         for team in (home, away):
@@ -11925,8 +11968,9 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
     home_visual = gm_team_visual(team_a, league_name, gm_current_match_team_id(team_a, "home"))
     away_visual = gm_team_visual(team_b, league_name, gm_current_match_team_id(team_b, "away"))
     if league_name == GM_NATIONAL_COMPETITION:
-        home_logo = gm_badge_data_uri(gm_national_flag_url(team_a, 320))
-        away_logo = gm_badge_data_uri(gm_national_flag_url(team_b, 320))
+        _nat_payload = st.session_state.get("gm_games_direct_match") or {}
+        home_logo = gm_badge_data_uri(gm_national_visual_url(team_a, _nat_payload.get("home_team_id"), _nat_payload.get("league_id"), 320))
+        away_logo = gm_badge_data_uri(gm_national_visual_url(team_b, _nat_payload.get("away_team_id"), _nat_payload.get("league_id"), 320))
     else:
         home_logo = gm_badge_data_uri(home_visual.get("badge"))
         away_logo = gm_badge_data_uri(away_visual.get("badge"))
@@ -15521,17 +15565,19 @@ def gm_render_games_return_button():
         st.session_state["gm_games_page_date"] = return_date
         st.session_state["gm_games_restore_index"] = st.session_state.get("gm_games_return_index")
         st.session_state["gm_main_view"] = "games"
-        st.session_state.pop("gm_analysis_origin", None)
-        st.session_state.pop("gm_games_direct_match", None)
-        st.session_state.pop("_main_games_hidden_competition", None)
-        st.session_state.pop("_synced_loaded_signature", None)
+        # V162: retorno com paridade ao fluxo de clubes. A agenda conserva data e
+        # posição, mas o confronto aberto deixa de contaminar a próxima pesquisa.
+        for _k in ("gm_analysis_origin", "gm_games_direct_match", "_main_games_hidden_competition",
+                   "_synced_loaded_signature", "selected_home", "selected_away",
+                   "loaded_home", "loaded_away", "home_widget", "away_widget"):
+            st.session_state.pop(_k, None)
         try:
-            # Retorno à agenda deve deixar apenas o destino; nunca o fixture antigo.
-            for _k in list(st.query_params.keys()):
-                try:
+            # Não apaga parâmetros alheios ao fixture (ex.: sessão/navegação).
+            for _k in ("gm_match_comp", "gm_match_home", "gm_match_away", "gm_match_id",
+                       "gm_match_league", "gm_match_tournament", "gm_match_date", "gm_match_time",
+                       "gm_match_home_id", "gm_match_away_id"):
+                if _k in st.query_params:
                     del st.query_params[_k]
-                except Exception:
-                    pass
             st.query_params["gm_view"] = "games"
         except Exception:
             pass
