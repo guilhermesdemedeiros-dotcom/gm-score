@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-21-v163-national-data-integrity-flags-navigation"
+GM_BUILD = "2026-09-21-v164-session-state-navigation-guard"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -12297,8 +12297,8 @@ def render_analysis():
         st.warning("Ainda não há equipes suficientes para análise.")
         return
 
-    resolved_home = resolve_team_name(st.session_state.selected_home, teams)
-    resolved_away = resolve_team_name(st.session_state.selected_away, teams)
+    resolved_home = resolve_team_name(st.session_state.get("selected_home"), teams)
+    resolved_away = resolve_team_name(st.session_state.get("selected_away"), teams)
     loaded_home_now = resolve_team_name(st.session_state.get("loaded_home"), teams)
     loaded_away_now = resolve_team_name(st.session_state.get("loaded_away"), teams)
     default_home = loaded_home_now or resolved_home or teams[0]
@@ -15710,8 +15710,14 @@ _gm_requested_view = str(st.query_params.get("gm_view", "") or "").strip()
 # V161: tocar em Início significa iniciar uma navegação limpa. Remove somente
 # estado de confronto/interface; autenticação, plano e caches estatísticos ficam intactos.
 if _gm_requested_view == "analysis" and str(st.query_params.get("gm_reset_analysis", "") or "") == "1":
-    for _k in ("selected_home", "selected_away", "loaded_home", "loaded_away",
-               "gm_games_direct_match", "gm_analysis_origin", "_main_games_hidden_competition",
+    # V164: selected_home/selected_away são chaves estruturais do render_analysis.
+    # Não podem ser removidas depois do bloco global de inicialização no mesmo rerun.
+    # Zera seus valores e remove apenas estado transitório/widgets.
+    st.session_state["selected_home"] = None
+    st.session_state["selected_away"] = None
+    st.session_state["loaded_home"] = None
+    st.session_state["loaded_away"] = None
+    for _k in ("gm_games_direct_match", "gm_analysis_origin", "_main_games_hidden_competition",
                "_synced_loaded_signature", "home_widget", "away_widget"):
         try:
             st.session_state.pop(_k, None)
