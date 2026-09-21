@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-21-v157-national-teams-fifa-layer"
+GM_BUILD = "2026-09-21-v158-national-direct-match-recovery"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -11439,10 +11439,10 @@ def load_current_season():
     # recentes via APIfootball. Amistosos entram na forma; jogos oficiais também.
     if config.get("kind") == "national_teams":
         payload = st.session_state.get("gm_games_direct_match") or {}
-        home = str(payload.get("home") or st.session_state.get("selected_home") or "").strip()
-        away = str(payload.get("away") or st.session_state.get("selected_away") or "").strip()
+        home = str(payload.get("home") or st.session_state.get("selected_home") or st.session_state.get("loaded_home") or "").strip()
+        away = str(payload.get("away") or st.session_state.get("selected_away") or st.session_state.get("loaded_away") or "").strip()
         if not home or not away:
-            raise RuntimeError("selecione um confronto de seleções na aba Jogos")
+            raise RuntimeError("contexto do confronto de seleções não foi preservado; volte à aba Jogos e abra a partida novamente")
         pair = gm_apifootball_pair_profiles(
             home, away, competition_name=None, limit_per_team=max(12, int(period or 10)),
             lookback_days=900,
@@ -11969,10 +11969,36 @@ def gm_hydrate_direct_fixture_rows(df, payload):
 
 def render_analysis():
     global period
+    # V158: recuperação defensiva do confronto internacional. Em alguns navegadores/PWA,
+    # a transição Jogos -> Análise pode recriar a sessão Streamlit enquanto a URL ainda
+    # preserva o destino. Mantemos somente a identidade pública do fixture na query string
+    # e reconstituímos o payload antes de carregar a base histórica.
+    _pre_direct = st.session_state.get("gm_games_direct_match") or {}
+    if not _pre_direct:
+        try:
+            _qp_comp = str(st.query_params.get("gm_match_comp", "") or "").strip()
+            _qp_home = str(st.query_params.get("gm_match_home", "") or "").strip()
+            _qp_away = str(st.query_params.get("gm_match_away", "") or "").strip()
+            if _qp_comp in COMPETITIONS and _qp_home and _qp_away:
+                _pre_direct = {
+                    "competition": _qp_comp,
+                    "home": _qp_home,
+                    "away": _qp_away,
+                    "match_id": str(st.query_params.get("gm_match_id", "") or "").strip(),
+                    "league_id": str(st.query_params.get("gm_match_league", "") or "").strip(),
+                    "tournament": str(st.query_params.get("gm_match_tournament", "") or "").strip(),
+                    "date": str(st.query_params.get("gm_match_date", "") or "").strip(),
+                    "time": str(st.query_params.get("gm_match_time", "") or "").strip(),
+                    "home_team_id": str(st.query_params.get("gm_match_home_id", "") or "").strip(),
+                    "away_team_id": str(st.query_params.get("gm_match_away_id", "") or "").strip(),
+                }
+                st.session_state["gm_games_direct_match"] = _pre_direct
+                st.session_state["gm_analysis_origin"] = "games"
+        except Exception:
+            pass
     # V91: antes de qualquer validação/carregamento, reidrata atomicamente o
     # confronto vindo da aba Jogos. Assim reruns do Streamlit ou query params não
     # conseguem deixar a tela dedicada sem as equipes selecionadas.
-    _pre_direct = st.session_state.get("gm_games_direct_match") or {}
     if st.session_state.get("gm_analysis_origin") == "games" and _pre_direct:
         _pc = str(_pre_direct.get("competition") or "")
         _ph = str(_pre_direct.get("home") or "")
@@ -14914,7 +14940,19 @@ def gm_render_games_page():
             st.session_state["gm_analysis_scroll_top"] = True
             st.session_state["gm_main_view"] = "analysis"
             try:
+                # V158: espelho público e mínimo do fixture para sobreviver à recriação
+                # da sessão do navegador. Não contém token, segredo ou dado de usuário.
                 st.query_params["gm_view"] = "analysis"
+                st.query_params["gm_match_comp"] = comp
+                st.query_params["gm_match_home"] = home
+                st.query_params["gm_match_away"] = away
+                st.query_params["gm_match_id"] = str(f.get("match_id") or "")
+                st.query_params["gm_match_league"] = str(f.get("league_id") or "")
+                st.query_params["gm_match_tournament"] = str(f.get("tournament") or "")
+                st.query_params["gm_match_date"] = target_date.isoformat() if hasattr(target_date, "isoformat") else str(target_date)
+                st.query_params["gm_match_time"] = tm
+                st.query_params["gm_match_home_id"] = str(f.get("home_team_id") or "")
+                st.query_params["gm_match_away_id"] = str(f.get("away_team_id") or "")
             except Exception:
                 pass
             st.rerun()
@@ -15412,6 +15450,16 @@ if _gm_main_view not in {"analysis", "games"}:
     st.session_state.pop("gm_games_return_label", None)
     st.session_state.pop("gm_games_return_index", None)
     st.session_state.pop("gm_games_direct_match", None)
+    # V158: ao sair do fluxo Jogos/Análise, remove também o espelho público do fixture
+    # para impedir que uma análise futura recupere acidentalmente um jogo antigo.
+    for _k in ("gm_match_comp", "gm_match_home", "gm_match_away", "gm_match_id",
+               "gm_match_league", "gm_match_tournament", "gm_match_date", "gm_match_time",
+               "gm_match_home_id", "gm_match_away_id"):
+        try:
+            if _k in st.query_params:
+                del st.query_params[_k]
+        except Exception:
+            pass
 gm_render_app_navigation(_gm_profile_after_gate)
 
 _gm_caps = gm_access_capabilities(_gm_profile_after_gate)
