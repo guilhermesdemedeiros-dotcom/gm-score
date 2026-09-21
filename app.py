@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-21-v165-full-share-vertical-team-identity"
+GM_BUILD = "2026-09-21-v166-commercial-home-pricing-6h-trial"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -1293,7 +1293,7 @@ def gm_auth_get_profile(force=False):
         return None
     result = (
         client.table("gm_users")
-        .select("id,nome,email,role,vip_status,payment_status,vip_until,blocked,terms_accepted,terms_accepted_at,created_at")
+        .select("id,nome,email,role,vip_status,payment_status,vip_until,blocked,terms_accepted,terms_accepted_at,created_at,trial_started_at,trial_until,trial_granted")
         .eq("id", user_id)
         .limit(1)
         .execute()
@@ -3519,21 +3519,22 @@ def gm_auth_test_enabled():
 # por gm_create_order(); o Streamlit envia somente plano + forma de pagamento.
 GM_VIP_PLANS = [
     {
-        "key": "mensal", "plan_code": "vip_30", "title": "1 mês", "badge": "🔥 PREÇO PROMOCIONAL",
-        "pix_price": "R$ 15,15", "monthly": "R$ 15,15/mês",
-        "saving": "Plano de entrada", "card_price": "", "card_text": "",
+        "key": "mensal", "plan_code": "vip_30", "title": "1 mês", "badge": "⚡ COMECE AGORA",
+        "normal_price": "R$ 49,90", "pix_price": "R$ 42,42", "monthly": "R$ 42,42/mês no Pix",
+        "saving": "15% OFF no Pix • economize R$ 7,48", "card_price": "R$ 49,90",
+        "card_text": "Cartão • total R$ 49,90",
     },
     {
-        "key": "trimestral", "plan_code": "vip_90", "title": "3 meses", "badge": "🔥 PREÇO PROMOCIONAL",
-        "pix_price": "R$ 36,36", "monthly": "R$ 12,12/mês no Pix",
-        "saving": "Economize R$ 9,09 (20%) no Pix", "card_price": "R$ 41,54",
-        "card_text": "Cartão em até 2x • total R$ 41,54",
+        "key": "trimestral", "plan_code": "vip_90", "title": "3 meses", "badge": "🔥 MAIS ESCOLHIDO",
+        "normal_price": "R$ 119,76", "pix_price": "R$ 101,80", "monthly": "R$ 33,93/mês no Pix",
+        "saving": "15% OFF no Pix • economize R$ 17,96", "card_price": "R$ 119,76",
+        "card_text": "Cartão em até 2x • total R$ 119,76",
     },
     {
         "key": "semestral", "plan_code": "vip_180", "title": "6 meses", "badge": "⭐ MELHOR CUSTO-BENEFÍCIO",
-        "pix_price": "R$ 60,60", "monthly": "R$ 10,10/mês no Pix",
-        "saving": "Economize R$ 30,30 (33,3%) no Pix", "card_price": "R$ 70,24",
-        "card_text": "Cartão em até 3x • total R$ 70,24",
+        "normal_price": "R$ 199,60", "pix_price": "R$ 169,66", "monthly": "R$ 28,28/mês no Pix",
+        "saving": "15% OFF no Pix • economize R$ 29,94", "card_price": "R$ 199,60",
+        "card_text": "Cartão em até 3x • total R$ 199,60",
     },
 ]
 
@@ -3609,46 +3610,30 @@ def gm_checkout_button(plan, payment_method, label, primary=False):
         )
 
 
-def gm_render_payment_plans(title="🔥 Planos VIP — preços promocionais", compact=False):
-    """Exibe o catálogo; usuários logados geram um Checkout Pro individual por pedido."""
+def gm_render_payment_plans(title="👑 Escolha seu plano GM SCORE Pro", compact=False):
+    """Catálogo comercial. O preço efetivo continua sendo validado no PostgreSQL."""
     st.markdown(f"### {title}")
     logged_in = bool(st.session_state.get("gm_auth_access_token"))
-    if logged_in:
-        st.caption("Escolha o plano e a forma de pagamento. O GM SCORE cria um pedido individual e abre o ambiente seguro do Mercado Pago.")
-    else:
-        st.caption("Confira os planos. Para pagar, crie sua conta ou entre no GM SCORE; o checkout é individual e vinculado ao seu cadastro.")
-
+    st.caption("💚 Pix tem 15% de desconto em todos os planos. No cartão, vale o preço normal do período.")
     cols = st.columns(3)
     for col, plan in zip(cols, GM_VIP_PLANS):
         with col:
             st.markdown(f"**{plan['badge']}**")
-            st.markdown(f"#### ⭐ VIP {plan['title']}")
+            st.markdown(f"#### ⭐ PRO {plan['title']}")
+            st.caption(f"Preço normal: {plan['normal_price']}")
             st.markdown(f"### {plan['pix_price']} no Pix")
+            st.success(plan['saving'])
             st.caption(plan['monthly'])
-            if plan['key'] != 'mensal':
-                st.success(plan['saving'])
-            else:
-                st.info(plan['saving'])
-
             if logged_in:
-                gm_checkout_button(plan, "pix", "⚡ Pagar com Pix", primary=True)
-                if plan.get("card_price"):
-                    gm_checkout_button(plan, "card", "💳 Pagar com cartão")
-                    st.caption(plan['card_text'])
-                else:
-                    st.caption("Pagamento mensal: somente Pix.")
+                gm_checkout_button(plan, "pix", "⚡ Pagar com Pix — 15% OFF", primary=True)
+                gm_checkout_button(plan, "card", "💳 Pagar com cartão")
+                st.caption(plan['card_text'])
             else:
-                st.button("🔐 Entre para pagar", key=f"gm_login_needed_{plan['plan_code']}", disabled=True, use_container_width=True)
-                if plan.get("card_price"):
-                    st.caption(plan['card_text'])
-                else:
-                    st.caption("Pagamento mensal: somente Pix.")
-
+                st.button("🎁 Crie a conta e teste 6h grátis", key=f"gm_login_needed_{plan['plan_code']}", disabled=True, use_container_width=True)
+                st.caption(plan['card_text'])
     if not compact:
-        if logged_in:
-            st.caption("🔐 O valor e a validade são definidos no servidor. A ativação automática ocorre somente após confirmação válida do pagamento pelo Mercado Pago.")
-        else:
-            st.caption("🔐 Nenhum pagamento é iniciado sem uma conta autenticada no GM SCORE.")
+        st.caption("🎁 Nova conta: 6 horas de GM SCORE Pro grátis, uma única vez. Depois do teste, sem assinatura ativa, a conta segue no plano Free.")
+        st.caption("🔐 Valores e validade são conferidos no servidor; a ativação paga ocorre somente após confirmação válida do Mercado Pago.")
 
 
 def gm_payment_url():
@@ -3758,192 +3743,21 @@ def gm_render_public_intro():
     st.markdown(
         """
         <style>
-        .gm-public-hero{position:relative;overflow:hidden;border:1px solid rgba(34,197,94,.42);border-radius:24px;padding:24px 22px 20px;margin:.15rem 0 1rem;
-          background:
-            radial-gradient(circle at 80% 18%,rgba(74,222,128,.21),transparent 27%),
-            linear-gradient(115deg,rgba(6,78,59,.96),rgba(15,23,42,.96) 58%,rgba(2,44,34,.94));
-          box-shadow:0 20px 55px rgba(0,0,0,.24);color:#f8fafc}
-        .gm-public-hero:before{content:"";position:absolute;inset:0;opacity:.15;pointer-events:none;
-          background:linear-gradient(90deg,transparent 49.5%,rgba(255,255,255,.45) 50%,transparent 50.5%),radial-gradient(circle at 50% 50%,transparent 0 61px,rgba(255,255,255,.40) 62px 63px,transparent 64px)}
-        .gm-public-ball{position:absolute;right:22px;top:18px;font-size:4.8rem;opacity:.12;filter:grayscale(1)}
-        .gm-public-kicker{position:relative;font-size:.72rem;font-weight:850;letter-spacing:.14em;text-transform:uppercase;color:#86efac}
-        .gm-public-title{position:relative;font-size:clamp(1.85rem,5.5vw,3.15rem);line-height:1.02;font-weight:950;letter-spacing:-.045em;max-width:760px;margin:.48rem 0 .65rem}
-        .gm-public-title span{color:#4ade80}.gm-public-copy{position:relative;max-width:690px;color:#dbeafe;font-size:.95rem;line-height:1.55;margin-bottom:1rem}
-        .gm-public-pills{position:relative;display:flex;gap:7px;flex-wrap:wrap;margin-top:12px}
-        .gm-public-pill{border:1px solid rgba(134,239,172,.25);background:rgba(15,23,42,.42);padding:6px 9px;border-radius:999px;font-size:.76rem;font-weight:750;color:#dcfce7}
-        .gm-feature-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px;margin:.85rem 0 1rem}
-        .gm-feature-mini{border:1px solid rgba(148,163,184,.20);border-radius:15px;padding:12px;background:rgba(30,41,59,.10)}
-        .gm-feature-mini b{display:block;font-size:.86rem;margin-bottom:3px}.gm-feature-mini span{font-size:.75rem;opacity:.70;line-height:1.35}
-        .gm-access-cta{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:.85rem 0 1.35rem}
-        .gm-access-cta a{display:flex;align-items:center;justify-content:center;text-decoration:none!important;border-radius:13px;padding:12px 10px;font-weight:850;border:1px solid rgba(34,197,94,.55)}
-        .gm-login-cta{background:#16803a;color:white!important;box-shadow:0 9px 24px rgba(22,128,58,.20)}
-        .gm-signup-cta{background:rgba(22,128,58,.08);color:inherit!important}
-        @media(max-width:760px){.gm-feature-grid{grid-template-columns:1fr 1fr}.gm-public-hero{padding:21px 17px 18px}.gm-public-ball{font-size:3.8rem;right:12px;top:14px}}
-        @media(max-width:520px){.gm-access-cta{grid-template-columns:1fr}.gm-feature-grid{grid-template-columns:1fr 1fr}}
+        .gm-v166-hero{position:relative;overflow:hidden;border:1px solid rgba(34,197,94,.50);border-radius:28px;padding:28px 24px 24px;margin:.15rem 0 1rem;background:radial-gradient(circle at 82% 16%,rgba(74,222,128,.24),transparent 28%),linear-gradient(120deg,#064e3b,#0f172a 58%,#022c22);box-shadow:0 22px 60px rgba(0,0,0,.28);color:#f8fafc}.gm-v166-k{font-size:.72rem;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#86efac}.gm-v166-title{font-size:clamp(2rem,6vw,3.5rem);font-weight:950;line-height:1.01;letter-spacing:-.05em;max-width:820px;margin:.5rem 0 .7rem}.gm-v166-title span{color:#4ade80}.gm-v166-copy{max-width:760px;color:#dbeafe;font-size:1rem;line-height:1.55}.gm-v166-trial{display:inline-flex;margin-top:16px;padding:9px 13px;border-radius:999px;background:#22c55e;color:#052e16;font-weight:950;font-size:.84rem}.gm-v166-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px;margin:1rem 0}.gm-v166-card{border:1px solid rgba(148,163,184,.20);border-radius:16px;padding:13px;background:rgba(30,41,59,.13)}.gm-v166-card b{display:block;font-size:.88rem;margin-bottom:4px}.gm-v166-card span{font-size:.74rem;opacity:.74;line-height:1.35}.gm-v166-flow{display:grid;grid-template-columns:repeat(6,1fr);gap:6px;margin:.8rem 0 1.2rem}.gm-v166-step{text-align:center;border:1px solid rgba(34,197,94,.25);border-radius:13px;padding:10px 6px;background:rgba(22,163,74,.07);font-size:.73rem;font-weight:800}.gm-v166-cta{display:grid;grid-template-columns:1.25fr .75fr;gap:10px;margin:1rem 0 1.4rem}.gm-v166-cta a{display:flex;align-items:center;justify-content:center;text-decoration:none!important;border-radius:14px;padding:13px;font-weight:900}.gm-v166-buy{background:#22c55e;color:#052e16!important;box-shadow:0 10px 28px rgba(34,197,94,.20)}.gm-v166-login{border:1px solid rgba(34,197,94,.45);color:inherit!important}.gm-v166-demo{border:1px solid rgba(34,197,94,.30);border-radius:20px;padding:16px;margin:.7rem 0 1rem;background:linear-gradient(145deg,rgba(22,128,58,.12),rgba(15,23,42,.35))}.gm-v166-demo-head{display:flex;justify-content:space-between;gap:10px;align-items:center}.gm-v166-lock{font-size:.72rem;font-weight:900;color:#86efac}.gm-v166-demo-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:11px}.gm-v166-metric{border-radius:12px;background:rgba(15,23,42,.65);padding:10px;text-align:center}.gm-v166-metric b{display:block;font-size:.8rem}.gm-v166-metric span{font-size:.68rem;color:#94a3b8}@media(max-width:760px){.gm-v166-grid{grid-template-columns:1fr 1fr}.gm-v166-flow{grid-template-columns:1fr 1fr 1fr}.gm-v166-cta{grid-template-columns:1fr}.gm-v166-demo-grid{grid-template-columns:1fr}.gm-v166-hero{padding:22px 17px}}@media(max-width:430px){.gm-v166-flow{grid-template-columns:1fr 1fr}}
         </style>
-        <section class="gm-public-hero">
-          <div class="gm-public-ball">⚽</div>
-          <div class="gm-public-kicker">GM SCORE VIP • análise pré-jogo</div>
-          <div class="gm-public-title">Dados da partida organizados para uma leitura <span>mais objetiva.</span></div>
-          <div class="gm-public-copy">Escolha o confronto e veja projeções, probabilidades estimadas e métricas disponíveis em um único painel. Quando a amostra não é suficiente, o próprio GM SCORE informa.</div>
-          <div class="gm-public-pills">
-            <span class="gm-public-pill">⚽ Resultado e gols</span>
-            <span class="gm-public-pill">🚩 Escanteios</span>
-            <span class="gm-public-pill">🟨 Cartões</span>
-            <span class="gm-public-pill">🥅 Finalizações</span>
-            <span class="gm-public-pill">⭐ Oportunidades</span>
-          </div>
-        </section>
-        <div class="gm-feature-grid">
-          <div class="gm-feature-mini"><b>📅 Agenda</b><span>Escolha competição e confronto.</span></div>
-          <div class="gm-feature-mini"><b>📊 Dados</b><span>Histórico e métricas disponíveis.</span></div>
-          <div class="gm-feature-mini"><b>🎯 Probabilidades</b><span>Estimativas para os principais mercados.</span></div>
-          <div class="gm-feature-mini"><b>📈 Contexto</b><span>Forma, força e leitura da partida.</span></div>
-        </div>
-        <div class="gm-access-cta">
-          <a class="gm-login-cta" href="#gm-acesso">🔐 Já sou cliente — Entrar</a>
-          <a class="gm-signup-cta" href="#gm-acesso">⭐ Quero ser VIP — Criar conta</a>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
+        <section class="gm-v166-hero"><div class="gm-v166-k">GM SCORE PRO • clubes + seleções</div><div class="gm-v166-title">Decisões mais inteligentes começam com <span>dados.</span></div><div class="gm-v166-copy">Histórico, contexto, probabilidades estimadas e oportunidades organizadas para você analisar cada confronto com muito mais informação — sem fabricar números quando a amostra não é suficiente.</div><div class="gm-v166-trial">🎁 CRIE SUA CONTA E TESTE O PRO GRÁTIS POR 6 HORAS</div></section>
+        <div class="gm-v166-grid"><div class="gm-v166-card"><b>🌎 Seleções nacionais</b><span>Histórico internacional separado dos clubes, contexto da competição e força FIFA quando disponível.</span></div><div class="gm-v166-card"><b>💡 Dicas do Dia</b><span>Matadeira, Dica Principal e Bingo com critérios estatísticos e mercados habilitados.</span></div><div class="gm-v166-card"><b>📊 Análise estatística</b><span>Resultado, gols, escanteios, cartões e demais métricas conforme cobertura real.</span></div><div class="gm-v166-card"><b>📈 Transparência</b><span>Inconclusivo, Cautela ou Conclusivo conforme o tamanho da amostra de cada métrica.</span></div></div>
+        <h3>Como o GM SCORE transforma o jogo em análise</h3><div class="gm-v166-flow"><div class="gm-v166-step">⚽ Jogo</div><div class="gm-v166-step">🗂️ Histórico</div><div class="gm-v166-step">💪 Força</div><div class="gm-v166-step">🏆 Contexto</div><div class="gm-v166-step">🎯 Probabilidades</div><div class="gm-v166-step">⭐ Oportunidades</div></div>
+        <div class="gm-v166-demo"><div class="gm-v166-demo-head"><div><b>🇧🇷 Brasil × Argentina 🇦🇷</b><br><small>Demonstração da experiência GM SCORE</small></div><div class="gm-v166-lock">🔒 INTELIGÊNCIA PRO</div></div><div class="gm-v166-demo-grid"><div class="gm-v166-metric"><b>Ranking + contexto</b><span>força histórica complementar</span></div><div class="gm-v166-metric"><b>Forma recente</b><span>amostra internacional própria</span></div><div class="gm-v166-metric"><b>Mercados e projeções</b><span>liberados conforme dados suficientes</span></div></div></div>
+        <div class="gm-v166-cta"><a class="gm-v166-buy" href="#gm-acesso">🎁 Criar conta e testar 6h grátis</a><a class="gm-v166-login" href="#gm-acesso">🔐 Já sou cliente</a></div>
+        """, unsafe_allow_html=True)
     gm_render_vip_showcase(compact=False)
-
     st.markdown("---")
     gm_render_public_reviews()
-
     st.markdown("---")
-    gm_render_payment_plans()
-
-    st.markdown("### 🔐 Como liberar seu acesso")
-    st.markdown(
-        """
-        <div style="border:1px solid rgba(148,163,184,.22);border-radius:16px;padding:14px 16px;background:rgba(30,41,59,.14);line-height:1.55">
-          <div><b>1.</b> Crie sua conta GM SCORE e confirme o e-mail.</div>
-          <div><b>2.</b> Entre na conta e escolha seu plano VIP.</div>
-          <div><b>3.</b> Faça o pagamento pelo Mercado Pago.</div>
-          <div><b>4.</b> Após a confirmação válida, o VIP é ativado automaticamente.</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def _gm_display_1x2_percentages(probs):
-    """Arredonda 1X2 para inteiros preservando soma visual exata de 100%."""
-    if not probs:
-        return {"home": 0, "draw": 0, "away": 0}
-    keys = ("home", "draw", "away")
-    vals = []
-    for key in keys:
-        try:
-            vals.append(max(float(probs.get(key, 0.0) or 0.0), 0.0))
-        except Exception:
-            vals.append(0.0)
-    total = sum(vals)
-    if total <= 0:
-        return {"home": 0, "draw": 0, "away": 0}
-    scaled = [v * 100.0 / total for v in vals]
-    base = [int(math.floor(v)) for v in scaled]
-    missing = 100 - sum(base)
-    order = sorted(range(3), key=lambda i: (scaled[i] - base[i], scaled[i]), reverse=True)
-    for i in order[:max(missing, 0)]:
-        base[i] += 1
-    return dict(zip(keys, base))
-
-
-def gm_render_match_hero(team_a, team_b, league_name, season_text, probs=None, updated_until=None, sample=None):
-    """Cabeçalho visual da partida real, sem alterar nenhum cálculo do modelo."""
-    team_a_html = _gm_safe_html(team_a)
-    team_b_html = _gm_safe_html(team_b)
-    team_a_visual = gm_team_badge_html(team_a, league_name, team_id=gm_current_match_team_id(team_a, "home"), size=54, show_name=False)
-    team_b_visual = gm_team_badge_html(team_b, league_name, team_id=gm_current_match_team_id(team_b, "away"), size=54, show_name=False)
-    team_a_label = _gm_safe_html(gm_national_name_ptbr(team_a) if league_name == GM_NATIONAL_COMPETITION else team_a)
-    team_b_label = _gm_safe_html(gm_national_name_ptbr(team_b) if league_name == GM_NATIONAL_COMPETITION else team_b)
-    league_html = _gm_safe_html(league_name)
-    league_visual = gm_league_visual(league_name)
-    league_logo = str(league_visual.get("logo") or "")
-    league_logo_html = (f'<img src="{html.escape(league_logo, quote=True)}" alt="" loading="lazy" style="width:30px;height:30px;object-fit:contain">') if league_logo else ""
-    if league_name == GM_NATIONAL_COMPETITION:
-        try:
-            _nat_tournament_title = str((st.session_state.get("gm_games_direct_match") or {}).get("tournament") or "Seleções - Internacional").strip()
-        except Exception:
-            _nat_tournament_title = "Seleções - Internacional"
-        league_title = _gm_safe_html(_nat_tournament_title)
-    else:
-        league_title = _gm_safe_html(league_name)
-    match_datetime = gm_current_match_datetime()
-    season_html = _gm_safe_html(season_text)
-    meta = f"{season_html}"
-    if match_datetime:
-        meta += f" • {_gm_safe_html(match_datetime)}"
-    if updated_until is not None and not pd.isna(updated_until):
-        try:
-            meta += f" • dados até {pd.Timestamp(updated_until):%d/%m/%Y}"
-        except Exception:
-            pass
-    if sample is not None:
-        meta += f" • amostra mínima: {int(sample)} jogo(s)"
-
-    if probs:
-        _display_1x2 = _gm_display_1x2_percentages(probs)
-        home = _display_1x2["home"]
-        draw = _display_1x2["draw"]
-        away = _display_1x2["away"]
-        fair_home = 100.0 / max(min(float(probs.get("home", 0.0)), 99.5), 0.5)
-        fair_draw = 100.0 / max(min(float(probs.get("draw", 0.0)), 99.5), 0.5)
-        fair_away = 100.0 / max(min(float(probs.get("away", 0.0)), 99.5), 0.5)
-        probability_html = f"""
-          <div class="gm-real-probgrid">
-            <div class="gm-real-probbox"><span>Vitória casa</span><b>{home}%</b><small>Odd justa {fair_home:.2f}</small></div>
-            <div class="gm-real-probbox"><span>Empate</span><b>{draw}%</b><small>Odd justa {fair_draw:.2f}</small></div>
-            <div class="gm-real-probbox"><span>Vitória fora</span><b>{away}%</b><small>Odd justa {fair_away:.2f}</small></div>
-          </div>
-          <div class="gm-real-note">Probabilidades estimadas pelo modelo GM SCORE para a partida selecionada — não representam garantia de resultado.</div>
-        """
-    else:
-        probability_html = '<div class="gm-real-note">A análise estatística será exibida conforme a disponibilidade e qualidade dos dados da competição.</div>'
-
-    st.markdown(
-        f"""
-        <style>
-        .gm-real-match{{position:relative;overflow:hidden;border:1px solid rgba(34,197,94,.40);border-radius:22px;padding:20px;margin:.65rem 0 1rem;
-          background:radial-gradient(circle at 84% 10%,rgba(74,222,128,.16),transparent 27%),linear-gradient(145deg,rgba(22,128,58,.20),rgba(15,23,42,.94));box-shadow:0 15px 42px rgba(0,0,0,.19);color:#f8fafc}}
-        .gm-real-kicker{{font-size:.69rem;text-transform:uppercase;letter-spacing:.13em;font-weight:850;color:#86efac}}
-        .gm-real-title{{font-size:clamp(1.35rem,4.5vw,2rem);font-weight:950;letter-spacing:-.035em;margin:.38rem 0 .22rem;line-height:1.12}}
-        .gm-real-meta{{font-size:.76rem;color:#94a3b8;line-height:1.4}}
-        .gm-real-probgrid{{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:15px}}
-        .gm-real-probbox{{background:rgba(15,23,42,.76);border:1px solid rgba(148,163,184,.20);border-radius:14px;padding:11px;text-align:center}}
-        .gm-real-probbox span{{display:block;font-size:.67rem;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em}}.gm-real-probbox b{{display:block;font-size:1.32rem;margin-top:3px;color:#fff}}.gm-real-probbox small{{display:block;font-size:.64rem;color:#94a3b8;margin-top:2px;font-weight:600}}
-        .gm-real-note{{font-size:.72rem;color:#94a3b8;margin-top:10px;line-height:1.4}}
-        @media(max-width:520px){{.gm-real-match{{padding:17px 14px}}.gm-real-probbox{{padding:9px 5px}}.gm-real-probbox b{{font-size:1.12rem}}}}
-        </style>
-        <section class="gm-real-match">
-          <div class="gm-real-kicker">Partida carregada • análise VIP</div>
-          <div class="gm-match-identity" style="display:grid;grid-template-columns:minmax(0,1fr) minmax(150px,.82fr) minmax(0,1fr);align-items:center;gap:8px;margin:.65rem 0 .35rem">
-            <div style="display:flex;flex-direction:column;justify-content:center;align-items:center;min-width:0;text-align:center;gap:8px">
-              <div style="height:58px;display:flex;align-items:center;justify-content:center">{team_a_visual}</div>
-              <div style="width:100%;font-size:clamp(.82rem,3vw,1rem);font-weight:850;color:#f8fafc;line-height:1.15;white-space:normal;overflow-wrap:anywhere">{team_a_label}</div>
-            </div>
-            <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-width:0;text-align:center">
-              <div style="height:38px;display:flex;align-items:center;justify-content:center">{league_logo_html}</div>
-              <div style="width:100%;font-size:.74rem;font-weight:900;color:#cbd5e1;line-height:1.15;margin-top:3px;text-align:center;white-space:normal;overflow-wrap:anywhere">{league_title}</div>
-              <div style="font-size:1.38rem;font-weight:950;color:#24e58b;line-height:1;margin-top:7px">×</div>
-              <div style="font-size:.69rem;font-weight:750;color:#94a3b8;line-height:1.2;margin-top:7px">{_gm_safe_html(match_datetime) if match_datetime else ''}</div>
-            </div>
-            <div style="display:flex;flex-direction:column;justify-content:center;align-items:center;min-width:0;text-align:center;gap:8px">
-              <div style="height:58px;display:flex;align-items:center;justify-content:center">{team_b_visual}</div>
-              <div style="width:100%;font-size:clamp(.82rem,3vw,1rem);font-weight:850;color:#f8fafc;line-height:1.15;white-space:normal;overflow-wrap:anywhere">{team_b_label}</div>
-            </div>
-          </div>
-          <div class="gm-real-meta" style="text-align:center">{season_html}{(' • dados até ' + pd.Timestamp(updated_until).strftime('%d/%m/%Y')) if updated_until is not None and not pd.isna(updated_until) else ''}{(' • amostra mínima: ' + str(int(sample)) + ' jogo(s)') if sample is not None else ''}</div>
-          {probability_html}
-        </section>
-        """,
-        unsafe_allow_html=True,
-    )
-
+    gm_render_payment_plans(title="👑 Planos GM SCORE Pro — 15% OFF no Pix")
+    st.markdown("### 🔐 Comece sem pagar")
+    st.markdown("**1.** Crie sua conta e confirme o e-mail.  \n**2.** Entre e use o **GM SCORE Pro por 6 horas grátis**.  \n**3.** Se quiser continuar no Pro, escolha um plano.  \n**4.** Sem assinatura após o teste, sua conta continua no **Free**.")
 
 def gm_render_login_form(form_key="gm_public_login"):
     with st.form(form_key, clear_on_submit=False):
@@ -3974,8 +3788,8 @@ def gm_render_login_form(form_key="gm_public_login"):
 
 
 def gm_render_signup_form():
-    st.markdown("### ⭐ Criar conta VIP")
-    st.caption("Crie sua conta e confirme o e-mail. Depois, entre no GM SCORE para gerar seu checkout individual do Mercado Pago.")
+    st.markdown("### 🎁 Criar conta e testar o PRO por 6 horas")
+    st.caption("Crie a conta, confirme o e-mail e receba automaticamente 6 horas de GM SCORE Pro grátis. Não é necessário pagar para iniciar o teste.")
     with st.form("gm_public_signup", clear_on_submit=False):
         nome = st.text_input("Nome", autocomplete="name")
         email = st.text_input("E-mail", key="gm_signup_email", autocomplete="email")
@@ -4012,10 +3826,10 @@ def gm_render_signup_form():
             result = gm_auth_sign_up(clean_name, clean_email, password)
             st.session_state["gm_signup_completed"] = True
             st.success("✅ Conta criada com sucesso.")
-            st.info("📧 Confira seu e-mail e confirme o cadastro antes de tentar entrar.")
+            st.info("📧 Confira seu e-mail e confirme o cadastro. Ao entrar, seu teste PRO de 6 horas estará disponível automaticamente.")
             st.markdown("---")
-            gm_render_payment_plans(title="💳 Escolha seu plano VIP", compact=True)
-            st.info("Após confirmar o e-mail, entre na conta para gerar o checkout individual. Pagamentos válidos serão processados automaticamente.")
+            gm_render_payment_plans(title="👑 Planos para continuar no PRO depois do teste", compact=True)
+            st.info("Você pode testar primeiro. Se decidir assinar, o checkout individual continua protegido pelo Mercado Pago e a ativação paga permanece automática.")
             st.link_button("✈️ Falar com o suporte no Telegram", "https://t.me/suport_gm", use_container_width=True)
         except Exception as exc:
             raw = str(exc)
@@ -4409,9 +4223,9 @@ def gm_render_public_portal():
         st.info("Este acesso foi encerrado porque a conta entrou no GM SCORE em outro acesso mais recente.")
     # Destino dos botões de acesso exibidos no topo da página pública.
     st.markdown('<div id="gm-acesso"></div>', unsafe_allow_html=True)
-    st.markdown("## 🔐 Acesse sua conta ou entre para o VIP")
-    st.caption("Já é cliente? Entre com seu e-mail e senha. Novo por aqui? Crie sua conta VIP.")
-    login_tab, signup_tab = st.tabs(["🔐 Entrar", "⭐ Criar conta VIP"])
+    st.markdown("## 🎁 Teste o GM SCORE Pro por 6 horas grátis")
+    st.caption("Novo por aqui? Crie sua conta, confirme o e-mail e teste o Pro automaticamente. Já é cliente? Entre normalmente.")
+    login_tab, signup_tab = st.tabs(["🔐 Entrar", "🎁 Criar conta — 6h grátis"])
     with login_tab:
         gm_render_login_form()
     with signup_tab:
