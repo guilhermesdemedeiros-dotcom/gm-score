@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-21-v166-commercial-home-pricing-6h-trial"
+GM_BUILD = "2026-09-21-v167-public-login-fast-access"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -3749,12 +3749,16 @@ def gm_render_public_intro():
         <div class="gm-v166-grid"><div class="gm-v166-card"><b>🌎 Seleções nacionais</b><span>Histórico internacional separado dos clubes, contexto da competição e força FIFA quando disponível.</span></div><div class="gm-v166-card"><b>💡 Dicas do Dia</b><span>Matadeira, Dica Principal e Bingo com critérios estatísticos e mercados habilitados.</span></div><div class="gm-v166-card"><b>📊 Análise estatística</b><span>Resultado, gols, escanteios, cartões e demais métricas conforme cobertura real.</span></div><div class="gm-v166-card"><b>📈 Transparência</b><span>Inconclusivo, Cautela ou Conclusivo conforme o tamanho da amostra de cada métrica.</span></div></div>
         <h3>Como o GM SCORE transforma o jogo em análise</h3><div class="gm-v166-flow"><div class="gm-v166-step">⚽ Jogo</div><div class="gm-v166-step">🗂️ Histórico</div><div class="gm-v166-step">💪 Força</div><div class="gm-v166-step">🏆 Contexto</div><div class="gm-v166-step">🎯 Probabilidades</div><div class="gm-v166-step">⭐ Oportunidades</div></div>
         <div class="gm-v166-demo"><div class="gm-v166-demo-head"><div><b>🇧🇷 Brasil × Argentina 🇦🇷</b><br><small>Demonstração da experiência GM SCORE</small></div><div class="gm-v166-lock">🔒 INTELIGÊNCIA PRO</div></div><div class="gm-v166-demo-grid"><div class="gm-v166-metric"><b>Ranking + contexto</b><span>força histórica complementar</span></div><div class="gm-v166-metric"><b>Forma recente</b><span>amostra internacional própria</span></div><div class="gm-v166-metric"><b>Mercados e projeções</b><span>liberados conforme dados suficientes</span></div></div></div>
-        <div class="gm-v166-cta"><a class="gm-v166-buy" href="#gm-acesso">🎁 Criar conta e testar 6h grátis</a><a class="gm-v166-login" href="#gm-acesso">🔐 Já sou cliente</a></div>
+        <div class="gm-v166-cta"><a class="gm-v166-buy" href="#gm-acesso">🎁 Criar conta e testar 6h grátis</a><a class="gm-v166-login" href="#gm-login-top">🔐 Já sou cliente</a></div>
         """, unsafe_allow_html=True)
     gm_render_vip_showcase(compact=False)
     st.markdown("---")
     gm_render_public_reviews()
     st.markdown("---")
+    st.markdown(
+        '<div style="text-align:center;margin:.25rem 0 .7rem;color:#cbd5e1;font-weight:750">Já tem conta? <a href="#gm-login-top" style="color:#4ade80;text-decoration:none;font-weight:900">🔐 Ir para o login</a></div>',
+        unsafe_allow_html=True,
+    )
     gm_render_payment_plans(title="👑 Planos GM SCORE Pro — 15% OFF no Pix")
     st.markdown("### 🔐 Comece sem pagar")
     st.markdown("**1.** Crie sua conta e confirme o e-mail.  \n**2.** Entre e use o **GM SCORE Pro por 6 horas grátis**.  \n**3.** Se quiser continuar no Pro, escolha um plano.  \n**4.** Sem assinatura após o teste, sua conta continua no **Free**.")
@@ -4217,6 +4221,45 @@ def gm_render_public_portal():
     # Se existiam tokens inválidos/expirados, limpa a sessão antes de mostrar o portal.
     if user_id and not profile:
         gm_auth_clear_local_session()
+
+    # V167: acesso rápido para clientes existentes antes da landing comercial.
+    # O login fica disponível no primeiro viewport e pode ser aberto com um toque,
+    # sem obrigar o cliente a percorrer a página pública.
+    st.markdown(
+        """
+        <style>
+        .gm-v167-access{border:1px solid rgba(34,197,94,.38);border-radius:18px;padding:12px 14px;margin:.15rem 0 .65rem;background:linear-gradient(135deg,rgba(22,163,74,.11),rgba(15,23,42,.20));}
+        .gm-v167-access b{font-size:.92rem}.gm-v167-access span{display:block;margin-top:2px;color:#94a3b8;font-size:.74rem}
+        </style>
+        <div id="gm-login-top" class="gm-v167-access"><b>🔐 Já tem uma conta GM SCORE?</b><span>Entre direto por aqui. Não precisa procurar o login no fim da página.</span></div>
+        """,
+        unsafe_allow_html=True,
+    )
+    _login_col, _signup_col = st.columns(2)
+    with _login_col:
+        if st.button("🔐 ENTRAR NA MINHA CONTA", type="primary", use_container_width=True, key="gm_v167_top_login"):
+            st.session_state["gm_public_fast_access"] = "login"
+            st.rerun()
+    with _signup_col:
+        if st.button("🎁 CRIAR CONTA • 6H GRÁTIS", use_container_width=True, key="gm_v167_top_signup"):
+            st.session_state["gm_public_fast_access"] = "signup"
+            st.rerun()
+
+    _fast_access = str(st.session_state.get("gm_public_fast_access") or "").strip().lower()
+    if _fast_access == "login":
+        with st.container(border=True):
+            st.markdown("### 🔐 Entrar no GM SCORE")
+            st.caption("Informe seu e-mail e senha para acessar sua conta.")
+            gm_render_login_form("gm_public_login_top")
+            if st.button("Fechar acesso rápido", use_container_width=True, key="gm_v167_close_login"):
+                st.session_state.pop("gm_public_fast_access", None)
+                st.rerun()
+    elif _fast_access == "signup":
+        with st.container(border=True):
+            gm_render_signup_form()
+            if st.button("Fechar cadastro", use_container_width=True, key="gm_v167_close_signup"):
+                st.session_state.pop("gm_public_fast_access", None)
+                st.rerun()
 
     gm_render_public_intro()
     if st.session_state.pop("gm_session_replaced_notice", False):
