@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-21-v169-restore-match-hero"
+GM_BUILD = "2026-09-21-v170-admin-workspace-clients"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -2704,7 +2704,9 @@ def gm_render_admin_daily_pick_approval():
 
 
 def gm_render_admin_vip_manager():
-    st.markdown("### 👥 Gestão de clientes VIP")
+    """V170: central de clientes organizada por situação, otimizada para desktop e mobile."""
+    st.markdown("## 👥 Clientes")
+    st.caption("Gerencie aprovação, acesso PRO, suspensão, bloqueio, teste e cortesias em um único lugar.")
 
     try:
         rows = gm_admin_list_users()
@@ -2718,54 +2720,73 @@ def gm_render_admin_vip_manager():
         if isinstance(_row, dict):
             _row["pro_suspended"] = bool(suspension_map.get(str(_row.get("id") or ""), False))
     clients = [r for r in rows if r.get("role") == "client"]
-    pending = sum(1 for r in clients if r.get("vip_status") == "pending" and not r.get("blocked"))
-    active = sum(1 for r in clients if r.get("vip_status") == "active" and not r.get("blocked"))
-    expired = sum(1 for r in clients if r.get("vip_status") == "expired" and not r.get("blocked"))
-    blocked = sum(1 for r in clients if r.get("blocked") or r.get("vip_status") == "blocked")
-
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Pendentes", pending)
-    m2.metric("VIP ativos", active)
-    m3.metric("Expirados", expired)
-    m4.metric("Bloqueados", blocked)
-
     if not clients:
         st.info("Nenhum cliente cadastrado ainda.")
         return
 
-    status_filter = st.selectbox(
-        "Filtrar clientes",
-        ["Todos", "Pendentes", "PRO ativos", "PRO suspensos", "Free / Expirados", "Bloqueados"],
-        key="gm_admin_status_filter",
-    )
-    search = st.text_input("Buscar por nome ou e-mail", key="gm_admin_search").strip().lower()
+    def category(row):
+        blocked_now = bool(row.get("blocked")) or str(row.get("vip_status") or "").lower() == "blocked"
+        suspended_now = bool(row.get("pro_suspended"))
+        status = str(row.get("vip_status") or "pending").lower()
+        if blocked_now:
+            return "⛔ Bloqueados"
+        if suspended_now:
+            return "⏸️ Suspensos"
+        if status == "pending":
+            return "⏳ Pendentes"
+        if status == "active":
+            return "🟢 Ativos"
+        return "📁 Outros"
 
-    def include_row(row):
+    counts = {k: 0 for k in ("⏳ Pendentes", "🟢 Ativos", "⏸️ Suspensos", "⛔ Bloqueados", "📁 Outros")}
+    for r in clients:
+        counts[category(r)] += 1
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Pendentes", counts["⏳ Pendentes"])
+    c2.metric("Ativos", counts["🟢 Ativos"])
+    c3.metric("Suspensos", counts["⏸️ Suspensos"])
+    c4.metric("Bloqueados", counts["⛔ Bloqueados"])
+    c5.metric("Outros", counts["📁 Outros"])
+
+    search = st.text_input(
+        "🔎 Buscar cliente",
+        key="gm_admin_search",
+        placeholder="Nome ou e-mail",
+        label_visibility="collapsed",
+    ).strip().lower()
+
+    tab_options = [
+        f"⏳ Pendentes · {counts['⏳ Pendentes']}",
+        f"🟢 Ativos · {counts['🟢 Ativos']}",
+        f"⏸️ Suspensos · {counts['⏸️ Suspensos']}",
+        f"⛔ Bloqueados · {counts['⛔ Bloqueados']}",
+        f"📁 Outros · {counts['📁 Outros']}",
+    ]
+    selected_tab = st.radio(
+        "Situação do cliente",
+        tab_options,
+        horizontal=True,
+        key="gm_admin_client_status_tab",
+        label_visibility="collapsed",
+    )
+    selected_category = selected_tab.split(" · ", 1)[0]
+
+    filtered = []
+    for row in clients:
+        if category(row) != selected_category:
+            continue
         if search:
             hay = f"{row.get('nome','')} {row.get('email','')}".lower()
             if search not in hay:
-                return False
-        blocked_now = bool(row.get("blocked")) or row.get("vip_status") == "blocked"
-        status = row.get("vip_status")
-        if status_filter == "Pendentes" and not (status == "pending" and not blocked_now):
-            return False
-        suspended_now = bool(row.get("pro_suspended"))
-        if status_filter == "PRO ativos" and not (status == "active" and not blocked_now and not suspended_now):
-            return False
-        if status_filter == "PRO suspensos" and not (suspended_now and not blocked_now):
-            return False
-        if status_filter == "Free / Expirados" and not ((status != "active" or suspended_now) and not blocked_now):
-            return False
-        if status_filter == "Bloqueados" and not blocked_now:
-            return False
-        return True
+                continue
+        filtered.append(row)
 
-    filtered = [r for r in clients if include_row(r)]
+    st.caption(f"{len(filtered)} cliente(s) nesta categoria")
     if not filtered:
-        st.info("Nenhum cliente corresponde ao filtro selecionado.")
+        st.info("Nenhum cliente encontrado nesta categoria.")
         return
 
-    st.markdown(f"### Clientes ({len(filtered)})")
     for row in filtered:
         uid = str(row.get("id") or "")
         nome = str(row.get("nome") or "Cliente").strip()
@@ -2775,15 +2796,14 @@ def gm_render_admin_vip_manager():
         vip_until = gm_admin_format_datetime(row.get("vip_until"))
         created = gm_admin_format_datetime(row.get("created_at"))
         approved = gm_admin_format_datetime(row.get("approved_at"))
+        suspended_now = bool(row.get("pro_suspended"))
+        blocked_now = bool(row.get("blocked")) or str(row.get("vip_status") or "").lower() == "blocked"
 
-        with st.expander(f"{status_label} · {nome} · {email}", expanded=(row.get("vip_status") == "pending")):
-            suspended_now = bool(row.get("pro_suspended"))
-            blocked_now = bool(row.get("blocked")) or row.get("vip_status") == "blocked"
-
-            # V128: resumo compacto do perfil. As ações menos frequentes ficam
-            # agrupadas para reduzir altura e facilitar a leitura no desktop/mobile.
+        with st.expander(f"{status_label} · {nome} · {email}", expanded=(selected_category == "⏳ Pendentes")):
+            st.markdown(f"**{html.escape(nome)}**")
+            st.caption(html.escape(email))
             info1, info2, info3 = st.columns(3)
-            info1.caption(f"Plano · {('FREE · suspenso' if suspended_now else status_label)}")
+            info1.caption(f"Acesso · {('FREE · suspenso' if suspended_now else status_label)}")
             info2.caption(f"Pagamento · {payment}")
             info3.caption(f"Validade · {vip_until}")
             st.caption(f"Cadastro {created} · Aprovação {approved}")
@@ -2795,38 +2815,38 @@ def gm_render_admin_vip_manager():
                 key=f"gm_admin_days_{uid}",
             )
 
-            a1, a2, a3 = st.columns(3)
+            # Ações principais: linguagem direta e posição previsível em qualquer status.
+            a1, a2 = st.columns(2)
             with a1:
-                if row.get("vip_status") == "pending":
-                    if st.button("✅ Aprovar", use_container_width=True, key=f"gm_admin_approve_{uid}"):
+                if str(row.get("vip_status") or "").lower() == "pending":
+                    if st.button("✅ Ativar PRO", use_container_width=True, type="primary", key=f"gm_admin_approve_{uid}"):
                         try:
                             gm_admin_rpc("gm_admin_approve_user", {"p_user_id": uid, "p_days": int(days)})
-                            st.success("Cliente aprovado com sucesso.")
+                            st.success("Cliente ativado com sucesso.")
                             st.rerun()
                         except Exception as exc:
-                            st.error("Não foi possível aprovar o cliente.")
-                            st.caption(str(exc))
+                            st.error("Não foi possível ativar o cliente."); st.caption(str(exc))
                 else:
-                    if st.button("➕ Renovar", use_container_width=True, key=f"gm_admin_renew_{uid}"):
+                    if st.button("➕ Adicionar período", use_container_width=True, type="primary", key=f"gm_admin_renew_{uid}"):
                         try:
                             gm_admin_rpc("gm_admin_renew_user", {"p_user_id": uid, "p_days": int(days)})
-                            st.success("PRO renovado com sucesso.")
+                            st.success("Período PRO adicionado com sucesso.")
                             st.rerun()
                         except Exception as exc:
-                            st.error("Não foi possível renovar o PRO.")
-                            st.caption(str(exc))
+                            st.error("Não foi possível adicionar o período."); st.caption(str(exc))
             with a2:
                 pro_label = "▶️ Reativar PRO" if suspended_now else "⏸️ Suspender PRO"
                 if st.button(pro_label, use_container_width=True, key=f"gm_admin_pro_toggle_{uid}"):
                     try:
                         gm_admin_set_pro_suspension(uid, not suspended_now)
-                        st.success("Acesso PRO reativado." if suspended_now else "Acesso PRO suspenso; a conta agora navega como FREE.")
+                        st.success("Acesso PRO reativado." if suspended_now else "Acesso PRO suspenso; login preservado.")
                         st.rerun()
                     except Exception as exc:
-                        st.error("Não foi possível alterar o acesso PRO.")
-                        st.caption(str(exc))
-            with a3:
-                action_label = "🔓 Desbloquear" if blocked_now else "⛔ Bloquear"
+                        st.error("Não foi possível alterar o acesso PRO."); st.caption(str(exc))
+
+            b1, b2 = st.columns(2)
+            with b1:
+                action_label = "🔓 Desbloquear conta" if blocked_now else "⛔ Bloquear conta"
                 if st.button(action_label, use_container_width=True, key=f"gm_admin_blocktoggle_{uid}"):
                     try:
                         fn = "gm_admin_unblock_user" if blocked_now else "gm_admin_block_user"
@@ -2834,32 +2854,25 @@ def gm_render_admin_vip_manager():
                         st.success("Status do cliente atualizado.")
                         st.rerun()
                     except Exception as exc:
-                        st.error("Não foi possível alterar o bloqueio.")
-                        st.caption(str(exc))
+                        st.error("Não foi possível alterar o bloqueio."); st.caption(str(exc))
+            with b2:
+                if st.button("🎁 Liberar teste de 6h", use_container_width=True, key=f"gm_admin_trial6h_{uid}"):
+                    try:
+                        gm_admin_rpc("gm_admin_grant_trial_6h_v168", {"p_user_id": uid})
+                        st.success("Teste PRO de 6 horas liberado para o cliente.")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error("Não foi possível liberar o teste de 6 horas."); st.caption(str(exc))
 
-            if suspended_now:
-                st.caption("⏸️ PRO suspenso pelo ADM · login e validade original preservados.")
-
-            # V168: teste manual de 6 horas pelo ADM. A autorização real fica no
-            # RPC security-definer do Supabase; o app apenas solicita a operação.
             trial_until_raw = row.get("trial_until")
-            trial_active = False
             if trial_until_raw:
                 try:
-                    trial_active = pd.to_datetime(trial_until_raw, utc=True) > pd.Timestamp.now(tz="UTC")
+                    if pd.to_datetime(trial_until_raw, utc=True) > pd.Timestamp.now(tz="UTC"):
+                        st.caption(f"🎁 Teste de 6h ativo · até {gm_admin_format_datetime(trial_until_raw)}")
                 except Exception:
-                    trial_active = False
-            trial_caption = gm_admin_format_datetime(trial_until_raw) if trial_until_raw else "—"
-            if trial_active:
-                st.caption(f"🎁 Teste de 6h ativo · até {trial_caption}")
-            if st.button("🎁 Liberar 6 horas de teste", use_container_width=True, key=f"gm_admin_trial6h_{uid}"):
-                try:
-                    gm_admin_rpc("gm_admin_grant_trial_6h_v168", {"p_user_id": uid})
-                    st.success("Teste PRO de 6 horas liberado para o cliente.")
-                    st.rerun()
-                except Exception as exc:
-                    st.error("Não foi possível liberar o teste de 6 horas.")
-                    st.caption(str(exc))
+                    pass
+            if suspended_now:
+                st.caption("⏸️ PRO suspenso pelo ADM · login e validade original preservados.")
 
             with st.expander("Mais ações", expanded=False):
                 courtesy_days = st.selectbox(
@@ -2873,33 +2886,26 @@ def gm_render_admin_vip_manager():
                     if st.button("🎁 Liberar cortesia", use_container_width=True, key=f"gm_admin_courtesy_{uid}"):
                         try:
                             gm_admin_rpc("gm_admin_grant_courtesy", {"p_user_id": uid, "p_days": int(courtesy_days)})
-                            st.success(f"Cortesia de {courtesy_days} dias liberada.")
-                            st.rerun()
+                            st.success(f"Cortesia de {courtesy_days} dias liberada."); st.rerun()
                         except Exception as exc:
-                            st.error("Não foi possível liberar a cortesia.")
-                            st.caption(str(exc))
+                            st.error("Não foi possível liberar a cortesia."); st.caption(str(exc))
                 with m2:
                     if payment != "paid":
                         if st.button("💳 Confirmar pagamento", use_container_width=True, key=f"gm_admin_paid_{uid}"):
                             try:
                                 gm_admin_rpc("gm_admin_set_payment", {"p_user_id": uid, "p_status": "paid"})
-                                st.success("Pagamento atualizado.")
-                                st.rerun()
+                                st.success("Pagamento atualizado."); st.rerun()
                             except Exception as exc:
-                                st.error("Não foi possível atualizar o pagamento.")
-                                st.caption(str(exc))
+                                st.error("Não foi possível atualizar o pagamento."); st.caption(str(exc))
                     else:
                         st.caption("💳 Pagamento confirmado")
                 with m3:
                     if st.button("🔄 Liberar sessão", use_container_width=True, key=f"gm_admin_reset_session_{uid}"):
                         try:
                             gm_admin_rpc("gm_admin_reset_session", {"p_user_id": uid})
-                            st.success("Sessão liberada.")
-                            st.rerun()
+                            st.success("Sessão liberada."); st.rerun()
                         except Exception as exc:
-                            st.error("Não foi possível liberar a sessão do cliente.")
-                            st.caption(str(exc))
-
+                            st.error("Não foi possível liberar a sessão do cliente."); st.caption(str(exc))
 
 
 
@@ -3376,8 +3382,11 @@ def gm_render_admin_panel(profile):
         gm_render_admin_vip_manager()
 
     st.markdown("---")
-    if st.button("← Voltar", use_container_width=True, key="gm_admin_back_bottom", help="Retornar ao GM SCORE"):
-        st.session_state["gm_admin_panel_open"] = False
+    st.caption("🛡️ Conta administrativa dedicada ao backoffice GM SCORE.")
+    if st.button("🚪 Sair da conta administrativa", use_container_width=True, key="gm_admin_logout_bottom"):
+        gm_auth_sign_out()
+        st.session_state.pop("gm_admin_panel_open", None)
+        st.session_state.pop("gm_main_view", None)
         st.rerun()
 
 
@@ -15675,6 +15684,8 @@ st.markdown(r"""
 .gm-admin-mobile-switch{display:none}
 div[class*="st-key-gm_admin_active_section"] [data-testid="stRadio"] > div{gap:.42rem!important;flex-wrap:wrap!important}
 div[class*="st-key-gm_admin_active_section"] [data-testid="stRadio"] label{border:1px solid rgba(52,230,129,.28)!important;border-radius:10px!important;padding:.42rem .62rem!important;background:rgba(52,230,129,.05)!important}
+div[class*="st-key-gm_admin_client_status_tab"] [data-testid="stRadio"] > div{gap:.42rem!important;flex-wrap:wrap!important}
+div[class*="st-key-gm_admin_client_status_tab"] [data-testid="stRadio"] label{border:1px solid rgba(52,230,129,.28)!important;border-radius:999px!important;padding:.42rem .7rem!important;background:rgba(52,230,129,.05)!important;font-weight:800!important}
 button[kind="secondary"]:has(+ div),button[kind="primary"]:has(+ div){}
 @media (max-width:768px){
 .gm-admin-mobile-switch{display:flex!important;position:fixed!important;right:.75rem!important;top:4.15rem!important;z-index:100002!important;align-items:center!important;justify-content:center!important;padding:.38rem .68rem!important;border-radius:999px!important;border:1px solid rgba(52,230,129,.42)!important;background:rgba(7,16,15,.95)!important;color:#eafbf2!important;text-decoration:none!important;font-size:.72rem!important;font-weight:900!important;box-shadow:0 5px 16px rgba(0,0,0,.28)!important;backdrop-filter:blur(8px)!important}
@@ -15709,7 +15720,13 @@ try:
 except Exception:
     pass
 
-# V141: a barra inferior padrão permanece ativa dentro da Central Administrativa.
+# V170: a conta com role=admin é um workspace administrativo dedicado.
+# Após autenticar, entra direto no backoffice e não carrega navegação/recursos do cliente.
+if _gm_profile_after_gate and str(_gm_profile_after_gate.get("role") or "").lower() == "admin":
+    st.session_state["gm_admin_panel_open"] = True
+    gm_render_admin_panel(_gm_profile_after_gate)
+    st.stop()
+
 _gm_requested_view = str(st.query_params.get("gm_view", "") or "").strip()
 # V161: tocar em Início significa iniciar uma navegação limpa. Remove somente
 # estado de confronto/interface; autenticação, plano e caches estatísticos ficam intactos.
