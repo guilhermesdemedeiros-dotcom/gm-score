@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-22-v188-client-lifecycle-free-pro-suspended"
+GM_BUILD = "2026-09-22-v189-client-lifecycle-free-pro-suspended"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -4145,30 +4145,20 @@ def gm_render_public_portal():
                             remaining_seconds = (
                                 vip_until_dt - now_vip
                             ).total_seconds()
-                            remaining_days = max(
-                                0,
-                                math.ceil(
-                                    remaining_seconds / 86400
-                                ),
+                            remaining_minutes = max(0, math.ceil(remaining_seconds / 60))
+                            remaining_days, rem_minutes = divmod(remaining_minutes, 1440)
+                            remaining_hours, remaining_mins = divmod(rem_minutes, 60)
+                            remaining_label = (
+                                f"{remaining_days}d {remaining_hours}h {remaining_mins}min restantes"
+                                if remaining_days > 0
+                                else f"{remaining_hours}h {remaining_mins}min restantes"
                             )
 
                             st.caption(
                                 "Vencimento: "
                                 f"{vip_until_dt.astimezone(ZoneInfo('America/Sao_Paulo')).strftime('%d/%m/%Y às %H:%M')}"
                             )
-
-                            if remaining_days > 1:
-                                st.info(
-                                    f"⏳ {remaining_days} dias restantes"
-                                )
-                            elif remaining_days == 1:
-                                st.warning(
-                                    "⏳ 1 dia restante"
-                                )
-                            else:
-                                st.warning(
-                                    "⏳ Vencimento hoje"
-                                )
+                            st.info(f"⏳ {remaining_label}")
                         except Exception:
                             # Se houver algum formato inesperado de data,
                             # não interfere no acesso VIP nem no checkout.
@@ -15577,9 +15567,15 @@ def gm_render_account_page(profile):
             vip_until_dt = datetime.fromisoformat(str(vip_until_raw).replace("Z", "+00:00"))
             now_vip = datetime.now(vip_until_dt.tzinfo)
             remaining_seconds = (vip_until_dt - now_vip).total_seconds()
-            remaining_days = max(0, math.ceil(remaining_seconds / 86400))
+            remaining_minutes = max(0, math.ceil(remaining_seconds / 60))
+            remaining_days, rem_minutes = divmod(remaining_minutes, 1440)
+            remaining_hours, remaining_mins = divmod(rem_minutes, 60)
             vip_until_br = vip_until_dt.astimezone(ZoneInfo("America/Sao_Paulo")).strftime("%d/%m/%Y às %H:%M")
-            remaining_label = "1 dia restante" if remaining_days == 1 else f"{remaining_days} dias restantes"
+            remaining_label = (
+                f"{remaining_days}d {remaining_hours}h {remaining_mins}min restantes"
+                if remaining_days > 0
+                else f"{remaining_hours}h {remaining_mins}min restantes"
+            )
             if tier == "pro":
                 st.markdown(
                     f'<div class="gm-account-vip-meta"><span class="gm-account-days">📅 {remaining_label}</span>'
