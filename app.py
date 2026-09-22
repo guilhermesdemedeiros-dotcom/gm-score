@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-22-v178-leverage-125-135-admin-approval"
+GM_BUILD = "2026-09-22-v180-bets-ui-cleanup-admin-icon"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -2530,14 +2530,65 @@ def _gm_daily_pick_remove_cached_option(cache_key, kind, opt):
     st.session_state[cache_key] = prepared
 
 
+def gm_render_admin_daily_pick_history(rows=None, days=10):
+    """Histórico administrativo das Dicas do Dia nos últimos N dias, sem misturar Alavancagem."""
+    try:
+        rows = rows if rows is not None else (gm_daily_pick_recent(180) or [])
+    except Exception:
+        rows = []
+    today = datetime.now(BRASILIA_TZ).date()
+    start = today - timedelta(days=max(1, int(days)) - 1)
+    settled = []
+    for row in rows:
+        if _gm_is_leverage_row(row):
+            continue
+        if str(row.get("status") or "") not in {"green", "red", "void"}:
+            continue
+        try:
+            d = datetime.fromisoformat(str(row.get("pick_date") or "")).date()
+        except Exception:
+            continue
+        if start <= d <= today:
+            settled.append(row)
+    settled.sort(key=lambda r:(str(r.get("pick_date") or ""), str(r.get("created_at") or "")), reverse=True)
+
+    st.markdown(f"### 📊 Resultados · últimos {days} dias")
+    official = [r for r in settled if str(r.get("status") or "") in {"green", "red"} and ((_gm_daily_num(r.get("total_odd")) or 0) <= 3.0)]
+    greens = sum(1 for r in official if str(r.get("status") or "") == "green")
+    reds = sum(1 for r in official if str(r.get("status") or "") == "red")
+    total = greens + reds
+    rate = (100.0 * greens / total) if total else None
+    if total:
+        st.caption(f"Oficial (odd ≤ 3,00) · {total} encerrada(s) · {greens} Green · {reds} Red · {rate:.0f}% de acerto")
+    else:
+        st.caption("Oficial (odd ≤ 3,00) · ainda não há Green/Red encerrado neste período.")
+    if not settled:
+        st.caption("Ainda não há resultados das Dicas do Dia nos últimos 10 dias.")
+        return
+    for row in settled:
+        odd = _gm_daily_num(row.get("total_odd")) or 0.0
+        status = _gm_daily_status_badge(row.get("status"))
+        date_txt = str(row.get("pick_date") or "")
+        try:
+            date_txt = datetime.fromisoformat(date_txt).strftime("%d/%m/%Y")
+        except Exception:
+            pass
+        official_txt = "Conta no oficial" if odd <= 3.0 else "Fora do oficial"
+        with st.expander(f"{date_txt} · {status} · odd {odd:.2f} · {official_txt}", expanded=False):
+            for leg in _gm_daily_sort_legs(row.get("legs") or []):
+                leg_odd = _gm_daily_num(leg.get("odd")) or 0.0
+                st.markdown(f"**{leg.get('market') or 'Mercado'}** @ {leg_odd:.2f}")
+                st.caption(f"⚽ {leg.get('home')} × {leg.get('away')} · {_gm_daily_time_label(leg.get('time'))}")
+
+
 def gm_render_admin_daily_pick_approval():
     """V172: fila única e privada de Dicas do Dia para decisão do administrador."""
-    st.markdown("### 💡 Dicas do Dia — avaliação do ADM")
+    st.markdown("### 🎯 Bets do Dia — avaliação do ADM")
     st.caption("Aqui aparecem as melhores oportunidades disponíveis do dia. Nada desta triagem aparece para o cliente antes da sua aprovação.")
     today=datetime.now(BRASILIA_TZ).date(); cache_key=f"gm_daily_admin_options_{today.isoformat()}"
     try:
         rows=gm_daily_pick_recent(120)
-    except Exception: st.warning("As Dicas do Dia ainda não estão ativas nesta instalação."); return
+    except Exception: st.warning("As Bets do Dia ainda não estão ativas nesta instalação."); return
     a1,a2=st.columns(2)
     has=bool(st.session_state.get(cache_key))
     if a1.button("🔎 Buscar melhores oportunidades" if not has else "➕ Carregar mais oportunidades",use_container_width=True,key="gm_admin_daily_refresh_candidates"):
@@ -2552,14 +2603,21 @@ def gm_render_admin_daily_pick_approval():
             result=gm_daily_pick_settle_pending(limit=100); st.success(f"Conferência: {result.get('settled',0)} atualizada(s) · {result.get('pending',0)} pendente(s)."); st.rerun()
         except Exception as exc: st.error("Não foi possível conferir os resultados agora."); st.caption(type(exc).__name__)
     prepared=st.session_state.get(cache_key) or {}
-    if not prepared: st.info("Use **Buscar melhores oportunidades** para montar a fila privada do dia."); return
-    if not prepared.get("ok"): st.warning("A fonte de odds/probabilidades não entregou dados suficientes agora."); return
+    if not prepared:
+        st.info("Use **Buscar melhores oportunidades** para montar a fila privada do dia.")
+        gm_render_admin_daily_pick_history(rows, days=10)
+        return
+    if not prepared.get("ok"):
+        st.warning("A fonte de odds/probabilidades não entregou dados suficientes agora.")
+        gm_render_admin_daily_pick_history(rows, days=10)
+        return
     opts=[o for o in ((prepared.get("options") or {}).get("dica") or []) if not _gm_daily_pick_is_discarded(o,today)]
     if not opts:
         meta=prepared.get("meta") or {}
         st.warning("A grade foi consultada, mas nenhuma oportunidade diária com probabilidade estimada de pelo menos 70% e odd real entre 1,60 e 3,00 ficou disponível nesta coleta.")
         st.caption(f"Partidas oficiais: {int(meta.get('fixtures') or 0)} · previsões: {int(meta.get('predictions') or 0)} · odds: {int(meta.get('odds') or 0)} · candidatos válidos: {int(meta.get('candidates') or 0)}.")
         st.caption(f"Recuperação dirigida: {int(meta.get('direct_prediction_hits') or 0)} previsão(ões) · {int(meta.get('direct_odds_hits') or 0)} conjunto(s) de odds · excluídos por horário/status: {int(meta.get('excluded_past') or 0) + int(meta.get('excluded_status') or 0)}.")
+        gm_render_admin_daily_pick_history(rows, days=10)
         return
     st.markdown(f"#### Oportunidades para avaliar · {len(opts)}")
     for idx,opt in enumerate(opts,1):
@@ -2587,6 +2645,7 @@ def gm_render_admin_daily_pick_approval():
         if c2.button("✕ Descartar",use_container_width=True,key=f"gm_admin_discard_dica_{idx}"):
             _gm_daily_pick_discard(opt,today); _gm_daily_pick_remove_cached_option(cache_key,"dica",opt); st.rerun()
         if idx<len(opts): st.divider()
+    gm_render_admin_daily_pick_history(rows, days=10)
 
 def gm_render_admin_vip_manager():
     """V170: central de clientes organizada por situação, otimizada para desktop e mobile."""
@@ -2916,7 +2975,7 @@ def gm_admin_bet_delete(bet_id):
 
 
 def gm_render_admin_bets_manager():
-    st.markdown("### ⭐ Apostas do ADM")
+    st.markdown("### 🧑‍💼 Apostas do ADM")
     st.caption("Publicações manuais independentes das Dicas do Dia. Não entram no desempenho nem no aprendizado estatístico do GM SCORE.")
 
     with st.expander("➕ Publicar Aposta do ADM", expanded=True):
@@ -2928,7 +2987,7 @@ def gm_render_admin_bets_manager():
             use_expiry = st.checkbox("Definir horário limite")
             expiry_date = st.date_input("Data limite", value=datetime.now(BRASILIA_TZ).date(), disabled=not use_expiry)
             expiry_time = st.time_input("Horário limite", value=datetime.now(BRASILIA_TZ).replace(hour=23, minute=59, second=0, microsecond=0).time(), disabled=not use_expiry)
-            submitted = st.form_submit_button("⭐ Publicar Aposta do ADM", type="primary", use_container_width=True)
+            submitted = st.form_submit_button("🧑‍💼 Publicar Aposta do ADM", type="primary", use_container_width=True)
         if submitted:
             clean_url = str(bet_url or "").strip()
             if not str(title or "").strip() or not str(description or "").strip():
@@ -3056,7 +3115,7 @@ def gm_render_admin_bets_home():
         _profile = None
     _is_pro = gm_is_pro(_profile)
 
-    st.markdown("### ⭐ Apostas do ADM")
+    st.markdown("### 🧑‍💼 Apostas do ADM")
     if not active_rows:
         st.caption("Ainda não temos Apostas do ADM para hoje.")
     elif not _is_pro:
@@ -3077,7 +3136,7 @@ def gm_render_admin_bets_home():
             try: odd_text = f"{float(row.get('odd') or 0):.2f}"
             except Exception: odd_text = str(row.get("odd") or "—")
             expiry = f" • até {gm_admin_bet_format_time(row.get('valid_until'))}" if row.get("valid_until") else ""
-            st.markdown(f'''<div class="gm-adm-bet-card"><div class="gm-adm-bet-top"><div class="gm-adm-bet-title">⭐ {html.escape(str(row.get('title') or 'Aposta do ADM'))}</div><div class="gm-adm-bet-odd">ODD {html.escape(odd_text)}</div></div><div class="gm-adm-bet-desc">{html.escape(str(row.get('description') or ''))}</div><div class="gm-adm-bet-meta">Publicada {html.escape(gm_admin_bet_format_time(row.get('created_at')))}{html.escape(expiry)}</div><div class="gm-adm-bet-note">Seleção manual do administrador · não integra o histórico estatístico das Dicas do Dia.</div></div>''', unsafe_allow_html=True)
+            st.markdown(f'''<div class="gm-adm-bet-card"><div class="gm-adm-bet-top"><div class="gm-adm-bet-title">🧑‍💼 {html.escape(str(row.get('title') or 'Aposta do ADM'))}</div><div class="gm-adm-bet-odd">ODD {html.escape(odd_text)}</div></div><div class="gm-adm-bet-desc">{html.escape(str(row.get('description') or ''))}</div><div class="gm-adm-bet-meta">Publicada {html.escape(gm_admin_bet_format_time(row.get('created_at')))}{html.escape(expiry)}</div><div class="gm-adm-bet-note">Seleção manual do administrador · não integra o histórico estatístico das Dicas do Dia.</div></div>''', unsafe_allow_html=True)
             url = str(row.get("bet_url") or "").strip()
             if url.lower().startswith("https://"):
                 st.link_button("🎯 Ir para a aposta · GM SCORE  ›", url, use_container_width=True, key=f"gm_adm_bet_link_{bet_id}")
@@ -3136,9 +3195,9 @@ def gm_render_admin_panel(profile):
 
     _admin_sections = [
         "👥 Clientes / VIP",
-        "💡 Dicas do Dia",
+        "🎯 Bets do Dia",
         "📈 Alavancagem",
-        "⭐ Apostas do ADM",
+        "🧑‍💼 Apostas do ADM",
         "📰 Novidades",
         "⭐ Avaliações",
         "⚙️ Sistema",
@@ -3153,11 +3212,11 @@ def gm_render_admin_panel(profile):
 
     if _admin_section == "👥 Clientes / VIP":
         gm_render_admin_vip_manager()
-    elif _admin_section == "💡 Dicas do Dia":
+    elif _admin_section == "🎯 Bets do Dia":
         gm_render_admin_daily_pick_approval()
     elif _admin_section == "📈 Alavancagem":
         gm_render_admin_leverage_approval()
-    elif _admin_section == "⭐ Apostas do ADM":
+    elif _admin_section == "🧑‍💼 Apostas do ADM":
         gm_render_admin_bets_manager()
     elif _admin_section == "📰 Novidades":
         gm_render_admin_news_manager()
@@ -3619,7 +3678,7 @@ def gm_render_public_intro():
         .gm-v166-hero{position:relative;overflow:hidden;border:1px solid rgba(34,197,94,.50);border-radius:28px;padding:28px 24px 24px;margin:.15rem 0 1rem;background:radial-gradient(circle at 82% 16%,rgba(74,222,128,.24),transparent 28%),linear-gradient(120deg,#064e3b,#0f172a 58%,#022c22);box-shadow:0 22px 60px rgba(0,0,0,.28);color:#f8fafc}.gm-v166-k{font-size:.72rem;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#86efac}.gm-v166-title{font-size:clamp(2rem,6vw,3.5rem);font-weight:950;line-height:1.01;letter-spacing:-.05em;max-width:820px;margin:.5rem 0 .7rem}.gm-v166-title span{color:#4ade80}.gm-v166-copy{max-width:760px;color:#dbeafe;font-size:1rem;line-height:1.55}.gm-v166-trial{display:inline-flex;margin-top:16px;padding:9px 13px;border-radius:999px;background:#22c55e;color:#052e16;font-weight:950;font-size:.84rem}.gm-v166-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px;margin:1rem 0}.gm-v166-card{border:1px solid rgba(148,163,184,.20);border-radius:16px;padding:13px;background:rgba(30,41,59,.13)}.gm-v166-card b{display:block;font-size:.88rem;margin-bottom:4px}.gm-v166-card span{font-size:.74rem;opacity:.74;line-height:1.35}.gm-v166-flow{display:grid;grid-template-columns:repeat(6,1fr);gap:6px;margin:.8rem 0 1.2rem}.gm-v166-step{text-align:center;border:1px solid rgba(34,197,94,.25);border-radius:13px;padding:10px 6px;background:rgba(22,163,74,.07);font-size:.73rem;font-weight:800}.gm-v166-cta{display:grid;grid-template-columns:1.25fr .75fr;gap:10px;margin:1rem 0 1.4rem}.gm-v166-cta a{display:flex;align-items:center;justify-content:center;text-decoration:none!important;border-radius:14px;padding:13px;font-weight:900}.gm-v166-buy{background:#22c55e;color:#052e16!important;box-shadow:0 10px 28px rgba(34,197,94,.20)}.gm-v166-login{border:1px solid rgba(34,197,94,.45);color:inherit!important}.gm-v166-demo{border:1px solid rgba(34,197,94,.30);border-radius:20px;padding:16px;margin:.7rem 0 1rem;background:linear-gradient(145deg,rgba(22,128,58,.12),rgba(15,23,42,.35))}.gm-v166-demo-head{display:flex;justify-content:space-between;gap:10px;align-items:center}.gm-v166-lock{font-size:.72rem;font-weight:900;color:#86efac}.gm-v166-demo-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:11px}.gm-v166-metric{border-radius:12px;background:rgba(15,23,42,.65);padding:10px;text-align:center}.gm-v166-metric b{display:block;font-size:.8rem}.gm-v166-metric span{font-size:.68rem;color:#94a3b8}@media(max-width:760px){.gm-v166-grid{grid-template-columns:1fr 1fr}.gm-v166-flow{grid-template-columns:1fr 1fr 1fr}.gm-v166-cta{grid-template-columns:1fr}.gm-v166-demo-grid{grid-template-columns:1fr}.gm-v166-hero{padding:22px 17px}}@media(max-width:430px){.gm-v166-flow{grid-template-columns:1fr 1fr}}
         </style>
         <section class="gm-v166-hero"><div class="gm-v166-k">GM SCORE PRO • clubes + seleções</div><div class="gm-v166-title">Decisões mais inteligentes começam com <span>dados.</span></div><div class="gm-v166-copy">Histórico, contexto, probabilidades estimadas e oportunidades organizadas para você analisar cada confronto com muito mais informação — sem fabricar números quando a amostra não é suficiente.</div><div class="gm-v166-trial">🎁 CRIE SUA CONTA E TESTE O PRO GRÁTIS POR 6 HORAS</div></section>
-        <div class="gm-v166-grid"><div class="gm-v166-card"><b>🌎 Seleções nacionais</b><span>Histórico internacional separado dos clubes, contexto da competição e força FIFA quando disponível.</span></div><div class="gm-v166-card"><b>💡 Dicas do Dia</b><span>Matadeira, Dica Principal e Bingo com critérios estatísticos e mercados habilitados.</span></div><div class="gm-v166-card"><b>📊 Análise estatística</b><span>Resultado, gols, escanteios, cartões e demais métricas conforme cobertura real.</span></div><div class="gm-v166-card"><b>📈 Transparência</b><span>Inconclusivo, Cautela ou Conclusivo conforme o tamanho da amostra de cada métrica.</span></div></div>
+        <div class="gm-v166-grid"><div class="gm-v166-card"><b>🌎 Seleções nacionais</b><span>Histórico internacional separado dos clubes, contexto da competição e força FIFA quando disponível.</span></div><div class="gm-v166-card"><b>🎯 Bets do Dia</b><span>Oportunidades selecionadas com critérios estatísticos e mercados habilitados.</span></div><div class="gm-v166-card"><b>📊 Análise estatística</b><span>Resultado, gols, escanteios, cartões e demais métricas conforme cobertura real.</span></div><div class="gm-v166-card"><b>📈 Transparência</b><span>Inconclusivo, Cautela ou Conclusivo conforme o tamanho da amostra de cada métrica.</span></div></div>
         <h3>Como o GM SCORE transforma o jogo em análise</h3><div class="gm-v166-flow"><div class="gm-v166-step">⚽ Jogo</div><div class="gm-v166-step">🗂️ Histórico</div><div class="gm-v166-step">💪 Força</div><div class="gm-v166-step">🏆 Contexto</div><div class="gm-v166-step">🎯 Probabilidades</div><div class="gm-v166-step">⭐ Oportunidades</div></div>
         <div class="gm-v166-demo"><div class="gm-v166-demo-head"><div><b>🇧🇷 Brasil × Argentina 🇦🇷</b><br><small>Demonstração da experiência GM SCORE</small></div><div class="gm-v166-lock">🔒 INTELIGÊNCIA PRO</div></div><div class="gm-v166-demo-grid"><div class="gm-v166-metric"><b>Ranking + contexto</b><span>força histórica complementar</span></div><div class="gm-v166-metric"><b>Forma recente</b><span>amostra internacional própria</span></div><div class="gm-v166-metric"><b>Mercados e projeções</b><span>liberados conforme dados suficientes</span></div></div></div>
         <div class="gm-v166-cta"><a class="gm-v166-buy" href="#gm-acesso">🎁 Criar conta e testar 6h grátis</a><a class="gm-v166-login" href="#gm-login-top">🔐 Já sou cliente</a></div>
@@ -14839,7 +14898,7 @@ def gm_leverage_publish_choice(leg):
 
 def gm_render_admin_leverage_approval():
     st.markdown("### 📈 Alavancagem — avaliação do ADM")
-    st.caption("Odds de alta confiança · faixa 1,25–1,35 · mínimo 80%.")
+    st.caption("Odds 1,25–1,35 · alta confiança · mín. 80%.")
     today=datetime.now(BRASILIA_TZ).date(); key=f"gm_leverage_admin_candidate_{today.isoformat()}"
     try:
         rows=gm_daily_pick_recent(140) or []
@@ -14894,7 +14953,7 @@ def gm_render_leverage_block(rows=None, auto_generate=False, show_current=True):
             pass
     current=[r for r in lev if str(r.get("pick_date") or "")==today.isoformat()]
     st.markdown("### 📈 Alavancagem")
-    st.caption("Odds de alta confiança · faixa 1,25–1,35 · mínimo 80%.")
+    st.caption("Odds 1,25–1,35 · alta confiança · mín. 80%.")
     if current and show_current:
         row=current[0]; legs=_gm_daily_sort_legs(row.get("legs") or []); odd=_gm_daily_num(row.get("total_odd")) or 0
         st.markdown(f"**Alavancagem de hoje · odd {odd:.2f} · {_gm_daily_status_badge(row.get('status'))}**")
@@ -14914,21 +14973,21 @@ def gm_render_leverage_block(rows=None, auto_generate=False, show_current=True):
                 except Exception: pass
                 st.markdown(f"- {dt} · {_gm_daily_status_badge(r.get('status'))} · odd {odd:.2f}")
     else:
-        st.caption("Os últimos 20 resultados aparecerão aqui conforme as Alavancagens forem encerradas.")
+        st.caption("Histórico: últimas 20 Alavancagens encerradas.")
 
 
 def gm_render_daily_pick_page():
     """V172: cliente vê somente dicas que o ADM aprovou; nunca vê a triagem administrativa."""
-    st.markdown("## 💡 Dicas do Dia")
-    st.caption("Melhores oportunidades aprovadas do dia · odds 1,60–3,00.")
+    st.markdown("## 🎯 Bets do Dia")
+    st.caption("Análises com valor · odds 1,60–3,00.")
     try:
         rows=gm_daily_pick_recent(140)
-    except Exception: st.warning("As Dicas do Dia não puderam ser carregadas agora."); return
+    except Exception: st.warning("As Bets do Dia não puderam ser carregadas agora."); return
     today=datetime.now(BRASILIA_TZ).date(); yesterday=today-timedelta(days=1)
     def day_rows(day):
         return [r for r in rows if str(r.get("pick_date") or "")==day.isoformat() and str(r.get("pick_kind") or "dica") in {"matadeira","dica","bingo"} and not _gm_is_leverage_row(r)]
     current=day_rows(today)
-    if not current: st.info("Ainda não há Dicas do Dia aprovadas para hoje.")
+    if not current: st.info("Ainda não há Bets do Dia aprovadas para hoje.")
     else:
         for row in current: _gm_daily_pick_card(row,today)
     with st.expander("📆 Ontem — dicas e resultados",expanded=False):
@@ -14942,15 +15001,13 @@ def gm_render_daily_pick_page():
         if d and d not in unique: unique.append(d)
         if len(unique)>=10: break
     perf=[r for r in settled if str(r.get("pick_date") or "") in set(unique)]
-    st.markdown("### 📊 Aproveitamento oficial — últimos 10 dias")
-    st.caption("Conta somente Dicas do Dia aprovadas e encerradas com **odd até 3,00**. Dicas acima de 3,00 continuam visíveis no histórico, mas não alteram o percentual oficial.")
+    st.markdown("### 📊 Últimos 10 dias · oficial")
+    st.caption("Odd até 3,00 entra no aproveitamento oficial; acima disso fica fora da contagem.")
     if perf:
         g=sum(str(r.get("status"))=="green" for r in perf); red=sum(str(r.get("status"))=="red" for r in perf); a,b,c=st.columns(3); a.metric("Greens",g); b.metric("Reds",red); c.metric("Aproveitamento",f"{100*g/max(1,g+red):.0f}%")
     else: st.caption("O histórico oficial aparecerá conforme as dicas com odd até 3,00 forem encerradas.")
 
 def gm_render_leverage_page(is_free=False):
-    st.markdown("## 📈 Alavancagem")
-    st.caption("Odds de alta confiança · faixa 1,25–1,35 · mínimo 80%.")
     try:
         rows=gm_daily_pick_recent(140) or []
     except Exception:
@@ -14966,7 +15023,8 @@ def gm_render_leverage_page(is_free=False):
 
 def gm_render_tips_hub(is_free=False):
     st.markdown("## 💡 Dicas")
-    choice=st.radio("Escolha", ["💡 Dicas do Dia","📈 Alavancagem"], horizontal=True, key="gm_tips_product", label_visibility="collapsed")
+    st.caption("Escolha o tipo de aposta que deseja ver.")
+    choice=st.radio("Escolha", ["🎯 Bets do Dia","📈 Alavancagem"], horizontal=True, key="gm_tips_product", label_visibility="collapsed")
     if choice=="📈 Alavancagem":
         gm_render_leverage_page(is_free=is_free)
     elif is_free:
@@ -15218,7 +15276,7 @@ def gm_render_news_page():
 
 def gm_render_daily_pick_free_page():
     # V151: prévia das Dicas atuais sem renderizar seleção nem link no plano Free.
-    st.markdown("## 💡 Dicas do Dia")
+    st.markdown("## 🎯 Bets do Dia")
     st.markdown(
         '<div class="gm-risk-rule"><span class="gm-risk-green">QUANTO MAIOR A ODD</span><span class="gm-risk-arrow">→</span><span class="gm-risk-red">MENORES AS CHANCES</span></div>',
         unsafe_allow_html=True,
@@ -15226,7 +15284,7 @@ def gm_render_daily_pick_free_page():
     try:
         rows = gm_daily_pick_recent(140) or []
     except Exception:
-        st.caption("As Dicas do Dia não puderam ser carregadas agora.")
+        st.caption("As Bets do Dia não puderam ser carregadas agora.")
         return
 
     today = datetime.now(BRASILIA_TZ).date()
@@ -15255,7 +15313,7 @@ def gm_render_daily_pick_free_page():
         for idx, row in enumerate(current):
             kind = str(row.get("pick_kind") or "dica")
             profile = GM_DAILY_PICK_PROFILES.get(kind, GM_DAILY_PICK_PROFILES["dica"])
-            label = "📊 Dica Principal" if kind == "dica" else profile.get("label", "Dica do Dia")
+            label = "🎯 Bet do Dia"
             legs = _gm_daily_sort_legs(row.get("legs") or [])
             total_odd = _gm_daily_num(row.get("total_odd")) or 0.0
             btype = _gm_daily_bet_type_label(row.get("bet_type"), len(legs))
@@ -15300,7 +15358,7 @@ def gm_render_daily_pick_free_page():
                     key=f"gm_free_daily_pro_{unlock_key}",
                 )
     else:
-        st.info("Ainda não há Dicas do Dia publicadas para hoje.")
+        st.info("Ainda não há Bets do Dia publicadas para hoje.")
 
     st.markdown(
         '<style>'
@@ -15322,16 +15380,14 @@ def gm_render_daily_pick_free_page():
     past.sort(key=lambda r: (str(r.get("pick_date") or ""), str(r.get("created_at") or "")), reverse=True)
 
     st.markdown("### 📊 Resultados anteriores")
-    st.caption("Histórico público das Dicas do Dia já encerradas.")
+    st.caption("Histórico público das Bets do Dia já encerradas.")
     if not past:
         st.caption("Ainda não há resultados anteriores publicados.")
         return
 
     for row in past[:30]:
         kind = str(row.get("pick_kind") or "dica")
-        label = GM_DAILY_PICK_PROFILES.get(kind, {}).get("label", "Dica do Dia")
-        if kind == "dica":
-            label = "📊 Dica Principal"
+        label = "🎯 Bet do Dia"
         status = _gm_daily_status_badge(row.get("status"))
         odd = _gm_daily_num(row.get("total_odd")) or 0.0
         date_txt = str(row.get("pick_date") or "")
