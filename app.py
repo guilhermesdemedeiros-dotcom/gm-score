@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-22-v180-bets-ui-cleanup-admin-icon"
+GM_BUILD = "2026-09-22-v181-admin-clients-compact-fixture-date-guard"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -2686,12 +2686,15 @@ def gm_render_admin_vip_manager():
     for r in clients:
         counts[category(r)] += 1
 
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Pendentes", counts["⏳ Pendentes"])
-    c2.metric("Ativos", counts["🟢 Ativos"])
-    c3.metric("Suspensos", counts["⏸️ Suspensos"])
-    c4.metric("Bloqueados", counts["⛔ Bloqueados"])
-    c5.metric("Outros", counts["📁 Outros"])
+    # V181: resumo compacto. Evita cinco métricas verticais gigantes no mobile.
+    st.markdown(
+        f"**⏳ Pendentes {counts['⏳ Pendentes']}** &nbsp; · &nbsp; "
+        f"**🟢 Ativos {counts['🟢 Ativos']}** &nbsp; · &nbsp; "
+        f"**⏸️ Suspensos {counts['⏸️ Suspensos']}** &nbsp; · &nbsp; "
+        f"**⛔ Bloqueados {counts['⛔ Bloqueados']}** &nbsp; · &nbsp; "
+        f"**📁 Outros {counts['📁 Outros']}**",
+        unsafe_allow_html=True,
+    )
 
     search = st.text_input(
         "🔎 Buscar cliente",
@@ -2743,7 +2746,7 @@ def gm_render_admin_vip_manager():
         suspended_now = bool(row.get("pro_suspended"))
         blocked_now = bool(row.get("blocked")) or str(row.get("vip_status") or "").lower() == "blocked"
 
-        with st.expander(f"{status_label} · {nome} · {email}", expanded=(selected_category == "⏳ Pendentes")):
+        with st.expander(f"{status_label} · {nome} · {email}", expanded=False):
             st.markdown(f"**{html.escape(nome)}**")
             st.caption(html.escape(email))
             info1, info2, info3 = st.columns(3)
@@ -15048,6 +15051,12 @@ def gm_games_prepared_fixtures(target_date):
             continue
         if not valid_daily_fixture(f) or not fixture_matches_selected_date(f, target_date):
             continue
+        # V181: a agenda do cliente não exibe registro sem horário confiável.
+        # Entradas de recuperação (ex.: predictions) podem conhecer o confronto,
+        # mas sem HH:MM não têm evidência suficiente para ocupar Hoje/Amanhã.
+        _tm = str((f or {}).get("time") or "").strip()
+        if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", _tm):
+            continue
         if comp != GM_NATIONAL_COMPETITION and not gm_fixture_matches_official_league_roster(f):
             continue
         _merge_fixture_unique(safe, dict(f))
@@ -15078,6 +15087,11 @@ def gm_render_games_page():
     if st.button("🔄 Atualizar jogos", use_container_width=True, key=f"gm_games_refresh_{target_date}"):
         for _fn in (load_apifootball_prediction_fixtures_for_date, load_apifootball_national_fixtures_for_date, load_apifootball_competition_fixtures_for_date, load_apifootball_all_competitions_fixtures_for_date, load_apifootball_fixtures_for_date, load_sofascore_fixtures_for_date, load_espn_fixtures_for_date, load_thesportsdb_fixtures_for_date, load_fixtures_for_date, gm_games_prepared_fixtures):
             try: _fn.clear()
+            except Exception: pass
+        # V181: o cache persistente também precisa ser invalidado; limpar apenas
+        # st.cache_data podia recarregar a mesma agenda antiga do /tmp.
+        for _d in (target_date - timedelta(days=1), target_date, target_date + timedelta(days=1)):
+            try: _gm_daily_pick_disk_cache_clear(_d.isoformat())
             except Exception: pass
         st.rerun()
     try:
