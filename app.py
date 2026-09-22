@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-22-v176-leverage-auto-125-135"
+GM_BUILD = "2026-09-22-v178-leverage-125-135-admin-approval"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -2536,11 +2536,8 @@ def gm_render_admin_daily_pick_approval():
     st.caption("Aqui aparecem as melhores oportunidades disponíveis do dia. Nada desta triagem aparece para o cliente antes da sua aprovação.")
     today=datetime.now(BRASILIA_TZ).date(); cache_key=f"gm_daily_admin_options_{today.isoformat()}"
     try:
-        gm_leverage_ensure_today(force_refresh=False)
         rows=gm_daily_pick_recent(120)
     except Exception: st.warning("As Dicas do Dia ainda não estão ativas nesta instalação."); return
-    gm_render_leverage_block(rows, auto_generate=False)
-    st.divider()
     a1,a2=st.columns(2)
     has=bool(st.session_state.get(cache_key))
     if a1.button("🔎 Buscar melhores oportunidades" if not has else "➕ Carregar mais oportunidades",use_container_width=True,key="gm_admin_daily_refresh_candidates"):
@@ -3140,6 +3137,7 @@ def gm_render_admin_panel(profile):
     _admin_sections = [
         "👥 Clientes / VIP",
         "💡 Dicas do Dia",
+        "📈 Alavancagem",
         "⭐ Apostas do ADM",
         "📰 Novidades",
         "⭐ Avaliações",
@@ -3157,6 +3155,8 @@ def gm_render_admin_panel(profile):
         gm_render_admin_vip_manager()
     elif _admin_section == "💡 Dicas do Dia":
         gm_render_admin_daily_pick_approval()
+    elif _admin_section == "📈 Alavancagem":
+        gm_render_admin_leverage_approval()
     elif _admin_section == "⭐ Apostas do ADM":
         gm_render_admin_bets_manager()
     elif _admin_section == "📰 Novidades":
@@ -4185,7 +4185,7 @@ def gm_render_public_portal():
                         st.rerun()
                 nav3, nav4 = st.columns(2)
                 with nav3:
-                    if st.button("💡 Dicas do Dia", use_container_width=True, key="gm_sidebar_nav_daily_pick"):
+                    if st.button("💡 Dicas", use_container_width=True, key="gm_sidebar_nav_daily_pick"):
                         gm_desktop_navigate("daily_pick")
                         st.rerun()
                 with nav4:
@@ -14784,11 +14784,7 @@ def _gm_is_leverage_row(row):
 
 
 def gm_leverage_ensure_today(force_refresh=False):
-    """Publica automaticamente no máximo 1 Alavancagem/dia, sem aprovação do ADM.
-
-    Reutiliza pick_kind=matadeira apenas como compatibilidade de armazenamento já existente;
-    model_meta.product separa o produto novo do histórico legado. Não exige SQL novo.
-    """
+    """V177: prepara a melhor Alavancagem do dia; publicação exige aprovação do ADM."""
     today = datetime.now(BRASILIA_TZ).date()
     try:
         rows = gm_daily_pick_recent(100) or []
@@ -14807,8 +14803,6 @@ def gm_leverage_ensure_today(force_refresh=False):
         return {"ok": False, "reason": "source_error", "error": type(exc).__name__}
     if meta.get("error"):
         return {"ok": False, "reason": "source_error", "meta": meta}
-    # Faixa definida para Alavancagem. Alta confiança: >=85%; não aceita preço
-    # incompatível demais com a probabilidade do modelo (edge mínimo -4 p.p.).
     eligible=[]
     supported={"1","2","1X","X2","12","O0.5","O1.5","U1.5","O2.5","U2.5","O3.5","U3.5","BTTS_Y","BTTS_N"}
     for c in candidates or []:
@@ -14818,40 +14812,68 @@ def gm_leverage_ensure_today(force_refresh=False):
             continue
         if str(c.get("market_code") or "") not in supported: continue
         if not (1.25 <= odd <= 1.35): continue
-        if prob < 85.0 or edge < -4.0: continue
+        if prob < 80.0 or edge < -4.0: continue
         eligible.append(dict(c))
     if not eligible:
         return {"ok": True, "reason": "no_quality_pick", "meta": meta, "eligible": 0}
-    # Probabilidade domina; depois edge e proximidade de 1.30.
     eligible.sort(key=lambda c:(float(c.get("probability") or 0), float(c.get("edge") or -999), -abs(float(c.get("odd") or 0)-1.30)), reverse=True)
-    leg=eligible[0]
+    return {"ok": True, "reason": "candidate", "choice": eligible[0], "alternatives": eligible[:8], "meta": meta, "eligible": len(eligible)}
+
+def gm_leverage_publish_choice(leg):
+    """Publica a Alavancagem escolhida pelo ADM usando a estrutura já existente."""
+    today=datetime.now(BRASILIA_TZ).date()
+    odd=float(leg.get("odd") or 0); prob=float(leg.get("probability") or 0)
     payload={
         "p_pick_date": today.isoformat(), "p_pick_kind": "matadeira", "p_status": "pending",
-        "p_bet_type": "simple", "p_total_odd": round(float(leg.get("odd") or 0),3),
+        "p_bet_type": "simple", "p_total_odd": round(odd,3),
         "p_bookmaker": str(leg.get("bookmaker") or "Mercado"), "p_bookmaker_url": None,
         "p_legs": [leg],
-        "p_model_meta": {**meta, "build": GM_BUILD, "pick_kind": "matadeira", "product": "alavancagem",
-            "auto_publish": True, "target_odd_min": 1.25, "target_odd_max": 1.35,
-            "min_probability": 85.0, "model_probability": float(leg.get("probability") or 0),
+        "p_model_meta": {"build": GM_BUILD, "pick_kind": "matadeira", "product": "alavancagem",
+            "admin_approved": True, "target_odd_min": 1.25, "target_odd_max": 1.35,
+            "min_probability": 80.0, "model_probability": prob,
             "selected_at": datetime.now(BRASILIA_TZ).isoformat()},
     }
+    data=gm_daily_pick_rpc("gm_daily_pick_publish_v2",payload)
+    st.session_state.pop("_gm_daily_pick_recent_cache",None)
+    return {"ok": True, "data": data}
+
+def gm_render_admin_leverage_approval():
+    st.markdown("### 📈 Alavancagem — avaliação do ADM")
+    st.caption("Odds de alta confiança · faixa 1,25–1,35 · mínimo 80%.")
+    today=datetime.now(BRASILIA_TZ).date(); key=f"gm_leverage_admin_candidate_{today.isoformat()}"
     try:
-        data=gm_daily_pick_rpc("gm_daily_pick_publish_v2",payload)
-        st.session_state.pop("_gm_daily_pick_recent_cache",None)
-        return {"ok": True, "reason": "published", "data": data, "choice": leg, "meta": meta}
-    except Exception as exc:
-        return {"ok": False, "reason": "publish_error", "error": type(exc).__name__, "meta": meta}
+        rows=gm_daily_pick_recent(140) or []
+    except Exception:
+        rows=[]
+    existing=[r for r in rows if str(r.get("pick_date") or "")==today.isoformat() and _gm_is_leverage_row(r)]
+    if existing:
+        st.success("A Alavancagem de hoje já foi aprovada e publicada.")
+    else:
+        if st.button("🔎 Buscar Alavancagem", use_container_width=True, key="gm_admin_leverage_search"):
+            with st.spinner("Buscando a melhor opção de alta confiança..."):
+                st.session_state[key]=gm_leverage_ensure_today(force_refresh=True)
+            st.rerun()
+        prepared=st.session_state.get(key) or {}
+        if prepared.get("reason")=="candidate":
+            leg=prepared.get("choice") or {}; odd=_gm_daily_num(leg.get("odd")) or 0; prob=_gm_daily_num(leg.get("probability")) or 0
+            st.markdown(f"**Melhor opção · {prob:.0f}% · odd {odd:.2f}**")
+            st.markdown(f"- **{leg.get('market')}** · {leg.get('home')} × {leg.get('away')} · {_gm_daily_time_label(leg.get('time'))}")
+            st.caption(f"Opções elegíveis encontradas: {int(prepared.get('eligible') or 0)}")
+            if st.button("✅ Aprovar e publicar Alavancagem", type="primary", use_container_width=True, key="gm_admin_leverage_approve"):
+                try:
+                    gm_leverage_publish_choice(leg); st.session_state.pop(key,None); st.success("Alavancagem publicada."); st.rerun()
+                except Exception as exc:
+                    st.error("Não foi possível publicar a Alavancagem agora."); st.caption(type(exc).__name__)
+        elif prepared.get("reason")=="no_quality_pick":
+            st.info("Nenhuma opção atingiu a faixa 1,25–1,35 e o mínimo de 80% nesta coleta.")
+        elif prepared and not prepared.get("ok"):
+            st.warning("Não foi possível concluir a busca agora.")
+    st.divider()
+    gm_render_leverage_block(rows, auto_generate=False, show_current=False)
 
 
-def gm_render_leverage_block(rows=None, auto_generate=True):
+def gm_render_leverage_block(rows=None, auto_generate=False, show_current=True):
     """Bloco discreto da Alavancagem + últimos 20 resultados e aproveitamento real."""
-    if auto_generate:
-        # Uma tentativa por sessão/dia evita chamadas repetidas em cada rerun.
-        today=datetime.now(BRASILIA_TZ).date(); key=f"gm_leverage_attempt_{today.isoformat()}"
-        if not st.session_state.get(key):
-            st.session_state[key]=True
-            try: gm_leverage_ensure_today(force_refresh=False)
-            except Exception: pass
     try:
         rows = rows if rows is not None else (gm_daily_pick_recent(140) or [])
     except Exception:
@@ -14872,15 +14894,15 @@ def gm_render_leverage_block(rows=None, auto_generate=True):
             pass
     current=[r for r in lev if str(r.get("pick_date") or "")==today.isoformat()]
     st.markdown("### 📈 Alavancagem")
-    st.caption("Seleção automática de alta confiança · faixa de odd 1,25–1,35 · histórico independente das Dicas do Dia.")
-    if current:
+    st.caption("Odds de alta confiança · faixa 1,25–1,35 · mínimo 80%.")
+    if current and show_current:
         row=current[0]; legs=_gm_daily_sort_legs(row.get("legs") or []); odd=_gm_daily_num(row.get("total_odd")) or 0
         st.markdown(f"**Alavancagem de hoje · odd {odd:.2f} · {_gm_daily_status_badge(row.get('status'))}**")
         for leg in legs:
             prob=_gm_daily_num(leg.get("probability")); ptxt=f" · {prob:.0f}%" if prob is not None else ""
             st.markdown(f"- **{leg.get('market')}** @ {(_gm_daily_num(leg.get('odd')) or 0):.2f}{ptxt} · {leg.get('home')} × {leg.get('away')} · {_gm_daily_time_label(leg.get('time'))}")
-    else:
-        st.caption("Nenhuma seleção atingiu simultaneamente a faixa 1,25–1,35 e o nível mínimo de confiança nesta coleta.")
+    elif show_current:
+        st.caption("Ainda não há Alavancagem publicada para hoje.")
     settled=[r for r in lev if str(r.get("status") or "") in {"green","red"}][:20]
     if settled:
         g=sum(str(r.get("status"))=="green" for r in settled); total=len(settled)
@@ -14898,13 +14920,10 @@ def gm_render_leverage_block(rows=None, auto_generate=True):
 def gm_render_daily_pick_page():
     """V172: cliente vê somente dicas que o ADM aprovou; nunca vê a triagem administrativa."""
     st.markdown("## 💡 Dicas do Dia")
-    st.caption("Somente dicas aprovadas pelo GM SCORE. O risco exibido é uma estimativa pré-jogo, não garantia de resultado.")
+    st.caption("Melhores oportunidades aprovadas do dia · odds 1,60–3,00.")
     try:
-        gm_leverage_ensure_today(force_refresh=False)
         rows=gm_daily_pick_recent(140)
     except Exception: st.warning("As Dicas do Dia não puderam ser carregadas agora."); return
-    gm_render_leverage_block(rows, auto_generate=False)
-    st.divider()
     today=datetime.now(BRASILIA_TZ).date(); yesterday=today-timedelta(days=1)
     def day_rows(day):
         return [r for r in rows if str(r.get("pick_date") or "")==day.isoformat() and str(r.get("pick_kind") or "dica") in {"matadeira","dica","bingo"} and not _gm_is_leverage_row(r)]
@@ -14928,6 +14947,32 @@ def gm_render_daily_pick_page():
     if perf:
         g=sum(str(r.get("status"))=="green" for r in perf); red=sum(str(r.get("status"))=="red" for r in perf); a,b,c=st.columns(3); a.metric("Greens",g); b.metric("Reds",red); c.metric("Aproveitamento",f"{100*g/max(1,g+red):.0f}%")
     else: st.caption("O histórico oficial aparecerá conforme as dicas com odd até 3,00 forem encerradas.")
+
+def gm_render_leverage_page(is_free=False):
+    st.markdown("## 📈 Alavancagem")
+    st.caption("Odds de alta confiança · faixa 1,25–1,35 · mínimo 80%.")
+    try:
+        rows=gm_daily_pick_recent(140) or []
+    except Exception:
+        st.warning("A Alavancagem não pôde ser carregada agora."); return
+    if is_free:
+        today=datetime.now(BRASILIA_TZ).date()
+        current=[r for r in rows if str(r.get("pick_date") or "")==today.isoformat() and _gm_is_leverage_row(r) and str(r.get("status") or "")=="pending"]
+        if current: st.info("Há uma Alavancagem PRO disponível hoje. Os resultados anteriores são públicos abaixo.")
+        else: st.info("Ainda não há Alavancagem publicada para hoje.")
+        gm_render_leverage_block(rows, auto_generate=False, show_current=False)
+    else:
+        gm_render_leverage_block(rows, auto_generate=False, show_current=True)
+
+def gm_render_tips_hub(is_free=False):
+    st.markdown("## 💡 Dicas")
+    choice=st.radio("Escolha", ["💡 Dicas do Dia","📈 Alavancagem"], horizontal=True, key="gm_tips_product", label_visibility="collapsed")
+    if choice=="📈 Alavancagem":
+        gm_render_leverage_page(is_free=is_free)
+    elif is_free:
+        gm_render_daily_pick_free_page()
+    else:
+        gm_render_daily_pick_page()
 
 def gm_games_prepared_fixtures(target_date):
     """Agenda já validada/deduplicada para renderização rápida.
@@ -15509,9 +15554,7 @@ def gm_render_main_shortcuts():
     with c1:
         if st.button("⚽ Jogos do dia",use_container_width=True,type="primary",key="gm_home_games"): st.session_state["gm_main_view"]="games"; st.rerun()
     with c2:
-        if st.button("💡 Dicas do Dia",use_container_width=True,key="gm_home_daily_pick"): st.session_state["gm_main_view"]="daily_pick"; st.rerun()
-    if st.button("📈 Alavancagem · odd 1,25–1,35", use_container_width=True, key="gm_home_leverage"):
-        st.session_state["gm_main_view"]="daily_pick"; st.rerun()
+        if st.button("💡 Dicas",use_container_width=True,key="gm_home_daily_pick"): st.session_state["gm_main_view"]="daily_pick"; st.rerun()
     _home_profile = st.session_state.get("gm_auth_profile") or {}
     if str((_home_profile or {}).get("role") or "").lower() == "admin":
         if st.button("🛡️ Área Administrativa", use_container_width=True, key="gm_home_admin"):
@@ -15629,10 +15672,7 @@ gm_render_app_navigation(_gm_profile_after_gate)
 
 _gm_caps = gm_access_capabilities(_gm_profile_after_gate)
 if _gm_main_view == "daily_pick":
-    if _gm_caps["current_daily_picks"]:
-        gm_render_daily_pick_page()
-    else:
-        gm_render_daily_pick_free_page()
+    gm_render_tips_hub(is_free=not bool(_gm_caps["current_daily_picks"]))
 elif _gm_main_view == "games":
     gm_render_games_page()
 elif _gm_main_view == "news":
