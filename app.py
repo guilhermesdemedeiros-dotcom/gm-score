@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-22-v184-admin-permanent-account-delete"
+GM_BUILD = "2026-09-22-v185-calendar-date-guard-national-ptbr"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -12444,11 +12444,15 @@ def render_analysis():
                 for i, f in enumerate(today_fixtures):
                     game_home = f.get("home")
                     game_away = f.get("away")
+                    # V185: pesquisa por Seleções usa a mesma apresentação pt-BR
+                    # da página Jogos; nomes canônicos internos permanecem intactos.
+                    display_game_home = gm_national_name_ptbr(game_home) if league_name == GM_NATIONAL_COMPETITION else game_home
+                    display_game_away = gm_national_name_ptbr(game_away) if league_name == GM_NATIONAL_COMPETITION else game_away
                     time_text = str(f.get("time") or "").strip()
                     if time_text and time_text.lower() != "nan":
                         st.markdown(f"**⚽ {game_home} × {game_away}**  \n🕒 {time_text}")
                     else:
-                        st.markdown(f"**⚽ {game_home} × {game_away}**")
+                        st.markdown(f"**⚽ {display_game_home} × {display_game_away}**")
                     if st.button(
                         "🔎 Analisar",
                         key=f"main_game_{main_fixture_date}_{i}_{clean_col(str(game_home))}_{clean_col(str(game_away))}",
@@ -15107,11 +15111,10 @@ def gm_render_tips_hub(is_free=False):
         gm_render_daily_pick_page()
 
 def gm_calendar_fixture_matches_date(f, target_date):
-    """Confere SOMENTE a data local do fixture, sem ocultar jogos já encerrados.
+    """Valida a data canônica de Brasília sem deslocar jogos por status/horário.
 
-    A agenda do dia é um calendário: partidas disputadas mais cedo continuam
-    pertencendo àquela data. Status serve ao motor pré-jogo, não para decidir se
-    o confronto existiu no calendário exibido ao cliente.
+    V185: partidas AO VIVO ou encerradas não podem ser atribuídas a uma data
+    futura. A data continua independente do texto exibido no horário.
     """
     if isinstance(target_date, pd.Timestamp):
         target_date = target_date.date()
@@ -15128,7 +15131,18 @@ def gm_calendar_fixture_matches_date(f, target_date):
             br_date = None if pd.isna(parsed) else parsed.date()
         except Exception:
             br_date = None
-    return bool(br_date is not None and br_date == target_date)
+    if br_date is None or br_date != target_date:
+        return False
+
+    today_br = datetime.now(BRASILIA_TZ).date()
+    if target_date > today_br:
+        status = str((f or {}).get("status") or (f or {}).get("time") or "").strip().lower()
+        live_tokens = ("ao vivo", "live", "1h", "2h", "ht", "half time", "intervalo", "in play", "inplay")
+        if any(tok == status or tok in status for tok in live_tokens):
+            return False
+        if _fixture_is_finished(f):
+            return False
+    return True
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -15152,9 +15166,27 @@ def gm_canonical_calendar_fixtures(target_date):
     try: direct.extend(load_apifootball_national_fixtures_for_date(target_date) or [])
     except Exception: pass
 
+    # V185: o mesmo fixture_id não pode existir em Hoje e em outra data.
+    # A agenda corrente é usada como trava de identidade, sem tocar na análise.
+    today_br = datetime.now(BRASILIA_TZ).date()
+    today_fixture_ids = set()
+    if target_date != today_br:
+        current_rows = []
+        try: current_rows.extend(load_apifootball_all_competitions_fixtures_for_date(today_br) or [])
+        except Exception: pass
+        try: current_rows.extend(load_apifootball_national_fixtures_for_date(today_br) or [])
+        except Exception: pass
+        for _cf in current_rows:
+            _cid = str((_cf or {}).get("fixture_id") or (_cf or {}).get("match_id") or "").strip()
+            if _cid and gm_calendar_fixture_matches_date(_cf, today_br):
+                today_fixture_ids.add(_cid)
+
     direct_by_comp = {}
     for f in direct:
         comp = str((f or {}).get("competition") or "")
+        fixture_id = str((f or {}).get("fixture_id") or (f or {}).get("match_id") or "").strip()
+        if target_date != today_br and fixture_id and fixture_id in today_fixture_ids:
+            continue
         if comp in COMPETITIONS and valid_daily_fixture(f) and gm_calendar_fixture_matches_date(f, target_date):
             direct_by_comp.setdefault(comp, []).append(dict(f))
 
@@ -15166,6 +15198,9 @@ def gm_canonical_calendar_fixtures(target_date):
     for comp in COMPETITIONS:
         rows = direct_by_comp.get(comp) or [dict(f) for f in fallback if str((f or {}).get("competition") or "") == comp]
         for f in rows:
+            fixture_id = str((f or {}).get("fixture_id") or (f or {}).get("match_id") or "").strip()
+            if target_date != today_br and fixture_id and fixture_id in today_fixture_ids:
+                continue
             if not valid_daily_fixture(f) or not gm_calendar_fixture_matches_date(f, target_date):
                 continue
             _merge_fixture_unique(merged, dict(f))
