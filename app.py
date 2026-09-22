@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-22-v174-safe-daily-fallback-loading"
+GM_BUILD = "2026-09-22-v175-daily-odds-diversity"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -2556,7 +2556,7 @@ def gm_render_admin_daily_pick_approval():
     opts=[o for o in ((prepared.get("options") or {}).get("dica") or []) if not _gm_daily_pick_is_discarded(o,today)]
     if not opts:
         meta=prepared.get("meta") or {}
-        st.warning("A grade foi consultada, mas nenhuma oportunidade com probabilidade estimada de pelo menos 70% e odd real ficou disponível nesta coleta.")
+        st.warning("A grade foi consultada, mas nenhuma oportunidade diária com probabilidade estimada de pelo menos 70% e odd real entre 1,60 e 3,00 ficou disponível nesta coleta.")
         st.caption(f"Partidas oficiais: {int(meta.get('fixtures') or 0)} · previsões: {int(meta.get('predictions') or 0)} · odds: {int(meta.get('odds') or 0)} · candidatos válidos: {int(meta.get('candidates') or 0)}.")
         st.caption(f"Recuperação dirigida: {int(meta.get('direct_prediction_hits') or 0)} previsão(ões) · {int(meta.get('direct_odds_hits') or 0)} conjunto(s) de odds · excluídos por horário/status: {int(meta.get('excluded_past') or 0) + int(meta.get('excluded_status') or 0)}.")
         return
@@ -2565,7 +2565,9 @@ def gm_render_admin_daily_pick_approval():
         legs=_gm_daily_sort_legs(opt.get("legs") or []); odd=_gm_daily_num(opt.get("total_odd")) or 0; prob=_gm_daily_num(opt.get("model_probability")) or 0
         risk=_gm_daily_confidence_band(prob); official=odd<=3.0
         stat_label="✅ Conta na estatística oficial" if official else "⚠️ Fora da estatística oficial (odd > 3,00)"
-        st.markdown(f"**#{idx} · Segurança {risk.lower()} · {prob:.0f}% · odd {odd:.2f}**")
+        special=str(opt.get("opportunity_class") or "")=="high_odd"
+        prefix="🎯 Oportunidade especial" if special else "💡 Dica do Dia"
+        st.markdown(f"**#{idx} · {prefix} · Segurança {risk.lower()} · {prob:.0f}% · odd {odd:.2f}**")
         st.caption(stat_label)
         for leg in legs: st.markdown(f"- **{leg.get('market')}** @ {(_gm_daily_num(leg.get('odd')) or 0):.2f} · {(_gm_daily_num(leg.get('probability')) or 0):.0f}% · {leg.get('home')} × {leg.get('away')} · {_gm_daily_time_label(leg.get('time'))}")
         direct_bet_url,invalid=gm_daily_pick_admin_bet_link("dica",idx,"gm_admin_v172")
@@ -14326,11 +14328,10 @@ def gm_daily_pick_candidate_options(candidates, pick_kind="dica", limit=5, histo
 
 
 def _gm_daily_pick_unified_options(candidates, limit=8, initial_avoid_legs=None):
-    """V172: melhores oportunidades do dia para triagem privada do ADM.
+    """V175: fila diária privada com odds 1,60–3,00 e diversidade real.
 
-    Não força publicação. O piso da vitrine é 70% e odds são sempre reais. A ordem
-    prioriza probabilidade, coerência com a probabilidade implícita e depois preço.
-    Odds > 3,00 podem aparecer, mas são marcadas fora da estatística oficial.
+    Mantém probabilidade mínima de 70%, odd real e coerência mínima com o preço.
+    A seleção é exclusiva por fixture+mercado e prioriza variar partidas e famílias.
     """
     avoid=set(initial_avoid_legs or set())
     pool=[]
@@ -14340,29 +14341,79 @@ def _gm_daily_pick_unified_options(candidates, limit=8, initial_avoid_legs=None)
         except Exception:
             continue
         sig=(str(c.get("match_id") or ""),str(c.get("market_code") or ""))
-        if not sig[0] or not sig[1] or sig in avoid or p < 70.0 or odd <= 1.01:
+        if not sig[0] or not sig[1] or sig in avoid or p < 70.0 or not (1.60 <= odd <= 3.00):
             continue
-        # tolerância evita oportunidades em que o modelo contradiz fortemente o preço.
         if edge < -7.0:
             continue
-        score=p + max(-4.0,min(8.0,edge))*0.55 - max(0.0,odd-3.0)*1.5
-        pool.append((score,p,edge,-odd,dict(c)))
+        fam=_gm_daily_market_family(c.get("market_code"))
+        score=p + max(-4.0,min(8.0,edge))*0.55 - abs(odd-1.90)*0.35
+        pool.append((score,p,edge,-odd,fam,dict(c)))
     pool.sort(key=lambda x:(x[0],x[1],x[2],x[3]),reverse=True)
-    out=[]; used=set(avoid); used_matches=set()
-    # primeira passagem favorece variedade de partidas
-    for pass_no in (0,1):
-        for _,p,edge,_,c in pool:
-            sig=(str(c.get("match_id") or ""),str(c.get("market_code") or ""))
+    out=[]; used=set(avoid); used_matches=set(); family_counts={}; code_counts={}
+    max_out=max(1,min(int(limit),12))
+    # Passagem 1: no máximo uma oportunidade por partida e rotação de famílias.
+    while len(out)<max_out:
+        choices=[]
+        for score,p,edge,negodd,fam,c in pool:
+            sig=(str(c.get("match_id") or ""),str(c.get("market_code") or "")); mid=sig[0]
+            if sig in used or mid in used_matches: continue
+            code=str(c.get("market_code") or "")
+            adjusted=score-family_counts.get(fam,0)*2.2-code_counts.get(code,0)*1.4
+            choices.append((adjusted,score,p,edge,negodd,fam,c))
+        if not choices: break
+        choices.sort(key=lambda x:(x[0],x[1],x[2]),reverse=True)
+        _,_,p,_,_,fam,c=choices[0]
+        sig=(str(c.get("match_id") or ""),str(c.get("market_code") or "")); code=sig[1]
+        opt=_gm_daily_combo_payload([c],"simple","dica")
+        opt["pick_kind"]="dica"; opt["official_stats"]=True; opt["risk_label"]=_gm_daily_confidence_band(p); opt["opportunity_class"]="daily"
+        out.append(opt); used.add(sig); used_matches.add(sig[0]); family_counts[fam]=family_counts.get(fam,0)+1; code_counts[code]=code_counts.get(code,0)+1
+    # Só se a grade tiver poucas partidas, permite outra leitura da mesma partida,
+    # ainda sem repetir a mesma seleção e penalizando mercados já exibidos.
+    if len(out)<max_out:
+        for score,p,edge,negodd,fam,c in pool:
+            sig=(str(c.get("match_id") or ""),str(c.get("market_code") or "")); code=sig[1]
             if sig in used: continue
-            mid=sig[0]
-            if pass_no==0 and mid in used_matches: continue
+            if code_counts.get(code,0)>=2: continue
             opt=_gm_daily_combo_payload([c],"simple","dica")
-            opt["pick_kind"]="dica"
-            opt["official_stats"]=float(opt.get("total_odd") or 0)<=3.0
-            opt["risk_label"]=_gm_daily_confidence_band(p)
-            out.append(opt); used.add(sig); used_matches.add(mid)
-            if len(out)>=max(1,min(int(limit),12)): return out
+            opt["pick_kind"]="dica"; opt["official_stats"]=True; opt["risk_label"]=_gm_daily_confidence_band(p); opt["opportunity_class"]="daily"
+            out.append(opt); used.add(sig); code_counts[code]=code_counts.get(code,0)+1
+            if len(out)>=max_out: break
     return out
+
+
+def _gm_daily_pick_high_odd_option(candidates, initial_avoid_legs=None):
+    """V175: no máximo uma oportunidade especial >3,00, formada por pernas fortes.
+
+    Não entra na estatística oficial e nunca é publicada automaticamente. A montagem
+    exige partidas diferentes, probabilidade >=75% por perna, odd real e diversidade
+    de mercado quando a grade permitir.
+    """
+    avoid=set(initial_avoid_legs or set()); pool=[]
+    for c in candidates or []:
+        try:
+            p=float(c.get("probability") or 0); odd=float(c.get("odd") or 0); edge=float(c.get("edge") or -999)
+        except Exception: continue
+        sig=(str(c.get("match_id") or ""),str(c.get("market_code") or ""))
+        if not sig[0] or not sig[1] or sig in avoid or p<75.0 or odd<=1.10 or edge < -5.0: continue
+        fam=_gm_daily_market_family(c.get("market_code"))
+        score=p+max(-3.0,min(7.0,edge))*0.45-max(0.0,odd-2.0)*2.0
+        pool.append((score,fam,dict(c)))
+    pool.sort(key=lambda x:x[0],reverse=True)
+    legs=[]; matches=set(); codes=set(); families=set(); total=1.0
+    # Primeiro diversifica famílias; depois completa apenas se necessário para >3.
+    for diversify in (True,False):
+        for _,fam,c in pool:
+            mid=str(c.get("match_id") or ""); code=str(c.get("market_code") or "")
+            if mid in matches or any((str(x.get("match_id") or ""),str(x.get("market_code") or ""))==(mid,code) for x in legs): continue
+            if diversify and fam in families and len(families)<3: continue
+            legs.append(c); matches.add(mid); codes.add(code); families.add(fam); total*=float(c.get("odd") or 1.0)
+            if total>3.0 and len(legs)>=2:
+                opt=_gm_daily_combo_payload(legs,"multiple","dica")
+                opt["pick_kind"]="dica"; opt["official_stats"]=False; opt["risk_label"]=_gm_daily_confidence_band(float(opt.get("model_probability") or 0)); opt["opportunity_class"]="high_odd"
+                return opt
+            if len(legs)>=6: break
+        if total>3.0: break
+    return None
 
 def gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=8):
     """V172: prepara uma fila única de Dicas do Dia para avaliação privada do ADM."""
@@ -14402,6 +14453,12 @@ def gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=8):
             if sig!=("",""): published_legs.add(sig)
     discarded=_gm_daily_pick_load_discarded(today,force=force_refresh)
     raw=_gm_daily_pick_unified_options(candidates,limit=max(8,int(per_kind)),initial_avoid_legs=published_legs)
+    _reserved_for_high=set(published_legs)
+    for _o in raw:
+        for _leg in _o.get("legs") or []:
+            _reserved_for_high.add((str(_leg.get("match_id") or ""),str(_leg.get("market_code") or "")))
+    _high=_gm_daily_pick_high_odd_option(candidates,initial_avoid_legs=_reserved_for_high)
+    if _high: raw.append(_high)
     accepted=[o for o in raw if _gm_daily_pick_option_signature(o) not in discarded]
     meta=dict(meta or {}); meta["perf_source_seconds"]=round(_source_seconds,3); meta["perf_total_seconds"]=round(time.perf_counter()-_perf_started,3)
     return {"ok":True,"reason":"prepared","options":{"dica":accepted},"meta":meta,"rows":existing_rows,"candidates":candidates}
@@ -14420,6 +14477,9 @@ def gm_daily_pick_expand_cached_admin_options(prepared, per_kind=12):
     for o in current:
         for leg in o.get("legs") or []: reserved.add((str(leg.get("match_id") or ""),str(leg.get("market_code") or "")))
     more=_gm_daily_pick_unified_options(candidates,limit=max(4,int(per_kind)),initial_avoid_legs=reserved)
+    if not any(str(o.get("opportunity_class") or "")=="high_odd" for o in current):
+        _high=_gm_daily_pick_high_odd_option(candidates,initial_avoid_legs=reserved)
+        if _high: more.append(_high)
     discarded=_gm_daily_pick_load_discarded(today,force=False)
     combined=[o for o in current+more if _gm_daily_pick_option_signature(o) not in discarded]
     result=dict(prepared); result["options"]={"dica":combined}; result["rows"]=existing; result["reason"]="expanded_cached"; return result
