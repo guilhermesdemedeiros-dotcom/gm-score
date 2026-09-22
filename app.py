@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-22-v183-canonical-daily-calendar"
+GM_BUILD = "2026-09-22-v184-admin-permanent-account-delete"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -2854,6 +2854,40 @@ def gm_render_admin_vip_manager():
                         except Exception as exc:
                             st.error("Não foi possível liberar a sessão do cliente."); st.caption(str(exc))
 
+                st.divider()
+                st.markdown("##### 🗑️ Excluir conta permanentemente")
+                st.caption("Remove o acesso e o usuário do GM SCORE. O mesmo e-mail poderá criar uma nova conta depois.")
+                confirm_delete = st.checkbox(
+                    "Confirmo que desejo excluir permanentemente esta conta.",
+                    key=f"gm_admin_delete_confirm_{uid}",
+                )
+                typed_email = st.text_input(
+                    "Digite o e-mail do cliente para confirmar",
+                    key=f"gm_admin_delete_email_{uid}",
+                    placeholder=email,
+                ).strip().lower()
+                email_matches = bool(email) and typed_email == email.lower()
+                if st.button(
+                    "🗑️ Excluir conta permanentemente",
+                    use_container_width=True,
+                    key=f"gm_admin_delete_permanent_{uid}",
+                    disabled=not (confirm_delete and email_matches),
+                ):
+                    try:
+                        gm_admin_delete_user_permanently(uid, typed_email)
+                        st.session_state.pop("_gm_admin_users_cache", None)
+                        st.success("Conta excluída permanentemente. O e-mail já pode ser usado em um novo cadastro.")
+                        st.rerun()
+                    except Exception as exc:
+                        detail = str(exc)
+                        st.error("Não foi possível excluir a conta permanentemente.")
+                        if "storage_objects_owned" in detail:
+                            st.caption("O usuário ainda possui arquivos no Storage. Remova ou transfira esses arquivos e tente novamente.")
+                        elif "foreign_key" in detail or "constraint" in detail:
+                            st.caption("Há um vínculo de banco impedindo a exclusão. Revise a constraint indicada pela função antes de tentar novamente.")
+                        else:
+                            st.caption(detail[:400])
+
 
 
 # ============================================================
@@ -3506,6 +3540,38 @@ def gm_create_checkout(plan_code, payment_method):
         raise RuntimeError("INVALID_CHECKOUT_URL")
     return payload
 
+
+
+def gm_admin_delete_user_permanently(user_id, confirmation_email):
+    """V184: exclusão definitiva via Edge Function; nunca expõe chave privilegiada no app."""
+    access_token = str(st.session_state.get("gm_auth_access_token") or "").strip()
+    if not access_token:
+        raise RuntimeError("LOGIN_REQUIRED")
+    url, anon_key = gm_supabase_config()
+    if not url or not anon_key:
+        raise RuntimeError("SUPABASE_NOT_CONFIGURED")
+    response = requests.post(
+        f"{url}/functions/v1/gm-admin-delete-user",
+        headers={
+            "apikey": anon_key,
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "user_id": str(user_id or "").strip(),
+            "confirmation_email": str(confirmation_email or "").strip().lower(),
+        },
+        timeout=30,
+    )
+    try:
+        payload = response.json()
+    except Exception:
+        payload = {}
+    if response.status_code != 200 or not payload.get("ok"):
+        error = str(payload.get("error") or f"HTTP_{response.status_code}")
+        message = str(payload.get("message") or "").strip()
+        raise RuntimeError(f"{error}|{message}")
+    return payload
 
 def gm_checkout_button(plan, payment_method, label, primary=False):
     """Botão que cria pedido único e, em seguida, oferece o Checkout Pro oficial."""
