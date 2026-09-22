@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-22-v185-calendar-date-guard-national-ptbr"
+GM_BUILD = "2026-09-22-v186-home-national-display-ptbr"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -12444,13 +12444,17 @@ def render_analysis():
                 for i, f in enumerate(today_fixtures):
                     game_home = f.get("home")
                     game_away = f.get("away")
+                    # V186: somente apresentação da lista Home > Seleções.
+                    # Mantém nomes canônicos em game_home/game_away para análise/IDs.
+                    display_game_home = gm_national_name_ptbr(game_home) if league_name == GM_NATIONAL_COMPETITION else game_home
+                    display_game_away = gm_national_name_ptbr(game_away) if league_name == GM_NATIONAL_COMPETITION else game_away
                     # V185: pesquisa por Seleções usa a mesma apresentação pt-BR
                     # da página Jogos; nomes canônicos internos permanecem intactos.
                     display_game_home = gm_national_name_ptbr(game_home) if league_name == GM_NATIONAL_COMPETITION else game_home
                     display_game_away = gm_national_name_ptbr(game_away) if league_name == GM_NATIONAL_COMPETITION else game_away
                     time_text = str(f.get("time") or "").strip()
                     if time_text and time_text.lower() != "nan":
-                        st.markdown(f"**⚽ {game_home} × {game_away}**  \n🕒 {time_text}")
+                        st.markdown(f"**⚽ {display_game_home} × {display_game_away}**  \n🕒 {time_text}")
                     else:
                         st.markdown(f"**⚽ {display_game_home} × {display_game_away}**")
                     if st.button(
