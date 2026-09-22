@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-22-v181-admin-clients-compact-fixture-date-guard"
+GM_BUILD = "2026-09-22-v182-self-healing-fixture-calendar"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -11098,7 +11098,7 @@ def load_apifootball_all_competitions_fixtures_for_date(target_date):
     return fixtures
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def load_fixtures_for_date(target_date):
     """Carrega somente jogos das competições suportadas para uma data de Brasília."""
     today = target_date
@@ -11110,10 +11110,14 @@ def load_fixtures_for_date(target_date):
     # V149: agenda diária compartilhada e persistente. Depois da primeira montagem,
     # Jogos/Home/Dicas reutilizam o mesmo resultado mesmo após reruns do Streamlit.
     try:
-        _disk = _gm_daily_pick_disk_cache_load(_day_iso, "fixtures", ttl=1800)
+        _disk = _gm_daily_pick_disk_cache_load(_day_iso, "fixtures", ttl=300)
     except Exception:
         _disk = None
-    if isinstance(_disk, dict) and isinstance(_disk.get("fixtures"), list):
+    if (
+        isinstance(_disk, dict)
+        and _disk.get("calendar_schema") == "v182"
+        and isinstance(_disk.get("fixtures"), list)
+    ):
         return _disk.get("fixtures") or []
 
     fixtures = []
@@ -11334,7 +11338,7 @@ def load_fixtures_for_date(target_date):
         _merge_fixture_unique(best, ff)
     result = [x for x in best if valid_daily_fixture(x)]
     try:
-        _gm_daily_pick_disk_cache_save(_day_iso, {"fixtures": result}, "fixtures")
+        _gm_daily_pick_disk_cache_save(_day_iso, {"calendar_schema": "v182", "fixtures": result}, "fixtures")
     except Exception:
         pass
     return result
@@ -15051,12 +15055,10 @@ def gm_games_prepared_fixtures(target_date):
             continue
         if not valid_daily_fixture(f) or not fixture_matches_selected_date(f, target_date):
             continue
-        # V181: a agenda do cliente não exibe registro sem horário confiável.
-        # Entradas de recuperação (ex.: predictions) podem conhecer o confronto,
-        # mas sem HH:MM não têm evidência suficiente para ocupar Hoje/Amanhã.
-        _tm = str((f or {}).get("time") or "").strip()
-        if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", _tm):
-            continue
+        # V182: horário ausente NÃO pode eliminar uma partida cuja data já foi
+        # comprovada pela pipeline. A V181 fazia isso e podia esconder jogos reais.
+        # A separação Hoje/Amanhã continua sendo decidida exclusivamente por
+        # fixture_matches_selected_date(), nunca pelo texto do horário.
         if comp != GM_NATIONAL_COMPETITION and not gm_fixture_matches_official_league_roster(f):
             continue
         _merge_fixture_unique(safe, dict(f))
