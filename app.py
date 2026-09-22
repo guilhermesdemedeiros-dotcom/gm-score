@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-22-v187-client-lifecycle-free-pro-suspended"
+GM_BUILD = "2026-09-22-v188-client-lifecycle-free-pro-suspended"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -1407,7 +1407,7 @@ def gm_render_pro_lock(title="Conteúdo exclusivo GM SCORE Pro", message=None, k
     lock_html = f'<div class="gm-pro-lock"><div class="gm-pro-lock-icon">🔒</div><div><b>{html.escape(title)}</b><div>{html.escape(message)}</div></div></div>'
     st.markdown(lock_html, unsafe_allow_html=True)
     with st.expander("Desbloquear GM SCORE Pro", expanded=False):
-        gm_render_payment_plans(title="⭐ Escolha seu plano GM SCORE Pro", compact=True)
+        gm_render_payment_plans(title="⭐ Escolha seu plano GM SCORE Pro", compact=True, key_scope=key)
 
 
 def gm_device_session_token():
@@ -3524,9 +3524,10 @@ def gm_admin_delete_user_permanently(user_id, confirmation_email):
         raise RuntimeError(f"{error}|{message}")
     return payload
 
-def gm_checkout_button(plan, payment_method, label, primary=False):
+def gm_checkout_button(plan, payment_method, label, primary=False, key_scope=""):
     """Botão que cria pedido único e, em seguida, oferece o Checkout Pro oficial."""
-    key = f"gm_checkout_{plan['plan_code']}_{payment_method}"
+    scope = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(key_scope or "default")).strip("_") or "default"
+    key = f"gm_checkout_{scope}_{plan['plan_code']}_{payment_method}"
     checkout_state_key = f"{key}_result"
 
     if st.button(label, key=key, type="primary" if primary else "secondary", use_container_width=True):
@@ -3562,7 +3563,7 @@ def gm_checkout_button(plan, payment_method, label, primary=False):
         )
 
 
-def gm_render_payment_plans(title="👑 Escolha seu plano GM SCORE Pro", compact=False):
+def gm_render_payment_plans(title="👑 Escolha seu plano GM SCORE Pro", compact=False, key_scope="plans"):
     """Catálogo comercial. O preço efetivo continua sendo validado no PostgreSQL."""
     st.markdown(f"### {title}")
     logged_in = bool(st.session_state.get("gm_auth_access_token"))
@@ -3577,8 +3578,8 @@ def gm_render_payment_plans(title="👑 Escolha seu plano GM SCORE Pro", compact
             st.success(plan['saving'])
             st.caption(plan['monthly'])
             if logged_in:
-                gm_checkout_button(plan, "pix", "⚡ Pagar com Pix — 15% OFF", primary=True)
-                gm_checkout_button(plan, "card", "💳 Pagar com cartão")
+                gm_checkout_button(plan, "pix", "⚡ Pagar com Pix — 15% OFF", primary=True, key_scope=key_scope)
+                gm_checkout_button(plan, "card", "💳 Pagar com cartão", key_scope=key_scope)
                 st.caption(plan['card_text'])
             else:
                 st.button("🎁 Crie a conta e teste 6h grátis", key=f"gm_login_needed_{plan['plan_code']}", disabled=True, use_container_width=True)
@@ -3711,7 +3712,7 @@ def gm_render_public_intro():
         '<div style="text-align:center;margin:.25rem 0 .7rem;color:#cbd5e1;font-weight:750">Já tem conta? <a href="#gm-login-top" style="color:#4ade80;text-decoration:none;font-weight:900">🔐 Ir para o login</a></div>',
         unsafe_allow_html=True,
     )
-    gm_render_payment_plans(title="👑 Planos GM SCORE Pro — 15% OFF no Pix")
+    gm_render_payment_plans(title="👑 Planos GM SCORE Pro — 15% OFF no Pix", key_scope="public_plans")
     st.markdown("### 🔐 Comece sem pagar")
     st.markdown("**1.** Crie sua conta e confirme o e-mail.  \n**2.** Entre e use o **GM SCORE Pro por 6 horas grátis**.  \n**3.** Se quiser continuar no Pro, escolha um plano.  \n**4.** Sem assinatura após o teste, sua conta continua no **Free**.")
 
@@ -3899,7 +3900,7 @@ def gm_render_signup_form():
             st.success("✅ Conta criada com sucesso.")
             st.info("📧 Confira seu e-mail e confirme o cadastro. Sua conta começa no plano Free; quando quiser, ative as 6 horas de PRO no seu perfil.")
             st.markdown("---")
-            gm_render_payment_plans(title="👑 Planos para continuar no PRO depois do teste", compact=True)
+            gm_render_payment_plans(title="👑 Planos para continuar no PRO depois do teste", compact=True, key_scope="signup_plans")
             st.info("Você pode testar primeiro. Se decidir assinar, o checkout individual continua protegido pelo Mercado Pago e a ativação paga permanece automática.")
             st.link_button("✈️ Falar com o suporte no Telegram", "https://t.me/suport_gm", use_container_width=True)
         except Exception as exc:
@@ -3991,14 +3992,14 @@ def gm_render_waiting_access(profile, state):
     elif state == "expired":
         st.warning("⌛ **Seu acesso VIP expirou**")
         st.write(f"Olá, **{nome}**. Escolha abaixo o período da renovação. Após a confirmação válida do pagamento pelo Mercado Pago, a renovação será processada automaticamente.")
-        gm_render_payment_plans(title="💳 Renovar GM SCORE VIP", compact=True)
+        gm_render_payment_plans(title="💳 Renovar GM SCORE VIP", compact=True, key_scope="waiting_renew")
     else:
         st.info("⏳ **Acesso VIP aguardando liberação**")
         st.write(
             f"Olá, **{nome}**. Sua conta foi criada corretamente. Escolha um plano e gere seu checkout individual do Mercado Pago. "
             "Assim que o pagamento aprovado for validado pelo GM SCORE, o acesso VIP será liberado automaticamente."
         )
-        gm_render_payment_plans(title="💳 Escolha seu plano VIP", compact=True)
+        gm_render_payment_plans(title="💳 Escolha seu plano VIP", compact=True, key_scope="waiting_choose")
 
     # Enquanto aguarda a aprovação, o cliente continua vendo a vitrine do que receberá no VIP.
     if state not in {"blocked", "expired"}:
@@ -4246,11 +4247,10 @@ def gm_render_public_portal():
 
                 if gm_product_tier(profile) == "free":
                     st.caption("Conta ativa · plano FREE")
-                    if st.button("⭐ Desbloquear GM SCORE Pro", use_container_width=True, key="gm_sidebar_upgrade_pro"):
-                        st.session_state["gm_sidebar_free_upgrade_open"] = not bool(st.session_state.get("gm_sidebar_free_upgrade_open"))
+                    if st.button("🎁 Teste 6h / Planos PRO", use_container_width=True, key="gm_sidebar_upgrade_pro"):
+                        st.session_state.pop("gm_sidebar_free_upgrade_open", None)
+                        gm_desktop_navigate("account")
                         st.rerun()
-                    if st.session_state.get("gm_sidebar_free_upgrade_open"):
-                        gm_render_payment_plans(title="GM SCORE Pro", compact=True)
 
                 st.markdown("### 🧭 Navegação")
                 nav1, nav2 = st.columns(2)
@@ -15612,9 +15612,9 @@ def gm_render_account_page(profile):
             st.markdown(f"**PRO {str(plan['title']).upper()} · {plan['pix_price']} no Pix**")
             saving = str(plan.get("saving") or "").strip()
             if saving: st.caption(saving)
-            gm_checkout_button(plan, "pix", "⚡ Renovar com Pix", primary=True)
+            gm_checkout_button(plan, "pix", "⚡ Renovar com Pix", primary=True, key_scope="account")
             if plan.get("card_price"):
-                gm_checkout_button(plan, "card", "💳 Renovar com cartão"); st.caption(plan.get("card_text") or "")
+                gm_checkout_button(plan, "card", "💳 Renovar com cartão", key_scope="account"); st.caption(plan.get("card_text") or "")
         st.caption("O prazo é acrescentado somente após a confirmação válida do Mercado Pago.")
     if st.button("⭐ Avaliar GM SCORE", use_container_width=True, key="gm_account_review"):
         st.session_state["gm_reviews_open"] = True; st.rerun()
