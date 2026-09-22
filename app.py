@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-22-v182-self-healing-fixture-calendar"
+GM_BUILD = "2026-09-22-v183-canonical-daily-calendar"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -12317,6 +12317,7 @@ def render_analysis():
                     load_espn_fixtures_for_date,
                     load_thesportsdb_fixtures_for_date,
                     load_fixtures_for_date,
+                    gm_canonical_calendar_fixtures,
                 ):
                     try:
                         _fn.clear()
@@ -12325,7 +12326,7 @@ def render_analysis():
                 st.rerun()
 
             try:
-                today_fixtures = load_competition_fixtures_for_date(league_name, main_fixture_date)
+                today_fixtures = [f for f in gm_canonical_calendar_fixtures(main_fixture_date) if str((f or {}).get("competition") or "") == league_name]
             except Exception:
                 today_fixtures = []
 
@@ -12333,7 +12334,7 @@ def render_analysis():
             # na base estatística para que o jogo seja VISÍVEL na agenda.
             safe_fixtures = []
             for f in today_fixtures:
-                if not valid_daily_fixture(f) or not fixture_matches_selected_date(f, main_fixture_date):
+                if not valid_daily_fixture(f) or not gm_calendar_fixture_matches_date(f, main_fixture_date):
                     continue
                 _merge_fixture_unique(safe_fixtures, dict(f))
             today_fixtures = sorted(safe_fixtures, key=lambda f: str(f.get("time") or "99:99"))
@@ -15039,6 +15040,72 @@ def gm_render_tips_hub(is_free=False):
     else:
         gm_render_daily_pick_page()
 
+def gm_calendar_fixture_matches_date(f, target_date):
+    """Confere SOMENTE a data local do fixture, sem ocultar jogos já encerrados.
+
+    A agenda do dia é um calendário: partidas disputadas mais cedo continuam
+    pertencendo àquela data. Status serve ao motor pré-jogo, não para decidir se
+    o confronto existiu no calendário exibido ao cliente.
+    """
+    if isinstance(target_date, pd.Timestamp):
+        target_date = target_date.date()
+    if isinstance(target_date, datetime):
+        target_date = target_date.date()
+    br_date = (f or {}).get("br_date")
+    if isinstance(br_date, pd.Timestamp):
+        br_date = br_date.date()
+    elif isinstance(br_date, datetime):
+        br_date = br_date.astimezone(BRASILIA_TZ).date() if br_date.tzinfo else br_date.date()
+    elif isinstance(br_date, str):
+        try:
+            parsed = pd.to_datetime(br_date, errors="coerce")
+            br_date = None if pd.isna(parsed) else parsed.date()
+        except Exception:
+            br_date = None
+    return bool(br_date is not None and br_date == target_date)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def gm_canonical_calendar_fixtures(target_date):
+    """Fonte única da agenda visível (global e por liga).
+
+    Consulta cada league_id auditado diretamente para a data selecionada e
+    preserva inclusive partidas já encerradas. A mesma coleção alimenta Jogos e
+    o seletor por competição, eliminando divergência entre as duas telas.
+    Fallbacks antigos só completam uma competição quando a consulta direta não
+    trouxe nenhum jogo para ela.
+    """
+    if isinstance(target_date, pd.Timestamp): target_date = target_date.date()
+    if isinstance(target_date, datetime): target_date = target_date.date()
+    try: target_date = pd.to_datetime(target_date).date()
+    except Exception: return []
+
+    direct = []
+    try: direct.extend(load_apifootball_all_competitions_fixtures_for_date(target_date) or [])
+    except Exception: pass
+    try: direct.extend(load_apifootball_national_fixtures_for_date(target_date) or [])
+    except Exception: pass
+
+    direct_by_comp = {}
+    for f in direct:
+        comp = str((f or {}).get("competition") or "")
+        if comp in COMPETITIONS and valid_daily_fixture(f) and gm_calendar_fixture_matches_date(f, target_date):
+            direct_by_comp.setdefault(comp, []).append(dict(f))
+
+    fallback = []
+    try: fallback = load_fixtures_for_date(target_date) or []
+    except Exception: fallback = []
+
+    merged = []
+    for comp in COMPETITIONS:
+        rows = direct_by_comp.get(comp) or [dict(f) for f in fallback if str((f or {}).get("competition") or "") == comp]
+        for f in rows:
+            if not valid_daily_fixture(f) or not gm_calendar_fixture_matches_date(f, target_date):
+                continue
+            _merge_fixture_unique(merged, dict(f))
+    return sorted(merged, key=lambda f: (str(f.get("time") or "99:99"), str(f.get("competition") or ""), _fixture_identity_key(f.get("home")), _fixture_identity_key(f.get("away"))))
+
+
 def gm_games_prepared_fixtures(target_date):
     """Agenda já validada/deduplicada para renderização rápida.
 
@@ -15047,20 +15114,18 @@ def gm_games_prepared_fixtures(target_date):
     Esta camada memoriza somente o resultado visual da mesma pipeline existente.
     O botão Atualizar jogos invalida explicitamente este cache.
     """
-    fixtures = load_fixtures_for_date(target_date) or []
+    fixtures = gm_canonical_calendar_fixtures(target_date) or []
     safe = []
     for f in fixtures:
         comp = str((f or {}).get("competition") or "")
         if comp not in COMPETITIONS:
             continue
-        if not valid_daily_fixture(f) or not fixture_matches_selected_date(f, target_date):
+        if not valid_daily_fixture(f) or not gm_calendar_fixture_matches_date(f, target_date):
             continue
         # V182: horário ausente NÃO pode eliminar uma partida cuja data já foi
         # comprovada pela pipeline. A V181 fazia isso e podia esconder jogos reais.
         # A separação Hoje/Amanhã continua sendo decidida exclusivamente por
         # fixture_matches_selected_date(), nunca pelo texto do horário.
-        if comp != GM_NATIONAL_COMPETITION and not gm_fixture_matches_official_league_roster(f):
-            continue
         _merge_fixture_unique(safe, dict(f))
     unique = []
     for fixture in safe:
@@ -15087,7 +15152,7 @@ def gm_render_games_page():
     st.caption("Todos os jogos das competições GM SCORE em ordem de horário de Brasília.")
     target_date = st.selectbox("📅 Data dos jogos", _date_options, key="gm_games_page_date", format_func=_agenda_date_label)
     if st.button("🔄 Atualizar jogos", use_container_width=True, key=f"gm_games_refresh_{target_date}"):
-        for _fn in (load_apifootball_prediction_fixtures_for_date, load_apifootball_national_fixtures_for_date, load_apifootball_competition_fixtures_for_date, load_apifootball_all_competitions_fixtures_for_date, load_apifootball_fixtures_for_date, load_sofascore_fixtures_for_date, load_espn_fixtures_for_date, load_thesportsdb_fixtures_for_date, load_fixtures_for_date, gm_games_prepared_fixtures):
+        for _fn in (load_apifootball_prediction_fixtures_for_date, load_apifootball_national_fixtures_for_date, load_apifootball_competition_fixtures_for_date, load_apifootball_all_competitions_fixtures_for_date, load_apifootball_fixtures_for_date, load_sofascore_fixtures_for_date, load_espn_fixtures_for_date, load_thesportsdb_fixtures_for_date, load_fixtures_for_date, gm_canonical_calendar_fixtures, gm_games_prepared_fixtures):
             try: _fn.clear()
             except Exception: pass
         # V181: o cache persistente também precisa ser invalidado; limpar apenas
