@@ -1837,56 +1837,6 @@ def gm_render_private_notifications_account():
             st.caption(f"Validade: {validity}")
 
 
-def gm_onesignal_identity_bridge():
-    """V193: vincula a subscription Web Push ao usuário autenticado via External ID.
-
-    Usa somente o UUID já autenticado no GM SCORE. Nenhuma chave privada é enviada
-    ao navegador. No logout explícito, remove a identidade OneSignal deste navegador.
-    """
-    user_id = str(st.session_state.get("gm_auth_user_id") or "").strip()
-    try:
-        logout_requested = str(st.query_params.get("gm_logout", "") or "").strip() == "1"
-    except Exception:
-        logout_requested = False
-
-    action = "login" if user_id else ("logout" if logout_requested else "")
-    if not action:
-        return
-
-    external_id_json = json.dumps(user_id if action == "login" else "")
-    action_json = json.dumps(action)
-    components.html(
-        f"""
-        <script>
-        (() => {{
-          const action = {action_json};
-          const externalId = {external_id_json};
-          try {{
-            const w = window.parent;
-            w.OneSignalDeferred = w.OneSignalDeferred || [];
-            w.OneSignalDeferred.push(async function(OneSignal) {{
-              try {{
-                if (action === 'login' && externalId) {{
-                  await OneSignal.login(externalId);
-                }} else if (action === 'logout') {{
-                  await OneSignal.logout();
-                }}
-              }} catch (e) {{}}
-            }});
-          }} catch (e) {{}}
-        }})();
-        </script>
-        """,
-        height=0,
-        scrolling=False,
-    )
-    if action == "logout":
-        try:
-            del st.query_params["gm_logout"]
-        except Exception:
-            pass
-
-
 def gm_onesignal_push(title, message, launch_url="https://gmscore.com.br"):
     """Envia Web Push para todos os dispositivos inscritos no OneSignal.
 
@@ -4207,9 +4157,6 @@ def gm_render_email_confirmation_notice():
 
 def gm_render_public_portal():
     """Retorna True somente quando o usuário pode acessar o app completo."""
-    # V193: identifica no OneSignal a subscription deste navegador quando há login
-    # e remove a identidade após logout explícito.
-    gm_onesignal_identity_bridge()
     user_id = st.session_state.get("gm_auth_user_id")
     profile = None
     if user_id:
