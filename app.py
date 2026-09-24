@@ -1873,6 +1873,45 @@ def gm_onesignal_push(title, message, launch_url="https://gmscore.com.br"):
         return False
 
 
+def gm_onesignal_push_user(external_user_id, title, message, launch_url="https://gmscore.com.br"):
+    """V192: envio OneSignal preparado para um usuário identificado por External ID.
+
+    Não é chamado automaticamente até o navegador/PWA registrar com segurança
+    o External ID do cliente no OneSignal. Isso evita push privado para destinatário errado.
+    """
+    external_user_id = str(external_user_id or "").strip()
+    if not external_user_id:
+        return False
+    try:
+        app_id = str(st.secrets.get("ONESIGNAL_APP_ID", "") or "").strip()
+        api_key = str(st.secrets.get("ONESIGNAL_API_KEY", "") or "").strip()
+    except Exception:
+        return False
+    if not app_id or not api_key:
+        return False
+    payload = {
+        "app_id": app_id,
+        "include_aliases": {"external_id": [external_user_id]},
+        "target_channel": "push",
+        "headings": {"en": str(title or "GM SCORE")[:120]},
+        "contents": {"en": str(message or "Há uma nova atualização disponível.")[:500]},
+        "url": str(launch_url or "https://gmscore.com.br"),
+    }
+    try:
+        response = requests.post(
+            "https://api.onesignal.com/notifications",
+            headers={
+                "Authorization": f"Key {api_key}",
+                "Content-Type": "application/json; charset=utf-8",
+            },
+            json=payload,
+            timeout=8,
+        )
+        return 200 <= int(response.status_code) < 300
+    except Exception:
+        return False
+
+
 def gm_publish_system_news(title, message, category="novidade", featured=True, push_title=None, push_message=None):
     """Publica na Central de Novidades e dispara o push externo correspondente."""
     data = gm_admin_rpc("gm_admin_publish_news", {
@@ -3759,14 +3798,14 @@ def gm_render_public_intro():
         <div class="gm-v166-grid"><div class="gm-v166-card"><b>🌎 Seleções nacionais</b><span>Histórico internacional separado dos clubes, contexto da competição e força FIFA quando disponível.</span></div><div class="gm-v166-card"><b>🎯 Bets do Dia</b><span>Oportunidades selecionadas com critérios estatísticos e mercados habilitados.</span></div><div class="gm-v166-card"><b>📊 Análise estatística</b><span>Resultado, gols, escanteios, cartões e demais métricas conforme cobertura real.</span></div><div class="gm-v166-card"><b>📈 Transparência</b><span>Inconclusivo, Cautela ou Conclusivo conforme o tamanho da amostra de cada métrica.</span></div></div>
         <h3>Como o GM SCORE transforma o jogo em análise</h3><div class="gm-v166-flow"><div class="gm-v166-step">⚽ Jogo</div><div class="gm-v166-step">🗂️ Histórico</div><div class="gm-v166-step">💪 Força</div><div class="gm-v166-step">🏆 Contexto</div><div class="gm-v166-step">🎯 Probabilidades</div><div class="gm-v166-step">⭐ Oportunidades</div></div>
         <div class="gm-v166-demo"><div class="gm-v166-demo-head"><div><b>🇧🇷 Brasil × Argentina 🇦🇷</b><br><small>Demonstração da experiência GM SCORE</small></div><div class="gm-v166-lock">🔒 INTELIGÊNCIA PRO</div></div><div class="gm-v166-demo-grid"><div class="gm-v166-metric"><b>Ranking + contexto</b><span>força histórica complementar</span></div><div class="gm-v166-metric"><b>Forma recente</b><span>amostra internacional própria</span></div><div class="gm-v166-metric"><b>Mercados e projeções</b><span>liberados conforme dados suficientes</span></div></div></div>
-        <div class="gm-v166-cta"><a class="gm-v166-buy" href="#gm-acesso">🎁 Criar conta e testar 6h grátis</a><a class="gm-v166-login" href="#gm-login-top">🔐 Já sou cliente</a></div>
+        <div class="gm-v166-cta"><a class="gm-v166-buy" href="#gm-acesso">🎁 Criar conta e testar 6h grátis</a><a class="gm-v166-login" href="?gm_access=login#gm-acesso">🔐 Já sou cliente</a></div>
         """, unsafe_allow_html=True)
     gm_render_vip_showcase(compact=False)
     st.markdown("---")
     gm_render_public_reviews()
     st.markdown("---")
     st.markdown(
-        '<div style="text-align:center;margin:.25rem 0 .7rem;color:#cbd5e1;font-weight:750">Já tem conta? <a href="#gm-login-top" style="color:#4ade80;text-decoration:none;font-weight:900">🔐 Ir para o login</a></div>',
+        '<div style="text-align:center;margin:.25rem 0 .7rem;color:#cbd5e1;font-weight:750">Já tem conta? <a href="?gm_access=login#gm-acesso" style="color:#4ade80;text-decoration:none;font-weight:900">🔐 Ir para o login</a></div>',
         unsafe_allow_html=True,
     )
     gm_render_payment_plans(title="👑 Planos GM SCORE Pro — 15% OFF no Pix", key_scope="public_plans")
@@ -4345,6 +4384,19 @@ def gm_render_public_portal():
     # Se existiam tokens inválidos/expirados, limpa a sessão antes de mostrar o portal.
     if user_id and not profile:
         gm_auth_clear_local_session()
+
+    # V192: ponte dos CTAs HTML da landing para o login real do Streamlit.
+    # O link inferior usa ?gm_access=login; aqui convertemos isso em estado da sessão.
+    try:
+        _gm_access_qp = str(st.query_params.get("gm_access", "") or "").strip().lower()
+    except Exception:
+        _gm_access_qp = ""
+    if _gm_access_qp in {"login", "signup"}:
+        st.session_state["gm_public_fast_access"] = _gm_access_qp
+        try:
+            del st.query_params["gm_access"]
+        except Exception:
+            pass
 
     # V167: acesso rápido para clientes existentes antes da landing comercial.
     # O login fica disponível no primeiro viewport e pode ser aberto com um toque,
