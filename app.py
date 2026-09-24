@@ -15525,6 +15525,10 @@ def gm_render_news_page():
     """Feed compacto de novidades, mantendo as mesmas RPCs e estados de leitura."""
     st.markdown("## 📰 Novidades")
     st.caption("Atualizações, lançamentos e avisos do GM SCORE.")
+
+    # V198: avisos privados e ações em lote pertencem à aba Novidades.
+    gm_render_private_notifications_account()
+
     try:
         rows = gm_list_news() or []
     except Exception:
@@ -15788,9 +15792,6 @@ def gm_render_account_page(profile):
                     st.caption(str(exc)[:240])
         else:
             st.caption("🎁 O teste gratuito de 6 horas desta conta já foi utilizado.")
-
-    if not is_admin:
-        gm_render_private_notifications_account()
 
     with st.expander("💳 Renovar Pro" if tier == "pro" else "⭐ Desbloquear GM SCORE Pro", expanded=False):
         for plan in GM_VIP_PLANS:
