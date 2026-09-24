@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-22-v189-client-lifecycle-free-pro-suspended"
+GM_BUILD = "2026-09-24-v200-unified-notifications"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -15539,74 +15539,74 @@ def gm_render_games_page():
 
 
 def gm_render_news_page():
-    """Feed compacto de novidades, mantendo as mesmas RPCs e estados de leitura."""
+    """V200: feed único para novidades gerais e avisos privados."""
     st.markdown("## 📰 Novidades")
     st.caption("Atualizações, lançamentos e avisos do GM SCORE.")
-
-    # V198: avisos privados e ações em lote pertencem à aba Novidades.
-    gm_render_private_notifications_account()
-
     try:
-        rows = gm_list_news() or []
+        public_rows = gm_list_news() or []
     except Exception:
-        st.warning("Não foi possível carregar as novidades agora.")
-        return
+        public_rows = []
+    private_rows = gm_client_private_notifications(50) or []
     hidden = set(st.session_state.get("gm_news_hidden_session", []))
-    rows = [r for r in rows if str((r or {}).get("id") or "") not in hidden]
-
-    # V80: novidades não lidas têm prioridade visual. Dentro de cada grupo,
-    # a ordem permanece cronológica da publicação mais recente para a mais antiga.
-    def _gm_news_sort_key(row):
+    feed = []
+    for row in public_rows:
+        if not isinstance(row, dict): continue
+        iid=str(row.get("id") or ""); hk=f"news:{iid}"
+        if hk in hidden or iid in hidden: continue
+        feed.append({"source":"news","id":iid,"hide_key":hk,"title":str(row.get("title") or "Novidade"),"message":str(row.get("message") or ""),"category":str(GM_NEWS_CATEGORIES.get(str(row.get("category") or "novidade"),"🆕 Novidade")),"is_read":bool(row.get("is_read")),"featured":bool(row.get("is_featured")),"date_raw":row.get("published_at"),"date_text":gm_news_format_datetime(row.get("published_at"))})
+    for row in private_rows:
+        if not isinstance(row, dict): continue
+        iid=str(row.get("id") or ""); hk=f"private:{iid}"
+        if hk in hidden: continue
+        validity=gm_private_notification_validity(row); msg=str(row.get("message") or "")
+        if validity: msg=(msg+"\n\nValidade: "+validity).strip()
+        feed.append({"source":"private","id":iid,"hide_key":hk,"title":str(row.get("title") or "Informação da conta"),"message":msg,"category":"📣 Informação","is_read":bool(row.get("read_at")),"featured":False,"date_raw":row.get("created_at"),"date_text":gm_news_format_datetime(row.get("created_at"))})
+    def _key(item):
         try:
-            ts = pd.to_datetime((row or {}).get("published_at"), utc=True, errors="coerce")
-            published_ts = float(ts.timestamp()) if not pd.isna(ts) else float("-inf")
-        except Exception:
-            published_ts = float("-inf")
-        is_unread = 0 if bool((row or {}).get("is_read")) else 1
-        return (is_unread, published_ts)
-
-    rows = sorted(rows, key=_gm_news_sort_key, reverse=True)
-    if not rows:
-        st.info("Nenhuma novidade publicada no momento.")
-        return
-
-    st.markdown('''<style>
-    .gm-news-feed-card{position:relative;background:linear-gradient(145deg,rgba(15,24,32,.96),rgba(9,15,21,.98));border:1px solid rgba(148,163,184,.18);border-radius:16px;padding:13px 14px 12px;margin:.45rem 0 .22rem;overflow:hidden}
-    .gm-news-feed-card.new{border-color:rgba(52,230,129,.42);box-shadow:inset 3px 0 0 #34e681}
-    .gm-news-feed-card.featured{background:linear-gradient(145deg,rgba(12,42,31,.88),rgba(9,18,22,.98))}
-    .gm-news-feed-top{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:7px}
-    .gm-news-feed-category{font-size:.70rem;font-weight:900;letter-spacing:.055em;text-transform:uppercase;color:#34e681}
-    .gm-news-feed-state{font-size:.66rem;font-weight:850;color:#94a3b8;background:rgba(148,163,184,.09);padding:3px 7px;border-radius:999px}
-    .gm-news-feed-title{font-size:1.02rem;font-weight:900;line-height:1.22;color:#f8fafc;margin:0 0 5px}
-    .gm-news-feed-msg{font-size:.84rem;line-height:1.42;color:#c5ced8;margin:0;white-space:pre-wrap}
-    .gm-news-feed-meta{font-size:.68rem;color:#7f8997;margin-top:9px}
-    @media(max-width:768px){.gm-news-feed-card{padding:12px 12px 11px;border-radius:14px}.gm-news-feed-title{font-size:.96rem}.gm-news-feed-msg{font-size:.80rem}}
-    </style>''', unsafe_allow_html=True)
-
-    for row in rows:
-        news_id = str(row.get("id") or "")
-        title = str(row.get("title") or "Novidade")
-        message = str(row.get("message") or "")
-        category = str(row.get("category") or "novidade")
-        category_label = str(GM_NEWS_CATEGORIES.get(category, "🆕 Novidade"))
-        is_read = bool(row.get("is_read"))
-        featured = bool(row.get("is_featured"))
-        classes = "gm-news-feed-card" + (" new" if not is_read else "") + (" featured" if featured else "")
-        state = "NOVA" if not is_read else "LIDA"
-        feature_badge = " • DESTAQUE" if featured else ""
-        card = f'''<div class="{classes}"><div class="gm-news-feed-top"><div class="gm-news-feed-category">{html.escape(category_label)}</div><div class="gm-news-feed-state">{state}{feature_badge}</div></div><div class="gm-news-feed-title">{html.escape(title)}</div><div class="gm-news-feed-msg">{html.escape(message)}</div><div class="gm-news-feed-meta">{html.escape(gm_news_format_datetime(row.get("published_at")))}</div></div>'''
-        st.markdown(card, unsafe_allow_html=True)
-        c1, c2, _ = st.columns([1.1, 1, 2.8])
-        with c1:
-            if not is_read and news_id and st.button("✓ Lida", key=f"gm_news_page_read_{news_id}"):
+            ts=pd.to_datetime(item.get("date_raw"),utc=True,errors="coerce"); v=float(ts.timestamp()) if not pd.isna(ts) else float("-inf")
+        except Exception: v=float("-inf")
+        return (1 if not item.get("is_read") else 0,v)
+    feed=sorted(feed,key=_key,reverse=True)
+    unread=sum(1 for x in feed if not x.get("is_read")); pu=sum(1 for x in feed if x.get("source")=="private" and not x.get("is_read")); gu=unread-pu
+    c1,c2=st.columns(2)
+    with c1:
+        if st.button("✓ Ler todas",key="gm_v200_read_all",use_container_width=True,disabled=(unread==0)):
+            try:
+                if pu: gm_client_mark_all_private_notifications_read()
+                if gu: gm_news_rpc("gm_mark_all_news_read"); gm_invalidate_unread_news_cache()
+                st.rerun()
+            except Exception: st.error("Não foi possível marcar as notificações como lidas.")
+    with c2:
+        if st.button("🗑 Excluir todas",key="gm_v200_delete_all",use_container_width=True): st.session_state["gm_v200_confirm_delete"]=True
+    if st.session_state.get("gm_v200_confirm_delete"):
+        st.warning("Excluir todos os avisos privados e ocultar as novidades desta sessão?")
+        a,b=st.columns(2)
+        with a:
+            if st.button("Sim, excluir",key="gm_v200_del_yes",use_container_width=True):
                 try:
-                    gm_news_rpc("gm_mark_news_read", {"p_news_id": news_id}); gm_invalidate_unread_news_cache(); st.rerun()
-                except Exception:
-                    st.warning("Não foi possível atualizar a leitura agora.")
-        with c2:
-            if news_id and st.button("Ocultar", key=f"gm_news_page_hide_{news_id}"):
-                hidden_now = set(st.session_state.get("gm_news_hidden_session", [])); hidden_now.add(news_id); st.session_state["gm_news_hidden_session"] = list(hidden_now); st.rerun()
-
+                    if private_rows: gm_client_delete_all_private_notifications()
+                    h=set(st.session_state.get("gm_news_hidden_session",[])); h.update(f"news:{str(r.get('id') or '')}" for r in public_rows if isinstance(r,dict)); st.session_state["gm_news_hidden_session"]=list(h); st.session_state["gm_v200_confirm_delete"]=False; gm_invalidate_unread_news_cache(); st.rerun()
+                except Exception: st.error("Não foi possível excluir os avisos agora.")
+        with b:
+            if st.button("Cancelar",key="gm_v200_del_no",use_container_width=True): st.session_state["gm_v200_confirm_delete"]=False; st.rerun()
+    if not feed: st.info("Nenhuma novidade publicada no momento."); return
+    st.markdown("""<style>.gm-news-feed-card{position:relative;background:linear-gradient(145deg,rgba(15,24,32,.96),rgba(9,15,21,.98));border:1px solid rgba(148,163,184,.18);border-radius:16px;padding:13px 14px 12px;margin:.45rem 0 .22rem;overflow:hidden}.gm-news-feed-card.new{border-color:rgba(52,230,129,.42);box-shadow:inset 3px 0 0 #34e681}.gm-news-feed-card.featured{background:linear-gradient(145deg,rgba(12,42,31,.88),rgba(9,18,22,.98))}.gm-news-feed-top{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:7px}.gm-news-feed-category{font-size:.70rem;font-weight:900;letter-spacing:.055em;text-transform:uppercase;color:#34e681}.gm-news-feed-state{font-size:.66rem;font-weight:850;color:#94a3b8;background:rgba(148,163,184,.09);padding:3px 7px;border-radius:999px}.gm-news-feed-title{font-size:1.02rem;font-weight:900;line-height:1.22;color:#f8fafc;margin:0 0 5px}.gm-news-feed-msg{font-size:.84rem;line-height:1.42;color:#c5ced8;margin:0;white-space:pre-wrap}.gm-news-feed-meta{font-size:.68rem;color:#7f8997;margin-top:9px}@media(max-width:768px){.gm-news-feed-card{padding:12px 12px 11px;border-radius:14px}.gm-news-feed-title{font-size:.96rem}.gm-news-feed-msg{font-size:.80rem}}</style>""",unsafe_allow_html=True)
+    for item in feed:
+        iid=item.get("id") or ""; read=bool(item.get("is_read")); feat=bool(item.get("featured")); classes="gm-news-feed-card"+(" new" if not read else "")+(" featured" if feat else ""); state="NOVA" if not read else "LIDA"; fb=" • DESTAQUE" if feat else ""
+        card=f"""<div class="{classes}"><div class="gm-news-feed-top"><div class="gm-news-feed-category">{html.escape(str(item.get("category") or "📣 Informação"))}</div><div class="gm-news-feed-state">{state}{fb}</div></div><div class="gm-news-feed-title">{html.escape(str(item.get("title") or "Novidade"))}</div><div class="gm-news-feed-msg">{html.escape(str(item.get("message") or ""))}</div><div class="gm-news-feed-meta">{html.escape(str(item.get("date_text") or ""))}</div></div>"""
+        st.markdown(card,unsafe_allow_html=True); x,y,_=st.columns([1.1,1,2.8])
+        with x:
+            if not read and iid and st.button("✓ Lida",key=f"gm_v200_read_{item.get('source')}_{iid}"):
+                try:
+                    gm_client_mark_private_notification_read(int(iid)) if item.get("source")=="private" else gm_news_rpc("gm_mark_news_read",{"p_news_id":iid}); gm_invalidate_unread_news_cache(); st.rerun()
+                except Exception: st.warning("Não foi possível atualizar a leitura agora.")
+        with y:
+            if iid and st.button("Ocultar",key=f"gm_v200_hide_{item.get('source')}_{iid}"):
+                h=set(st.session_state.get("gm_news_hidden_session",[])); h.add(str(item.get("hide_key"))); st.session_state["gm_news_hidden_session"]=list(h)
+                if not read:
+                    try: gm_client_mark_private_notification_read(int(iid)) if item.get("source")=="private" else gm_news_rpc("gm_mark_news_read",{"p_news_id":iid})
+                    except Exception: pass
+                gm_invalidate_unread_news_cache(); st.rerun()
 
 def gm_render_daily_pick_free_page():
     # V151: prévia das Dicas atuais sem renderizar seleção nem link no plano Free.
@@ -15860,6 +15860,10 @@ def gm_render_app_navigation(profile):
         news_unread = gm_unread_news_count()
     except Exception:
         news_unread = 0
+    try:
+        news_unread += sum(1 for _r in gm_client_private_notifications(50) if isinstance(_r, dict) and not _r.get("read_at"))
+    except Exception:
+        pass
     # V161: navegação não herda parâmetros de uma partida anterior. Query params
     # de fixture eram a principal causa de voltar/pesquisar e a interface reabrir
     # um confronto antigo ou parecer não responder.
