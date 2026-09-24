@@ -1773,6 +1773,70 @@ def gm_list_news():
     return [row for row in rows if isinstance(row, dict)]
 
 
+# V191: notificações privadas da conta, separadas das Novidades gerais.
+def gm_client_private_notifications(limit=30):
+    try:
+        rows = gm_session_rpc("gm_client_list_notifications_v191", {"p_limit": int(limit)}) or []
+        return [row for row in rows if isinstance(row, dict)]
+    except Exception:
+        return []
+
+
+def gm_client_mark_private_notification_read(notification_id):
+    return gm_session_rpc("gm_client_mark_notification_read_v191", {"p_notification_id": int(notification_id)})
+
+
+def gm_private_notification_validity(row):
+    metadata = (row or {}).get("metadata") or {}
+    if not isinstance(metadata, dict):
+        return ""
+    raw = metadata.get("until") or metadata.get("vip_until")
+    if not raw:
+        return ""
+    try:
+        dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        return dt.astimezone(ZoneInfo("America/Sao_Paulo")).strftime("%d/%m/%Y às %H:%M")
+    except Exception:
+        return ""
+
+
+def gm_render_private_account_notice():
+    rows = gm_client_private_notifications(10)
+    unread = [r for r in rows if not r.get("read_at")]
+    if not unread:
+        return
+    row = unread[0]
+    title = html.escape(str(row.get("title") or "🔔 Atualização da conta"))
+    message = html.escape(str(row.get("message") or ""))
+    validity = gm_private_notification_validity(row)
+    validity_html = ("<div style='margin-top:.3rem;font-weight:800;color:#d1fae5'>Validade: " + html.escape(validity) + "</div>") if validity else ""
+    card = "<div style='border:1px solid rgba(34,197,94,.42);background:rgba(22,101,52,.16);border-radius:14px;padding:.85rem 1rem;margin:.45rem 0 .7rem 0'><div style='font-weight:900;font-size:1.02rem;color:#f8fafc'>" + title + "</div><div style='margin-top:.28rem;color:#d1d5db'>" + message + "</div>" + validity_html + "</div>"
+    st.markdown(card, unsafe_allow_html=True)
+    if st.button("✓ Entendi", key=f"gm_private_notice_read_{row.get('id')}", use_container_width=True):
+        try:
+            gm_client_mark_private_notification_read(row.get("id"))
+        except Exception:
+            pass
+        st.rerun()
+
+
+def gm_render_private_notifications_account():
+    rows = gm_client_private_notifications(30)
+    if not rows:
+        return
+    st.markdown("### 🔔 Avisos da minha conta")
+    for row in rows[:10]:
+        title = str(row.get("title") or "Atualização da conta")
+        message = str(row.get("message") or "")
+        validity = gm_private_notification_validity(row)
+        marker = "" if row.get("read_at") else " • NOVO"
+        st.markdown(f"**{title}{marker}**")
+        if message:
+            st.caption(message)
+        if validity:
+            st.caption(f"Validade: {validity}")
+
+
 def gm_onesignal_push(title, message, launch_url="https://gmscore.com.br"):
     """Envia Web Push para todos os dispositivos inscritos no OneSignal.
 
@@ -15596,6 +15660,9 @@ def gm_render_account_page(profile):
         else:
             st.caption("🎁 O teste gratuito de 6 horas desta conta já foi utilizado.")
 
+    if not is_admin:
+        gm_render_private_notifications_account()
+
     with st.expander("💳 Renovar Pro" if tier == "pro" else "⭐ Desbloquear GM SCORE Pro", expanded=False):
         for plan in GM_VIP_PLANS:
             st.markdown(f"**PRO {str(plan['title']).upper()} · {plan['pix_price']} no Pix**")
@@ -15867,6 +15934,8 @@ if _gm_main_view not in {"analysis", "games"}:
         except Exception:
             pass
 gm_render_app_navigation(_gm_profile_after_gate)
+if _gm_profile_after_gate and _gm_profile_after_gate.get("role") != "admin":
+    gm_render_private_account_notice()
 
 _gm_caps = gm_access_capabilities(_gm_profile_after_gate)
 if _gm_main_view == "daily_pick":
