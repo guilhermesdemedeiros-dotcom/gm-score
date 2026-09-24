@@ -2716,13 +2716,6 @@ def gm_render_admin_vip_manager():
     for row in clients:
         counts[category(row)] += 1
 
-    st.markdown(
-        f"**🟢 PRO {counts['🟢 PRO']}** &nbsp; · &nbsp; "
-        f"**⚪ Grátis {counts['⚪ Grátis']}** &nbsp; · &nbsp; "
-        f"**⏸️ Suspensos {counts['⏸️ Suspensos']}**",
-        unsafe_allow_html=True,
-    )
-
     search = st.text_input("🔎 Buscar cliente", key="gm_admin_search",
                            placeholder="Nome ou e-mail", label_visibility="collapsed").strip().lower()
     options=[f"🟢 PRO · {counts['🟢 PRO']}", f"⚪ Grátis · {counts['⚪ Grátis']}",
