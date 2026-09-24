@@ -1801,23 +1801,35 @@ def gm_private_notification_validity(row):
 
 
 def gm_render_private_account_notice():
+    # V195: descarte local imediato, sem st.rerun() extra e sem tocar na sessão de autenticação.
     rows = gm_client_private_notifications(10)
-    unread = [r for r in rows if not r.get("read_at")]
+    dismissed = st.session_state.setdefault("gm_private_notice_dismissed_v195", set())
+    if not isinstance(dismissed, set):
+        dismissed = set(dismissed or [])
+        st.session_state["gm_private_notice_dismissed_v195"] = dismissed
+    unread = [r for r in rows if not r.get("read_at") and r.get("id") not in dismissed]
     if not unread:
         return
     row = unread[0]
+    notice_id = row.get("id")
     title = html.escape(str(row.get("title") or "🔔 Atualização da conta"))
     message = html.escape(str(row.get("message") or ""))
     validity = gm_private_notification_validity(row)
     validity_html = ("<div style='margin-top:.3rem;font-weight:800;color:#d1fae5'>Validade: " + html.escape(validity) + "</div>") if validity else ""
-    card = "<div style='border:1px solid rgba(34,197,94,.42);background:rgba(22,101,52,.16);border-radius:14px;padding:.85rem 1rem;margin:.45rem 0 .7rem 0'><div style='font-weight:900;font-size:1.02rem;color:#f8fafc'>" + title + "</div><div style='margin-top:.28rem;color:#d1d5db'>" + message + "</div>" + validity_html + "</div>"
-    st.markdown(card, unsafe_allow_html=True)
-    if st.button("✓ Entendi", key=f"gm_private_notice_read_{row.get('id')}", use_container_width=True):
+    holder = st.empty()
+    with holder.container():
+        card = "<div style='border:1px solid rgba(34,197,94,.42);background:rgba(22,101,52,.16);border-radius:14px;padding:.85rem 1rem;margin:.45rem 0 .7rem 0'><div style='font-weight:900;font-size:1.02rem;color:#f8fafc'>" + title + "</div><div style='margin-top:.28rem;color:#d1d5db'>" + message + "</div>" + validity_html + "</div>"
+        st.markdown(card, unsafe_allow_html=True)
+        clicked = st.button("✓ Entendi", key=f"gm_private_notice_read_{notice_id}", use_container_width=True)
+    if clicked:
+        dismissed.add(notice_id)
+        st.session_state["gm_private_notice_dismissed_v195"] = dismissed
         try:
-            gm_client_mark_private_notification_read(row.get("id"))
+            gm_client_mark_private_notification_read(notice_id)
         except Exception:
+            # Mesmo se a persistência remota falhar momentaneamente, não derruba nem recarrega a sessão.
             pass
-        st.rerun()
+        holder.empty()
 
 
 def gm_render_private_notifications_account():
@@ -1836,42 +1848,6 @@ def gm_render_private_notifications_account():
         if validity:
             st.caption(f"Validade: {validity}")
 
-
-
-def gm_onesignal_identity_login_once():
-    """V194: identifica uma única vez o usuário autenticado no OneSignal.
-
-    Não toca em query_params e não chama st.rerun(), evitando interferir na ponte
-    de persistência/login do PWA. A vinculação é repetida somente se o UUID mudar.
-    """
-    user_id = str(st.session_state.get("gm_auth_user_id") or "").strip()
-    if not user_id:
-        return
-
-    marker_key = "gm_onesignal_external_id_bound_v194"
-    if str(st.session_state.get(marker_key) or "") == user_id:
-        return
-
-    external_id_json = json.dumps(user_id)
-    components.html(
-        f"""
-        <script>
-        (() => {{
-          const externalId = {external_id_json};
-          try {{
-            const w = window.parent;
-            w.OneSignalDeferred = w.OneSignalDeferred || [];
-            w.OneSignalDeferred.push(async function(OneSignal) {{
-              try {{ await OneSignal.login(externalId); }} catch (e) {{}}
-            }});
-          }} catch (e) {{}}
-        }})();
-        </script>
-        """,
-        height=0,
-        scrolling=False,
-    )
-    st.session_state[marker_key] = user_id
 
 def gm_onesignal_push(title, message, launch_url="https://gmscore.com.br"):
     """Envia Web Push para todos os dispositivos inscritos no OneSignal.
@@ -4194,8 +4170,6 @@ def gm_render_email_confirmation_notice():
 def gm_render_public_portal():
     """Retorna True somente quando o usuário pode acessar o app completo."""
     user_id = st.session_state.get("gm_auth_user_id")
-    if user_id:
-        gm_onesignal_identity_login_once()
     profile = None
     if user_id:
         try:
