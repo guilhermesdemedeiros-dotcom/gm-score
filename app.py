@@ -1809,6 +1809,16 @@ def gm_client_mark_private_notification_read(notification_id):
     return getattr(result, "data", None)
 
 
+
+def gm_client_mark_all_private_notifications_read():
+    """V197: marca como lidos todos os avisos privados do usuário autenticado."""
+    return gm_session_rpc("gm_client_mark_all_notifications_read_v191", {})
+
+
+def gm_client_delete_all_private_notifications():
+    """V197: exclui todos os avisos privados do usuário autenticado via RPC protegido por auth.uid()."""
+    return gm_session_rpc("gm_client_delete_all_notifications_v197", {})
+
 def gm_private_notification_validity(row):
     metadata = (row or {}).get("metadata") or {}
     if not isinstance(metadata, dict):
@@ -1859,7 +1869,39 @@ def gm_render_private_notifications_account():
     rows = gm_client_private_notifications(30)
     if not rows:
         return
+
     st.markdown("### 🔔 Avisos da minha conta")
+    unread_count = sum(1 for row in rows if not row.get("read_at"))
+    c_read, c_delete = st.columns(2)
+    with c_read:
+        if st.button("✓ Ler todas", key="gm_v197_read_all_notices", use_container_width=True, disabled=(unread_count == 0)):
+            try:
+                gm_client_mark_all_private_notifications_read()
+                st.session_state["gm_private_notice_dismissed_v196"] = {r.get("id") for r in rows if r.get("id") is not None}
+                st.rerun()
+            except Exception:
+                st.error("Não foi possível marcar os avisos como lidos.")
+    with c_delete:
+        if st.button("🗑 Excluir todas", key="gm_v197_delete_all_notices", use_container_width=True):
+            st.session_state["gm_v197_confirm_delete_notices"] = True
+
+    if st.session_state.get("gm_v197_confirm_delete_notices"):
+        st.warning("Excluir todos os avisos da sua conta?")
+        c_yes, c_no = st.columns(2)
+        with c_yes:
+            if st.button("Sim, excluir todas", key="gm_v197_confirm_delete_yes", use_container_width=True):
+                try:
+                    gm_client_delete_all_private_notifications()
+                    st.session_state["gm_v197_confirm_delete_notices"] = False
+                    st.session_state["gm_private_notice_dismissed_v196"] = set()
+                    st.rerun()
+                except Exception:
+                    st.error("Não foi possível excluir os avisos. Execute primeiro o SQL V197 no Supabase.")
+        with c_no:
+            if st.button("Cancelar", key="gm_v197_confirm_delete_no", use_container_width=True):
+                st.session_state["gm_v197_confirm_delete_notices"] = False
+                st.rerun()
+
     for row in rows[:10]:
         title = str(row.get("title") or "Atualização da conta")
         message = str(row.get("message") or "")
