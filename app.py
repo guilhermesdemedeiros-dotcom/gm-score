@@ -1837,6 +1837,42 @@ def gm_render_private_notifications_account():
             st.caption(f"Validade: {validity}")
 
 
+
+def gm_onesignal_identity_login_once():
+    """V194: identifica uma única vez o usuário autenticado no OneSignal.
+
+    Não toca em query_params e não chama st.rerun(), evitando interferir na ponte
+    de persistência/login do PWA. A vinculação é repetida somente se o UUID mudar.
+    """
+    user_id = str(st.session_state.get("gm_auth_user_id") or "").strip()
+    if not user_id:
+        return
+
+    marker_key = "gm_onesignal_external_id_bound_v194"
+    if str(st.session_state.get(marker_key) or "") == user_id:
+        return
+
+    external_id_json = json.dumps(user_id)
+    components.html(
+        f"""
+        <script>
+        (() => {{
+          const externalId = {external_id_json};
+          try {{
+            const w = window.parent;
+            w.OneSignalDeferred = w.OneSignalDeferred || [];
+            w.OneSignalDeferred.push(async function(OneSignal) {{
+              try {{ await OneSignal.login(externalId); }} catch (e) {{}}
+            }});
+          }} catch (e) {{}}
+        }})();
+        </script>
+        """,
+        height=0,
+        scrolling=False,
+    )
+    st.session_state[marker_key] = user_id
+
 def gm_onesignal_push(title, message, launch_url="https://gmscore.com.br"):
     """Envia Web Push para todos os dispositivos inscritos no OneSignal.
 
@@ -4158,6 +4194,8 @@ def gm_render_email_confirmation_notice():
 def gm_render_public_portal():
     """Retorna True somente quando o usuário pode acessar o app completo."""
     user_id = st.session_state.get("gm_auth_user_id")
+    if user_id:
+        gm_onesignal_identity_login_once()
     profile = None
     if user_id:
         try:
