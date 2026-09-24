@@ -1867,17 +1867,34 @@ def gm_render_private_account_notice():
 
 def gm_render_private_notifications_account():
     rows = gm_client_private_notifications(30)
-    if not rows:
+    # V199: não lidas primeiro; dentro de cada grupo, mais nova -> mais antiga.
+    def _private_notice_sort_key(row):
+        try:
+            ts = pd.to_datetime((row or {}).get("created_at"), utc=True, errors="coerce")
+            created_ts = float(ts.timestamp()) if not pd.isna(ts) else float("-inf")
+        except Exception:
+            created_ts = float("-inf")
+        unread_priority = 1 if not (row or {}).get("read_at") else 0
+        return (unread_priority, created_ts)
+
+    rows = sorted(rows, key=_private_notice_sort_key, reverse=True)
+    general_unread_count = gm_unread_news_count()
+    if not rows and general_unread_count <= 0:
         return
 
     st.markdown("### 🔔 Avisos da minha conta")
-    unread_count = sum(1 for row in rows if not row.get("read_at"))
+    private_unread_count = sum(1 for row in rows if not row.get("read_at"))
+    unread_count = private_unread_count + max(0, int(general_unread_count or 0))
     c_read, c_delete = st.columns(2)
     with c_read:
         if st.button("✓ Ler todas", key="gm_v197_read_all_notices", use_container_width=True, disabled=(unread_count == 0)):
             try:
-                gm_client_mark_all_private_notifications_read()
-                st.session_state["gm_private_notice_dismissed_v196"] = {r.get("id") for r in rows if r.get("id") is not None}
+                if private_unread_count:
+                    gm_client_mark_all_private_notifications_read()
+                    st.session_state["gm_private_notice_dismissed_v196"] = {r.get("id") for r in rows if r.get("id") is not None}
+                if general_unread_count:
+                    gm_news_rpc("gm_mark_all_news_read")
+                    gm_invalidate_unread_news_cache()
                 st.rerun()
             except Exception:
                 st.error("Não foi possível marcar os avisos como lidos.")
