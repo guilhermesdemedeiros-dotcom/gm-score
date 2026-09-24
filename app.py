@@ -15603,7 +15603,7 @@ def gm_render_news_page():
                 try:
                     # V203: uma única transação no Supabase exclui avisos privados e
                     # oculta todas as novidades públicas para o usuário autenticado.
-                    gm_session_rpc("gm_client_delete_all_feed_v203", {})
+                    gm_session_rpc("gm_client_clear_all_notices_v204", {})
                     st.session_state["gm_news_hidden_session"] = []
                     st.session_state["gm_v200_confirm_delete"] = False
                     gm_invalidate_unread_news_cache(); st.rerun()
