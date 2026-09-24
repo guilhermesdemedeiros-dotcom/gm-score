@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-24-v200-unified-notifications"
+GM_BUILD = "2026-09-24-v201-persistent-delete-notifications"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -1816,8 +1816,36 @@ def gm_client_mark_all_private_notifications_read():
 
 
 def gm_client_delete_all_private_notifications():
-    """V197: exclui todos os avisos privados do usuário autenticado via RPC protegido por auth.uid()."""
-    return gm_session_rpc("gm_client_delete_all_notifications_v197", {})
+    """V201: exclui e confirma no banco todos os avisos privados do usuário autenticado."""
+    rpc_error = None
+    try:
+        gm_session_rpc("gm_client_delete_all_notifications_v197", {})
+        if not gm_client_private_notifications(50):
+            return True
+    except Exception as exc:
+        rpc_error = exc
+    client = gm_auth_client_from_session()
+    if client is None:
+        if rpc_error:
+            raise rpc_error
+        raise RuntimeError("Sessão autenticada indisponível.")
+    client.table("gm_client_notifications").delete().execute()
+    if gm_client_private_notifications(50):
+        raise RuntimeError("A exclusão dos avisos privados não foi persistida.")
+    return True
+
+def gm_news_hidden_ids_v201():
+    try:
+        rows = gm_session_rpc("gm_client_hidden_news_ids_v201", {}) or []
+        return {str(r.get("news_id")) for r in rows if isinstance(r, dict) and r.get("news_id") is not None}
+    except Exception:
+        return set()
+
+def gm_news_hide_all_v201():
+    return gm_session_rpc("gm_client_hide_all_news_v201", {})
+
+def gm_news_hide_one_v201(news_id):
+    return gm_session_rpc("gm_client_hide_news_v201", {"p_news_id": int(news_id)})
 
 def gm_private_notification_validity(row):
     metadata = (row or {}).get("metadata") or {}
@@ -15548,6 +15576,7 @@ def gm_render_news_page():
         public_rows = []
     private_rows = gm_client_private_notifications(50) or []
     hidden = set(st.session_state.get("gm_news_hidden_session", []))
+    hidden.update(f"news:{x}" for x in gm_news_hidden_ids_v201())
     feed = []
     for row in public_rows:
         if not isinstance(row, dict): continue
@@ -15585,7 +15614,10 @@ def gm_render_news_page():
             if st.button("Sim, excluir",key="gm_v200_del_yes",use_container_width=True):
                 try:
                     if private_rows: gm_client_delete_all_private_notifications()
-                    h=set(st.session_state.get("gm_news_hidden_session",[])); h.update(f"news:{str(r.get('id') or '')}" for r in public_rows if isinstance(r,dict)); st.session_state["gm_news_hidden_session"]=list(h); st.session_state["gm_v200_confirm_delete"]=False; gm_invalidate_unread_news_cache(); st.rerun()
+                    if public_rows: gm_news_hide_all_v201()
+                    st.session_state["gm_news_hidden_session"] = []
+                    st.session_state["gm_v200_confirm_delete"] = False
+                    gm_invalidate_unread_news_cache(); st.rerun()
                 except Exception: st.error("Não foi possível excluir os avisos agora.")
         with b:
             if st.button("Cancelar",key="gm_v200_del_no",use_container_width=True): st.session_state["gm_v200_confirm_delete"]=False; st.rerun()
@@ -15603,8 +15635,12 @@ def gm_render_news_page():
         with y:
             if iid and st.button("Ocultar",key=f"gm_v200_hide_{item.get('source')}_{iid}"):
                 h=set(st.session_state.get("gm_news_hidden_session",[])); h.add(str(item.get("hide_key"))); st.session_state["gm_news_hidden_session"]=list(h)
-                if not read:
-                    try: gm_client_mark_private_notification_read(int(iid)) if item.get("source")=="private" else gm_news_rpc("gm_mark_news_read",{"p_news_id":iid})
+                try:
+                    if item.get("source") == "news": gm_news_hide_one_v201(iid)
+                    elif not read: gm_client_mark_private_notification_read(int(iid))
+                except Exception: pass
+                if not read and item.get("source") == "news":
+                    try: gm_news_rpc("gm_mark_news_read",{"p_news_id":iid})
                     except Exception: pass
                 gm_invalidate_unread_news_cache(); st.rerun()
 
