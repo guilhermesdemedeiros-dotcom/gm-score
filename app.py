@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-24-v201-persistent-delete-notifications"
+GM_BUILD = "2026-09-24-v202-delete-all-persist-fix"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -1816,20 +1816,8 @@ def gm_client_mark_all_private_notifications_read():
 
 
 def gm_client_delete_all_private_notifications():
-    """V201: exclui e confirma no banco todos os avisos privados do usuário autenticado."""
-    rpc_error = None
-    try:
-        gm_session_rpc("gm_client_delete_all_notifications_v197", {})
-        if not gm_client_private_notifications(50):
-            return True
-    except Exception as exc:
-        rpc_error = exc
-    client = gm_auth_client_from_session()
-    if client is None:
-        if rpc_error:
-            raise rpc_error
-        raise RuntimeError("Sessão autenticada indisponível.")
-    client.table("gm_client_notifications").delete().execute()
+    """V202: exclui no banco todos os avisos privados do usuário autenticado."""
+    gm_session_rpc("gm_client_delete_all_notifications_v202", {})
     if gm_client_private_notifications(50):
         raise RuntimeError("A exclusão dos avisos privados não foi persistida.")
     return True
