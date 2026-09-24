@@ -1783,7 +1783,30 @@ def gm_client_private_notifications(limit=30):
 
 
 def gm_client_mark_private_notification_read(notification_id):
-    return gm_session_rpc("gm_client_mark_notification_read_v191", {"p_notification_id": int(notification_id)})
+    """V196: persiste a leitura; usa RPC e fallback direto autenticado sem afetar a sessão."""
+    notice_id = int(notification_id)
+    rpc_error = None
+    try:
+        data = gm_session_rpc("gm_client_mark_notification_read_v191", {"p_notification_id": notice_id})
+        # Confirma no banco; alguns RPCs retornam vazio mesmo quando executam.
+        rows = gm_client_private_notifications(30)
+        matched = next((r for r in rows if int(r.get("id") or 0) == notice_id), None)
+        if matched is None or matched.get("read_at"):
+            return data
+    except Exception as exc:
+        rpc_error = exc
+
+    # Fallback: UPDATE autenticado, sempre limitado ao próprio id. RLS continua protegendo o usuário.
+    client = gm_auth_client_from_session()
+    if client is None:
+        if rpc_error:
+            raise rpc_error
+        raise RuntimeError("Sessão autenticada indisponível.")
+    result = (client.table("gm_client_notifications")
+              .update({"read_at": datetime.now(timezone.utc).isoformat()})
+              .eq("id", notice_id)
+              .execute())
+    return getattr(result, "data", None)
 
 
 def gm_private_notification_validity(row):
@@ -1801,12 +1824,12 @@ def gm_private_notification_validity(row):
 
 
 def gm_render_private_account_notice():
-    # V195: descarte local imediato, sem st.rerun() extra e sem tocar na sessão de autenticação.
+    # V196: descarte local imediato + persistência confirmada no banco, sem st.rerun().
     rows = gm_client_private_notifications(10)
-    dismissed = st.session_state.setdefault("gm_private_notice_dismissed_v195", set())
+    dismissed = st.session_state.setdefault("gm_private_notice_dismissed_v196", set())
     if not isinstance(dismissed, set):
         dismissed = set(dismissed or [])
-        st.session_state["gm_private_notice_dismissed_v195"] = dismissed
+        st.session_state["gm_private_notice_dismissed_v196"] = dismissed
     unread = [r for r in rows if not r.get("read_at") and r.get("id") not in dismissed]
     if not unread:
         return
@@ -1823,11 +1846,11 @@ def gm_render_private_account_notice():
         clicked = st.button("✓ Entendi", key=f"gm_private_notice_read_{notice_id}", use_container_width=True)
     if clicked:
         dismissed.add(notice_id)
-        st.session_state["gm_private_notice_dismissed_v195"] = dismissed
+        st.session_state["gm_private_notice_dismissed_v196"] = dismissed
         try:
             gm_client_mark_private_notification_read(notice_id)
         except Exception:
-            # Mesmo se a persistência remota falhar momentaneamente, não derruba nem recarrega a sessão.
+            # Mantém o descarte local e a sessão estável; nova tentativa ocorrerá apenas se surgir outro aviso.
             pass
         holder.empty()
 
