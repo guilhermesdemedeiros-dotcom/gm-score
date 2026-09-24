@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-24-v203-delete-all-unified-rpc"
+GM_BUILD = "2026-09-24-v205-notifications-stable-no-delete-all"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -1901,39 +1901,17 @@ def gm_render_private_notifications_account():
     st.markdown("### 🔔 Avisos da minha conta")
     private_unread_count = sum(1 for row in rows if not row.get("read_at"))
     unread_count = private_unread_count + max(0, int(general_unread_count or 0))
-    c_read, c_delete = st.columns(2)
-    with c_read:
-        if st.button("✓ Ler todas", key="gm_v197_read_all_notices", use_container_width=True, disabled=(unread_count == 0)):
-            try:
-                if private_unread_count:
-                    gm_client_mark_all_private_notifications_read()
-                    st.session_state["gm_private_notice_dismissed_v196"] = {r.get("id") for r in rows if r.get("id") is not None}
-                if general_unread_count:
-                    gm_news_rpc("gm_mark_all_news_read")
-                    gm_invalidate_unread_news_cache()
-                st.rerun()
-            except Exception:
-                st.error("Não foi possível marcar os avisos como lidos.")
-    with c_delete:
-        if st.button("🗑 Excluir todas", key="gm_v197_delete_all_notices", use_container_width=True):
-            st.session_state["gm_v197_confirm_delete_notices"] = True
-
-    if st.session_state.get("gm_v197_confirm_delete_notices"):
-        st.warning("Excluir todos os avisos da sua conta?")
-        c_yes, c_no = st.columns(2)
-        with c_yes:
-            if st.button("Sim, excluir todas", key="gm_v197_confirm_delete_yes", use_container_width=True):
-                try:
-                    gm_client_delete_all_private_notifications()
-                    st.session_state["gm_v197_confirm_delete_notices"] = False
-                    st.session_state["gm_private_notice_dismissed_v196"] = set()
-                    st.rerun()
-                except Exception:
-                    st.error("Não foi possível excluir os avisos. Execute primeiro o SQL V197 no Supabase.")
-        with c_no:
-            if st.button("Cancelar", key="gm_v197_confirm_delete_no", use_container_width=True):
-                st.session_state["gm_v197_confirm_delete_notices"] = False
-                st.rerun()
+    if st.button("✓ Ler todas", key="gm_v197_read_all_notices", use_container_width=True, disabled=(unread_count == 0)):
+        try:
+            if private_unread_count:
+                gm_client_mark_all_private_notifications_read()
+                st.session_state["gm_private_notice_dismissed_v196"] = {r.get("id") for r in rows if r.get("id") is not None}
+            if general_unread_count:
+                gm_news_rpc("gm_mark_all_news_read")
+                gm_invalidate_unread_news_cache()
+            st.rerun()
+        except Exception:
+            st.error("Não foi possível marcar os avisos como lidos.")
 
     for row in rows[:10]:
         title = str(row.get("title") or "Atualização da conta")
@@ -15585,33 +15563,12 @@ def gm_render_news_page():
         return (1 if not item.get("is_read") else 0,v)
     feed=sorted(feed,key=_key,reverse=True)
     unread=sum(1 for x in feed if not x.get("is_read")); pu=sum(1 for x in feed if x.get("source")=="private" and not x.get("is_read")); gu=unread-pu
-    c1,c2=st.columns(2)
-    with c1:
-        if st.button("✓ Ler todas",key="gm_v200_read_all",use_container_width=True,disabled=(unread==0)):
-            try:
-                if pu: gm_client_mark_all_private_notifications_read()
-                if gu: gm_news_rpc("gm_mark_all_news_read"); gm_invalidate_unread_news_cache()
-                st.rerun()
-            except Exception: st.error("Não foi possível marcar as notificações como lidas.")
-    with c2:
-        if st.button("🗑 Excluir todas",key="gm_v200_delete_all",use_container_width=True): st.session_state["gm_v200_confirm_delete"]=True
-    if st.session_state.get("gm_v200_confirm_delete"):
-        st.warning("Excluir todos os avisos privados e ocultar as novidades desta sessão?")
-        a,b=st.columns(2)
-        with a:
-            if st.button("Sim, excluir",key="gm_v200_del_yes",use_container_width=True):
-                try:
-                    # V203: uma única transação no Supabase exclui avisos privados e
-                    # oculta todas as novidades públicas para o usuário autenticado.
-                    gm_session_rpc("gm_client_clear_all_notices_v204", {})
-                    st.session_state["gm_news_hidden_session"] = []
-                    st.session_state["gm_v200_confirm_delete"] = False
-                    gm_invalidate_unread_news_cache(); st.rerun()
-                except Exception as exc:
-                    st.error("Não foi possível excluir os avisos agora.")
-                    st.caption(str(exc)[:300])
-        with b:
-            if st.button("Cancelar",key="gm_v200_del_no",use_container_width=True): st.session_state["gm_v200_confirm_delete"]=False; st.rerun()
+    if st.button("✓ Ler todas",key="gm_v200_read_all",use_container_width=True,disabled=(unread==0)):
+        try:
+            if pu: gm_client_mark_all_private_notifications_read()
+            if gu: gm_news_rpc("gm_mark_all_news_read"); gm_invalidate_unread_news_cache()
+            st.rerun()
+        except Exception: st.error("Não foi possível marcar as notificações como lidas.")
     if not feed: st.info("Nenhuma novidade publicada no momento."); return
     st.markdown("""<style>.gm-news-feed-card{position:relative;background:linear-gradient(145deg,rgba(15,24,32,.96),rgba(9,15,21,.98));border:1px solid rgba(148,163,184,.18);border-radius:16px;padding:13px 14px 12px;margin:.45rem 0 .22rem;overflow:hidden}.gm-news-feed-card.new{border-color:rgba(52,230,129,.42);box-shadow:inset 3px 0 0 #34e681}.gm-news-feed-card.featured{background:linear-gradient(145deg,rgba(12,42,31,.88),rgba(9,18,22,.98))}.gm-news-feed-top{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:7px}.gm-news-feed-category{font-size:.70rem;font-weight:900;letter-spacing:.055em;text-transform:uppercase;color:#34e681}.gm-news-feed-state{font-size:.66rem;font-weight:850;color:#94a3b8;background:rgba(148,163,184,.09);padding:3px 7px;border-radius:999px}.gm-news-feed-title{font-size:1.02rem;font-weight:900;line-height:1.22;color:#f8fafc;margin:0 0 5px}.gm-news-feed-msg{font-size:.84rem;line-height:1.42;color:#c5ced8;margin:0;white-space:pre-wrap}.gm-news-feed-meta{font-size:.68rem;color:#7f8997;margin-top:9px}@media(max-width:768px){.gm-news-feed-card{padding:12px 12px 11px;border-radius:14px}.gm-news-feed-title{font-size:.96rem}.gm-news-feed-msg{font-size:.80rem}}</style>""",unsafe_allow_html=True)
     for item in feed:
