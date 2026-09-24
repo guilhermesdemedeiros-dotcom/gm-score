@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-24-v202-delete-all-persist-fix"
+GM_BUILD = "2026-09-24-v203-delete-all-unified-rpc"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -15601,12 +15601,15 @@ def gm_render_news_page():
         with a:
             if st.button("Sim, excluir",key="gm_v200_del_yes",use_container_width=True):
                 try:
-                    if private_rows: gm_client_delete_all_private_notifications()
-                    if public_rows: gm_news_hide_all_v201()
+                    # V203: uma única transação no Supabase exclui avisos privados e
+                    # oculta todas as novidades públicas para o usuário autenticado.
+                    gm_session_rpc("gm_client_delete_all_feed_v203", {})
                     st.session_state["gm_news_hidden_session"] = []
                     st.session_state["gm_v200_confirm_delete"] = False
                     gm_invalidate_unread_news_cache(); st.rerun()
-                except Exception: st.error("Não foi possível excluir os avisos agora.")
+                except Exception as exc:
+                    st.error("Não foi possível excluir os avisos agora.")
+                    st.caption(str(exc)[:300])
         with b:
             if st.button("Cancelar",key="gm_v200_del_no",use_container_width=True): st.session_state["gm_v200_confirm_delete"]=False; st.rerun()
     if not feed: st.info("Nenhuma novidade publicada no momento."); return
