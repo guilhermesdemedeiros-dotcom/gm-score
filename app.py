@@ -41,7 +41,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-24-v217-share-compact-scorecard"
+GM_BUILD = "2026-09-24-v219-unified-compact-analysis"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 
@@ -9644,18 +9644,54 @@ def render_core_markets_dashboard(a, b, team_a, team_b, df, probs=None, sample_g
     return ex
 
 
+def gm_render_compact_analysis_grid(team_a, team_b, probs, expectations, a, b, df, sample_games=0):
+    """V219: mesma linguagem visual do compartilhamento, sem esconder 100% na análise normal."""
+    sections = gm_share_market_sections(team_a, team_b, probs, expectations, a, b, df, sample_games)
+    blocks = []
+    import re as _re
+    for sec in sections or []:
+        rows_html = []
+        for label, value in sec.get("rows", []):
+            label_s, value_s = str(label), str(value)
+            is_projection = label_s.strip().lower() == "projeção gm"
+            m = _re.search(r"(\d+(?:[.,]\d+)?)%", value_s)
+            pct = None
+            if m:
+                try: pct = float(m.group(1).replace(",", "."))
+                except Exception: pct = None
+            cls = "gm-cg-proj" if is_projection else ("gm-cg-hot" if pct is not None and pct >= 85 else "gm-cg-good" if pct is not None and pct >= 70 else "gm-cg-soft")
+            rows_html.append(
+                f'<div class="gm-cg-row {cls}"><span>{html.escape(label_s)}</span><b>{html.escape(value_s)}</b></div>'
+            )
+        if rows_html:
+            blocks.append(f'<section class="gm-cg-card"><h4>{html.escape(str(sec.get("title") or ""))}</h4><div class="gm-cg-rows">{"".join(rows_html)}</div></section>')
+    if not blocks:
+        return
+    st.markdown(
+        """<style>
+        .gm-cg-wrap{margin:.35rem 0 1rem}.gm-cg-note{color:#8fa39d;font-size:.76rem;margin:0 0 .65rem}
+        .gm-cg-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;align-items:start}
+        .gm-cg-card{background:linear-gradient(180deg,#091715,#071210);border:1px solid #176e4b;border-radius:16px;padding:12px;box-shadow:0 7px 20px rgba(0,0,0,.16)}
+        .gm-cg-card h4{margin:0 0 9px;color:#f4f7f6;font-size:.98rem;font-weight:850}
+        .gm-cg-rows{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}
+        .gm-cg-row{min-height:54px;border-radius:10px;padding:8px 9px;display:flex;flex-direction:column;justify-content:space-between;background:#101d2a;border:1px solid #263845}
+        .gm-cg-row span{font-size:.69rem;color:#9dacb8;line-height:1.15}.gm-cg-row b{font-size:.94rem;color:#e8eef2;text-align:right;line-height:1.15;margin-top:5px}
+        .gm-cg-proj{grid-column:1/-1;background:linear-gradient(90deg,#0b2119,#0d2920);border:1px solid #25835b;min-height:48px;flex-direction:row;align-items:center}
+        .gm-cg-proj span{color:#63d7a1;font-size:.72rem;font-weight:800;text-transform:uppercase;letter-spacing:.04em}.gm-cg-proj b{color:#fff;font-size:1.08rem;margin:0}
+        .gm-cg-good{border-color:#1c8659;background:linear-gradient(145deg,#0d211b,#10231f)}.gm-cg-good b{color:#28df88}
+        .gm-cg-hot{border-color:#27e58d;background:linear-gradient(145deg,#0b2b20,#10372a);box-shadow:inset 0 0 0 1px rgba(39,229,141,.12),0 0 14px rgba(39,229,141,.08)}
+        .gm-cg-hot b{color:#39f19a;font-size:1.02rem}.gm-cg-hot span{color:#b8d8cb}
+        .gm-cg-soft{opacity:.86}
+        @media(max-width:760px){.gm-cg-grid{grid-template-columns:1fr}.gm-cg-card{padding:10px}.gm-cg-row{min-height:50px}}
+        </style>""", unsafe_allow_html=True)
+    st.markdown('<div class="gm-cg-wrap"><div class="gm-cg-note">Projeção GM em faixa própria · probabilidades ≥70% destacadas · análise completa preservada.</div><div class="gm-cg-grid">'+''.join(blocks)+'</div></div>', unsafe_allow_html=True)
+
+
 def render_match_probability_dashboard(a, b, team_a, team_b, df, probs=None, sample_games=0):
     ex = match_expectations(a, b, df)
     if not ex:
         return ex
-    cards = []
-    if "Gols" in ex: cards.append(("Gols esperados", ex["Gols"]["total"]))
-    if "Escanteios" in ex: cards.append(("Escanteios", ex["Escanteios"]["total"]))
-    if "Cartões" in ex: cards.append(("Cartões", ex["Cartões"]["total"]))
-    if "Finalizações" in ex: cards.append(("Finalizações", ex["Finalizações"]["total"]))
-    if "Chutes no alvo" in ex: cards.append(("No alvo", ex["Chutes no alvo"]["total"]))
-    _gm_expectation_card(cards)
-    render_core_markets_dashboard(a, b, team_a, team_b, df, probs=probs, sample_games=sample_games)
+    gm_render_compact_analysis_grid(team_a, team_b, probs, ex, a, b, df, sample_games)
     return ex
 
 def _team_form(team, matches, n=5):
@@ -12308,7 +12344,7 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
         "best": ({"label": _share_best[0], "chance": _share_best[1], "base": _share_best[2]} if _share_best else None),
     }, ensure_ascii=False)
 
-    st.caption("Score Card compacto com todos os mercados calculados para a partida; probabilidades exatas de 100% ficam fora somente da imagem compartilhada.")
+    st.caption("Score Card compacto completo; Projeção GM separada visualmente dos mercados e probabilidades mais fortes em maior destaque.")
     html = f"""
     <div style='font-family:Inter,Arial,sans-serif'>
       <button id='shareBtn' style='width:100%;padding:12px 16px;border:1px solid #1fe387;border-radius:12px;background:linear-gradient(90deg,#08783f,#10b865);color:white;font-size:16px;font-weight:800;cursor:pointer'>📲 Compartilhar análise completa GM SCORE</button>
@@ -12357,10 +12393,15 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
           const pair=rows.slice(i,i+2);
           pair.forEach((r,j)=>{{
             const bx=x+14+j*222, bw=214; rr(c,bx,yy,bw,44,10,C.card,C.soft,1);
-            fit(c,r[0],bx+10,yy+18,bw-20,12,9,'650',C.muted,'left');
+            const isProj=String(r[0]).trim().toLowerCase()==='projeção gm';
             const m=String(r[1]).match(/(\d+(?:[.,]\d+)?)%/); const pct=m?parseFloat(m[1].replace(',','.')):null;
-            const valColor=(pct!==null&&pct>=70&&pct<100)?C.green:C.text;
-            fit(c,r[1],bx+bw-10,yy+37,bw-20,17,11,'850',valColor,'right');
+            if(isProj){{rr(c,bx,yy,bw,44,10,'#0d2920','#25835b',1.4);}}
+            else if(pct!==null&&pct>=85&&pct<100){{rr(c,bx,yy,bw,44,10,'#10372a',C.green,1.6);}}
+            else if(pct!==null&&pct>=70&&pct<100){{rr(c,bx,yy,bw,44,10,'#0d211b','#1c8659',1.3);}}
+            const labelColor=isProj?'#63d7a1':C.muted;
+            const valColor=isProj?C.text:((pct!==null&&pct>=70&&pct<100)?C.green:(pct!==null?C.muted:C.text));
+            fit(c,r[0],bx+10,yy+18,bw-20,12,9,isProj?'800':'650',labelColor,'left');
+            fit(c,r[1],bx+bw-10,yy+37,bw-20,(pct!==null&&pct>=85&&pct<100)?18:17,11,'850',valColor,'right');
           }});
           yy+=54;
         }}
