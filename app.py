@@ -41,26 +41,26 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-24-v214-global-loading-overlay"
+GM_BUILD = "2026-09-24-v215-lightweight-loading-overlay"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 
 @contextmanager
 def gm_loading_overlay(title="Carregando...", subtitle="Preparando as informações do GM SCORE.", icon="⚽"):
-    """V214: overlay visual único para operações que podem levar alguns segundos."""
+    """V215: overlay leve; sem blur/backdrop-filter para não penalizar navegação móvel."""
     slot = st.empty()
     safe_title = html.escape(str(title or "Carregando..."))
     safe_subtitle = html.escape(str(subtitle or ""))
     safe_icon = html.escape(str(icon or "⚽"))
     slot.markdown(
-        f"""<div style="position:fixed;inset:0;z-index:999998;background:rgba(7,13,18,.86);display:flex;align-items:center;justify-content:center;backdrop-filter:blur(3px)">
-        <div style="text-align:center;padding:28px 30px;border:1px solid rgba(31,209,119,.35);border-radius:18px;background:#0b1419;box-shadow:0 18px 60px rgba(0,0,0,.45);max-width:360px;width:calc(100% - 48px)">
+        f"""<div style="position:fixed;inset:0;z-index:999998;background:rgba(7,13,18,.82);display:flex;align-items:center;justify-content:center">
+        <div style="text-align:center;padding:28px 30px;border:1px solid rgba(31,209,119,.35);border-radius:18px;background:#0b1419;max-width:360px;width:calc(100% - 48px)">
         <div style="font-size:38px;line-height:1;margin-bottom:14px">{safe_icon}</div>
         <div style="font-size:20px;font-weight:800;color:#fff">{safe_title}</div>
         <div style="font-size:13px;color:#b7c3ca;margin-top:8px">{safe_subtitle}</div>
-        <div style="height:5px;background:#16252c;border-radius:999px;overflow:hidden;margin-top:18px"><div class="gm-load-runner-v214"></div></div>
+        <div style="height:5px;background:#16252c;border-radius:999px;overflow:hidden;margin-top:18px"><div class="gm-load-runner-v215"></div></div>
         </div></div>
-        <style>@keyframes gmLoadMoveV214{{0%{{transform:translateX(-100%)}}100%{{transform:translateX(360%)}}}}.gm-load-runner-v214{{width:28%;height:100%;background:#1fd177;border-radius:999px;animation:gmLoadMoveV214 1.05s ease-in-out infinite}}</style>""",
+        <style>@keyframes gmLoadMoveV215{{0%{{margin-left:-28%}}100%{{margin-left:100%}}}}.gm-load-runner-v215{{width:28%;height:100%;background:#1fd177;border-radius:999px;animation:gmLoadMoveV215 1.05s linear infinite}}</style>""",
         unsafe_allow_html=True,
     )
     try:
