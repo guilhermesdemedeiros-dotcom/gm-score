@@ -41,7 +41,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-24-v215-lightweight-loading-overlay"
+GM_BUILD = "2026-09-24-v216-share-scorecard-club-badges"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 
@@ -12246,15 +12246,40 @@ def _gm_share_highlights(team_a, team_b, probs, opportunities, expectations):
 
 
 def render_share_button(team_a, team_b, league_name, probs, opportunities, expectations, a, b, df=None, sample_games=0):
-    """V165: compartilhamento integral da análise, em uma única arte vertical.
+    """V216: Score Card compacto com todos os mercados realmente calculados.
 
-    A imagem espelha os dados disponíveis nos Mercados Essenciais em sequência:
-    resultado, gols, escanteios, cartões e demais métricas suportadas. Não recalcula
-    probabilidades e não cria dados ausentes; apenas desenha o que o painel já possui.
+    Preserva competição, data/hora, brasões/bandeiras e nomes. Não recalcula nem
+    inventa dados. No compartilhamento, probabilidades exatamente 100% são omitidas
+    por não acrescentarem decisão visual; a análise completa da partida permanece intacta.
     """
     import json as _json
 
     sections = gm_share_market_sections(team_a, team_b, probs, expectations, a, b, df, sample_games)
+    # V216: somente na arte compartilhada, remove linhas probabilísticas exatamente
+    # em 100%. Médias/projeções numéricas e toda a análise normal permanecem iguais.
+    _share_sections = []
+    _share_best = None
+    for _sec in sections or []:
+        _rows = []
+        for _row in (_sec.get("rows") or []):
+            if not isinstance(_row, (list, tuple)) or len(_row) < 2:
+                continue
+            _label, _value = str(_row[0]), str(_row[1])
+            _pct = None
+            if _value.strip().endswith("%"):
+                try:
+                    _pct = float(_value.strip()[:-1].replace(",", "."))
+                except Exception:
+                    _pct = None
+            if _pct is not None and _pct >= 100.0:
+                continue
+            _rows.append((_label, _value))
+            if _pct is not None and 70.0 <= _pct < 100.0:
+                if _share_best is None or _pct > _share_best[1]:
+                    _share_best = (_label, _pct, str(_sec.get("title") or ""))
+        if _rows:
+            _share_sections.append({"title": str(_sec.get("title") or ""), "rows": _rows})
+    sections = _share_sections
     home_visual = gm_team_visual(team_a, league_name, gm_current_match_team_id(team_a, "home"))
     away_visual = gm_team_visual(team_b, league_name, gm_current_match_team_id(team_b, "away"))
     if league_name == GM_NATIONAL_COMPETITION:
@@ -12275,9 +12300,10 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
         "home_logo": home_logo, "away_logo": away_logo, "league_logo": league_logo,
         "match_datetime": match_datetime, "sections": sections,
         "sample": int(sample_games or 0),
+        "best": ({"label": _share_best[0], "chance": _share_best[1], "base": _share_best[2]} if _share_best else None),
     }, ensure_ascii=False)
 
-    st.caption("A imagem compartilhada leva a análise completa disponível: Resultado, Gols, Escanteios, Cartões e demais dados calculados para a partida.")
+    st.caption("Score Card compacto com todos os mercados calculados para a partida; probabilidades exatas de 100% ficam fora somente da imagem compartilhada.")
     html = f"""
     <div style='font-family:Inter,Arial,sans-serif'>
       <button id='shareBtn' style='width:100%;padding:12px 16px;border:1px solid #1fe387;border-radius:12px;background:linear-gradient(90deg,#08783f,#10b865);color:white;font-size:16px;font-weight:800;cursor:pointer'>📲 Compartilhar análise completa GM SCORE</button>
@@ -12291,37 +12317,38 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
     function fit(c,v,x,y,maxW,size=28,min=15,weight='800',color=C.text,align='center'){{let z=size;c.save();while(z>min){{c.font=`${{weight}} ${{z}}px Arial`;if(c.measureText(String(v)).width<=maxW)break;z--;}}c.fillStyle=color;c.font=`${{weight}} ${{z}}px Arial`;c.textAlign=align;c.fillText(String(v),x,y);c.restore();}}
     function wrap(c,v,x,y,maxW,lineH,size=22,weight='700',color=C.text){{c.save();c.fillStyle=color;c.font=`${{weight}} ${{size}}px Arial`;let line='',yy=y;for(const w of String(v).split(' ')){{const t=line+w+' ';if(c.measureText(t).width>maxW&&line){{c.fillText(line.trim(),x,yy);yy+=lineH;line=w+' ';}}else line=t;}}if(line)c.fillText(line.trim(),x,yy);c.restore();return yy;}}
     function loadImg(src){{return new Promise(resolve=>{{if(!src)return resolve(null);const i=new Image();if(/^https?:/i.test(src))i.crossOrigin='anonymous';i.onload=()=>resolve(i);i.onerror=()=>resolve(null);i.src=src;}});}}
-    function sectionHeight(s){{const n=(s.rows||[]).length;return 82 + Math.ceil(n/2)*92 + 24;}}
+    function sectionHeight(s){{const n=(s.rows||[]).length;return 76 + Math.ceil(n/3)*78 + 20;}}
     document.getElementById('shareBtn').onclick=async()=>{{
-      const W=1080, headerH=455, sectionGap=24, footerH=120;
+      const W=1080, headerH=500, sectionGap=18, footerH=110;
       const contentH=(D.sections||[]).reduce((sum,s)=>sum+sectionHeight(s)+sectionGap,0);
       const H=headerH+contentH+footerH, scale=2;
       const canvas=document.createElement('canvas');canvas.width=W*scale;canvas.height=H*scale;const c=canvas.getContext('2d');c.scale(scale,scale);c.fillStyle=C.bg;c.fillRect(0,0,W,H);
       tx(c,'GM',70,72,48,'900','#fff');tx(c,'SCORE',160,72,48,'900',C.green);tx(c,'ANÁLISE COMPLETA',1010,70,20,'800',C.green,'right');
-      rr(c,60,120,960,285,22,C.panel,C.border,2);
+      rr(c,60,112,960,338,22,C.panel,C.border,2);
       const [hi,ai,li]=await Promise.all([loadImg(D.home_logo),loadImg(D.away_logo),loadImg(D.league_logo)]);
       const CX=540;
-      if(li)c.drawImage(li,CX-28,140,56,56);
-      fit(c,String(D.league).toUpperCase(),CX,220,320,19,13,'800',C.muted,'center');
-      tx(c,'×',CX,282,42,'900',C.green,'center');
-      if(D.match_datetime)tx(c,D.match_datetime,CX,318,17,'700',C.muted,'center');
-      if(D.sample)tx(c,`Amostra mínima: ${{D.sample}} jogo(s)`,CX,350,16,'600',C.muted,'center');
+      if(li)c.drawImage(li,CX-24,128,48,48);
+      fit(c,String(D.league).toUpperCase(),CX,195,360,19,13,'800',C.muted,'center');
+      tx(c,'×',CX,260,42,'900',C.green,'center');
+      if(D.match_datetime)tx(c,D.match_datetime,CX,294,17,'700',C.muted,'center');
+      if(D.sample)tx(c,`Amostra mínima: ${{D.sample}} jogo(s)`,CX,324,16,'600',C.muted,'center');
       // Identidade vertical: símbolo/bandeira em cima e nome centralizado abaixo.
-      if(hi)c.drawImage(hi,190,178,110,82);else tx(c,'⚽',245,245,58,'700',C.muted,'center');
-      if(ai)c.drawImage(ai,780,178,110,82);else tx(c,'⚽',835,245,58,'700',C.muted,'center');
-      fit(c,D.home,245,302,300,29,17,'850',C.text,'center');
-      fit(c,D.away,835,302,300,29,17,'850',C.text,'center');
-      tx(c,'Probabilidades e projeções exibidas pelo GM SCORE',540,386,16,'600',C.muted,'center');
+      if(hi)c.drawImage(hi,190,170,110,82);else tx(c,'⚽',245,237,58,'700',C.muted,'center');
+      if(ai)c.drawImage(ai,780,170,110,82);else tx(c,'⚽',835,237,58,'700',C.muted,'center');
+      fit(c,D.home,245,294,300,29,17,'850',C.text,'center');
+      fit(c,D.away,835,294,300,29,17,'850',C.text,'center');
+      if(D.best){{rr(c,170,350,740,72,16,'#0b2119',C.green,2);tx(c,'DESTAQUE ESTATÍSTICO',194,378,14,'900',C.green);fit(c,D.best.label,194,405,520,22,14,'850',C.text,'left');tx(c,`${{Math.round(D.best.chance)}}%`,880,401,30,'900',C.green,'right');}}
+      else tx(c,'Mercados calculados pelo GM SCORE',540,392,16,'700',C.muted,'center');
 
-      let y=445;
+      let y=470;
       for(const s of (D.sections||[])){{
         const h=sectionHeight(s);rr(c,60,y,960,h,20,C.panel,C.border,1.5);
-        tx(c,s.title,88,y+48,27,'900',C.text);
-        const rows=s.rows||[];let ry=y+76;
-        for(let i=0;i<rows.length;i+=2){{
-          const pair=rows.slice(i,i+2);
-          pair.forEach((r,j)=>{{const x=82+j*470,w=446;rr(c,x,ry,w,76,14,C.card,C.soft,1);fit(c,r[0],x+20,ry+30,w-145,17,12,'650',C.muted,'left');fit(c,r[1],x+w-20,ry+52,w-40,24,15,'850',C.text,'right');}});
-          ry+=92;
+        tx(c,s.title,88,y+43,24,'900',C.text);
+        const rows=s.rows||[];let ry=y+66;
+        for(let i=0;i<rows.length;i+=3){{
+          const trio=rows.slice(i,i+3);
+          trio.forEach((r,j)=>{{const x=82+j*312,w=296;rr(c,x,ry,w,64,12,C.card,C.soft,1);fit(c,r[0],x+14,ry+25,w-28,14,10,'650',C.muted,'left');fit(c,r[1],x+w-14,ry+50,w-28,21,13,'850',C.text,'right');}});
+          ry+=78;
         }}
         y+=h+sectionGap;
       }}
@@ -15650,11 +15677,15 @@ def gm_render_games_page():
             _rank_txt = f" · FIFA #{_rh if _rh is not None else '—'} × #{_ra if _ra is not None else '—'}"
             _display_comp = "🌍 " + (_display_comp or "Seleções") + _rank_txt
             _home_display, _away_display = gm_national_display_name(home), gm_national_display_name(away)
+        # V216: identidade visual também para clubes na agenda. Usa exclusivamente
+        # o catálogo oficial já existente da APIfootball; seleções mantêm bandeiras.
+        # É camada visual e não altera identidade, calendário ou motor estatístico.
         if comp == GM_NATIONAL_COMPETITION:
-            _home_html = gm_team_badge_html(home, GM_NATIONAL_COMPETITION, f.get("home_team_id"), size=20, show_name=True, league_id=f.get("league_id"))
-            _away_html = gm_team_badge_html(away, GM_NATIONAL_COMPETITION, f.get("away_team_id"), size=20, show_name=True, league_id=f.get("league_id"))
+            _home_html = gm_team_badge_html(home, GM_NATIONAL_COMPETITION, f.get("home_team_id"), size=22, show_name=True, league_id=f.get("league_id"))
+            _away_html = gm_team_badge_html(away, GM_NATIONAL_COMPETITION, f.get("away_team_id"), size=22, show_name=True, league_id=f.get("league_id"))
         else:
-            _home_html, _away_html = html.escape(_home_display), html.escape(_away_display)
+            _home_html = gm_team_badge_html(_home_display, comp, f.get("home_team_id"), size=22, show_name=True, league_id=f.get("league_id"))
+            _away_html = gm_team_badge_html(_away_display, comp, f.get("away_team_id"), size=22, show_name=True, league_id=f.get("league_id"))
         card_html = '<div id="gm-game-{}" class="gm-game-card"><div class="gm-game-time">{}</div><div class="gm-game-body"><div class="gm-game-league">{}</div><div class="gm-game-teams">{} <span>×</span> {}</div></div></div>'.format(i, html.escape(tm), html.escape(_display_comp), _home_html, _away_html)
         st.markdown(card_html, unsafe_allow_html=True)
         if st.button("📊 Analisar", use_container_width=False, key=f"gm_games_analyze_{target_date}_{i}_{clean_col(comp)}"):
