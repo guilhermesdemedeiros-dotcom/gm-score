@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-24-v206-onesignal-external-id-safe"
+GM_BUILD = "2026-09-24-v207-onesignal-private-push-test"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -3016,6 +3016,23 @@ def gm_render_admin_vip_manager():
                         st.error("Não foi possível alterar a suspensão."); st.caption(str(exc))
 
             with st.expander("Mais ações", expanded=False):
+                st.markdown("##### 🔔 Push individual")
+                if st.button("🔔 Enviar push de teste", use_container_width=True,
+                             key=f"gm_admin_test_private_push_v207_{uid}"):
+                    try:
+                        sent = gm_onesignal_push_user(
+                            uid,
+                            "GM SCORE • Teste individual",
+                            "Push individual confirmado para esta conta.",
+                        )
+                        if sent:
+                            st.success("Push individual enviado somente para este cliente.")
+                        else:
+                            st.error("O OneSignal não confirmou o envio para este cliente.")
+                    except Exception as exc:
+                        st.error("Não foi possível enviar o push individual.")
+                        st.caption(type(exc).__name__)
+
                 st.markdown("##### 📜 Histórico do cliente")
                 history=gm_admin_client_history_v187(uid, 50)
                 if history:
