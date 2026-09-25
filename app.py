@@ -41,7 +41,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-25-v220-analysis-polish-leverage-fix"
+GM_BUILD = "2026-09-25-v221-leverage-share-header"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 
@@ -12133,16 +12133,12 @@ def gm_share_market_sections(team_a, team_b, probs, expectations, a, b, df, samp
                 rows.append((f"Mais de {str(line).replace('.', ',')}", f"{pct:.0f}%"))
         add(prefix, rows)
 
-    # Resultado + odds justas + dupla chance.
+    # V221: 1X2 + odd justa já pertencem ao cabeçalho. Aqui fica somente Dupla Chance, sem repetição.
     if probs:
-        d = _gm_display_1x2_percentages(probs)
-        add("🏆 Resultado", [
-            (f"Vitória {team_a}", f"{d['home']}% · odd justa {100/max(float(probs['home']),0.5):.2f}"),
-            ("Empate", f"{d['draw']}% · odd justa {100/max(float(probs['draw']),0.5):.2f}"),
-            (f"Vitória {team_b}", f"{d['away']}% · odd justa {100/max(float(probs['away']),0.5):.2f}"),
-            ("Dupla chance 1X", f"{float(probs['home'])+float(probs['draw']):.0f}%"),
-            ("Dupla chance X2", f"{float(probs['draw'])+float(probs['away']):.0f}%"),
-            ("Dupla chance 12", f"{float(probs['home'])+float(probs['away']):.0f}%"),
+        add("🏆 Dupla chance", [
+            ("1X · casa ou empate", f"{float(probs['home'])+float(probs['draw']):.0f}%"),
+            ("X2 · empate ou fora", f"{float(probs['draw'])+float(probs['away']):.0f}%"),
+            ("12 · sem empate", f"{float(probs['home'])+float(probs['away']):.0f}%"),
         ])
 
     # Gols.
@@ -12282,7 +12278,7 @@ def _gm_share_highlights(team_a, team_b, probs, opportunities, expectations):
 
 
 def render_share_button(team_a, team_b, league_name, probs, opportunities, expectations, a, b, df=None, sample_games=0):
-    """V216: Score Card compacto com todos os mercados realmente calculados.
+    """V221: compartilhamento espelha o cabeçalho e a grade da análise completa.
 
     Preserva competição, data/hora, brasões/bandeiras e nomes. Não recalcula nem
     inventa dados. No compartilhamento, probabilidades exatamente 100% são omitidas
@@ -12341,10 +12337,18 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
         "home_logo": home_logo, "away_logo": away_logo, "league_logo": league_logo,
         "match_datetime": match_datetime, "sections": sections,
         "sample": int(sample_games or 0),
+        "result": ({
+            "home": _gm_display_1x2_percentages(probs)["home"],
+            "draw": _gm_display_1x2_percentages(probs)["draw"],
+            "away": _gm_display_1x2_percentages(probs)["away"],
+            "fair_home": round(100.0 / max(min(float(probs.get("home", 0.0)), 99.5), 0.5), 2),
+            "fair_draw": round(100.0 / max(min(float(probs.get("draw", 0.0)), 99.5), 0.5), 2),
+            "fair_away": round(100.0 / max(min(float(probs.get("away", 0.0)), 99.5), 0.5), 2),
+        } if probs else None),
         "best": ({"label": _share_best[0], "chance": _share_best[1], "base": _share_best[2]} if _share_best else None),
     }, ensure_ascii=False)
 
-    st.caption("Score Card compacto completo; Projeção GM separada visualmente dos mercados e probabilidades mais fortes em maior destaque.")
+    st.caption("Compartilhamento espelha a análise completa: mesmo cabeçalho, mesma grade e todos os mercados calculados.")
     html = f"""
     <div style='font-family:Inter,Arial,sans-serif'>
       <button id='shareBtn' style='width:100%;padding:12px 16px;border:1px solid #1fe387;border-radius:12px;background:linear-gradient(90deg,#08783f,#10b865);color:white;font-size:16px;font-weight:800;cursor:pointer'>📲 Compartilhar análise completa GM SCORE</button>
@@ -12379,8 +12383,10 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
       fit(c,D.away,837,274,310,28,16,'850',C.text,'center');
       tx(c,'×',CX,253,40,'900',C.green,'center');
       if(D.sample)tx(c,`AMOSTRA ${{D.sample}}`,CX,282,14,'800',C.muted,'center');
-      if(D.best){{rr(c,158,316,764,66,15,'#0b2119',C.green,2);tx(c,'MELHOR SINAL < 100%',184,342,13,'900',C.green);fit(c,D.best.label,184,367,540,20,13,'850',C.text,'left');tx(c,`${{Math.round(D.best.chance)}}%`,892,362,28,'900',C.green,'right');}}
-      else tx(c,'Todos os mercados calculados',540,350,16,'700',C.muted,'center');
+      if(D.result){{
+        const bx=[158,412,666], labels=['VITÓRIA CASA','EMPATE','VITÓRIA FORA'], vals=[D.result.home,D.result.draw,D.result.away], fairs=[D.result.fair_home,D.result.fair_draw,D.result.fair_away];
+        for(let i=0;i<3;i++){{rr(c,bx[i],310,238,78,13,'#101d2a','#304454',1.2);tx(c,labels[i],bx[i]+119,331,11,'800',C.muted,'center');tx(c,`${{vals[i]}}%`,bx[i]+119,358,24,'900',C.text,'center');tx(c,`ODD JUSTA  ${{Number(fairs[i]).toFixed(2)}}`,bx[i]+119,378,11,'800',C.green,'center');}}
+      }} else tx(c,'Todos os mercados calculados',540,350,16,'700',C.muted,'center');
 
       // Score Card compacto: famílias de mercado em duas colunas, preservando todas as linhas.
       let ly=430, ry=430; const colW=466, xL=60, xR=554;
@@ -15368,7 +15374,9 @@ def gm_leverage_publish_choice(leg, target_date=None):
     today=datetime.now(BRASILIA_TZ).date(); target_date=target_date if isinstance(target_date,date) else today
     odd=float(leg.get("odd") or 0); prob=float(leg.get("probability") or 0)
     choice={
-        "pick_kind":"matadeira", "bet_type":"simple", "legs":[dict(leg)],
+        # V221: Alavancagem usa o contrato de publicação já validado das Bets (dica).
+        # O produto continua totalmente separado por model_meta.product=alavancagem.
+        "pick_kind":"dica", "bet_type":"simple", "legs":[dict(leg)],
         "total_odd":round(odd,3), "model_probability":prob, "target_date":target_date.isoformat(),
         "model_meta_extra":{
             "product":"alavancagem", "admin_approved":True,
