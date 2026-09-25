@@ -41,7 +41,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-25-v221-leverage-share-header"
+GM_BUILD = "2026-09-25-v223-leverage-rpc-diagnostic"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 
