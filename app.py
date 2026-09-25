@@ -15370,20 +15370,41 @@ def gm_leverage_ensure_today(force_refresh=False, target_date=None):
     return {"ok": True, "reason": "candidate", "choice": diversified[0], "alternatives": diversified, "meta": meta, "eligible": len(eligible), "target_date": target_date.isoformat()}
 
 def gm_leverage_publish_choice(leg, target_date=None):
-    """V220: publica Alavancagem pelo mesmo fluxo validado das Bets, preservando product=alavancagem."""
-    today=datetime.now(BRASILIA_TZ).date(); target_date=target_date if isinstance(target_date,date) else today
-    odd=float(leg.get("odd") or 0); prob=float(leg.get("probability") or 0)
-    choice={
-        # V221: Alavancagem usa o contrato de publicação já validado das Bets (dica).
-        # O produto continua totalmente separado por model_meta.product=alavancagem.
-        "pick_kind":"dica", "bet_type":"simple", "legs":[dict(leg)],
-        "total_odd":round(odd,3), "model_probability":prob, "target_date":target_date.isoformat(),
-        "model_meta_extra":{
-            "product":"alavancagem", "admin_approved":True,
-            "target_odd_min":1.25, "target_odd_max":1.35, "min_probability":80.0,
-            "selected_at":datetime.now(BRASILIA_TZ).isoformat(),
+    """V222: publica Alavancagem com payload JSON limpo e categoria legada compatível.
+
+    A Alavancagem continua identificada exclusivamente por model_meta.product; o
+    pick_kind legado serve apenas ao contrato do RPC gm_daily_pick_publish_v2.
+    """
+    today = datetime.now(BRASILIA_TZ).date()
+    target_date = target_date if isinstance(target_date, date) else today
+    odd = float(leg.get("odd") or 0)
+    prob = float(leg.get("probability") or 0)
+
+    # O PostgREST/Supabase é estrito com JSON. Candidatos podem carregar tipos
+    # auxiliares vindos de pandas/numpy/cache; normalizamos antes do RPC.
+    clean_leg = json.loads(json.dumps(dict(leg), ensure_ascii=False, default=str))
+    clean_leg["odd"] = odd
+    clean_leg["probability"] = prob
+    try:
+        clean_leg["sample_n"] = int(float(clean_leg.get("sample_n") or 0))
+    except Exception:
+        clean_leg["sample_n"] = 0
+
+    base = {
+        "bet_type": "simple", "legs": [clean_leg],
+        "total_odd": round(odd, 3), "model_probability": prob,
+        "target_date": target_date.isoformat(),
+        "model_meta_extra": {
+            "product": "alavancagem", "admin_approved": True,
+            "target_odd_min": 1.25, "target_odd_max": 1.35,
+            "min_probability": 80.0,
+            "selected_at": datetime.now(BRASILIA_TZ).isoformat(),
         },
     }
+
+    # 'matadeira' é o tipo legado compatível com aposta simples conservadora.
+    # A separação de produto é feita por model_meta.product=alavancagem.
+    choice = {**base, "pick_kind": "matadeira"}
     return gm_daily_pick_publish_selected(choice)
 
 def gm_render_admin_leverage_approval():
@@ -15429,7 +15450,10 @@ def gm_render_admin_leverage_approval():
                         st.session_state.pop(key,None); st.success("Alavancagem publicada."); st.rerun()
                     else:
                         st.warning("A Alavancagem não pôde ser publicada.")
-                except Exception as exc: st.error("Não foi possível publicar."); st.caption(type(exc).__name__)
+                except Exception as exc:
+                    st.error("Não foi possível publicar a Alavancagem.")
+                    _msg = str(exc).strip()
+                    st.caption(f"{type(exc).__name__}: {_msg[:700]}" if _msg else type(exc).__name__)
             if c2.button("✕ Recusar",use_container_width=True,key=f"gm_lev_reject_{target.isoformat()}_{idx}"):
                 try: _gm_daily_pick_discard(opt,target)
                 except Exception: pass
