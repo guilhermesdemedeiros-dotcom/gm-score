@@ -15315,9 +15315,10 @@ def gm_leverage_ensure_today(force_refresh=False, target_date=None):
         rows = gm_daily_pick_recent(100) or []
     except Exception as exc:
         return {"ok": False, "reason": "recent_unavailable", "error": type(exc).__name__}
+    # V224: múltiplas Alavancagens podem ser aprovadas na mesma data.
+    # Publicações existentes servem apenas para excluir seleções já decididas;
+    # nunca bloqueiam a busca de novas opções do mesmo dia.
     existing = [r for r in rows if str(r.get("pick_date") or "") == target_date.isoformat() and _gm_is_leverage_row(r)]
-    if existing:
-        return {"ok": True, "reason": "exists", "row": existing[0]}
     if force_refresh:
         try: gm_daily_pick_source_payload.clear()
         except Exception: pass
@@ -15416,7 +15417,8 @@ def gm_render_admin_leverage_approval():
     try: rows=gm_daily_pick_recent(140) or []
     except Exception: rows=[]
     existing=[r for r in rows if str(r.get("pick_date") or "")==target.isoformat() and _gm_is_leverage_row(r)]
-    if existing: st.success("Já existe Alavancagem aprovada para esta data.")
+    if existing:
+        st.caption(f"{len(existing)} Alavancagem(ns) já aprovada(s) para esta data · você pode aprovar outras opções inéditas.")
     if st.button("🔎 Buscar Alavancagens inéditas",use_container_width=True,key=f"gm_admin_leverage_search_{target.isoformat()}"):
         with gm_loading_overlay(f"Buscando Alavancagens de {target.strftime('%d/%m')}...", "Analisando jogos, probabilidades, amostras e odds.", "📈"):
             prepared=gm_leverage_ensure_today(force_refresh=True,target_date=target)
