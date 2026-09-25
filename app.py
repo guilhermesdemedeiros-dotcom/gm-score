@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-24-v207-onesignal-private-push-test"
+GM_BUILD = "2026-09-24-v208-pro-private-push"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -3001,6 +3001,14 @@ def gm_render_admin_vip_manager():
                              key=f"gm_admin_extend_v187_{uid}"):
                     try:
                         gm_admin_extend_pro_v187(uid, period_options[selected_period])
+                        # V208: o mesmo evento já gera a notificação privada em Novidades
+                        # pelo trigger gm_v191_notify_pro_update. O push externo é enviado
+                        # somente ao External ID deste cliente (igual ao UUID auth.users.id).
+                        gm_onesignal_push_user(
+                            uid,
+                            "⭐ Plano PRO atualizado",
+                            "Seu plano PRO foi atualizado. Confira a nova validade no GM SCORE.",
+                        )
                         st.success(f"Período de {selected_period} adicionado ao PRO.")
                         st.rerun()
                     except Exception as exc:
@@ -3016,23 +3024,6 @@ def gm_render_admin_vip_manager():
                         st.error("Não foi possível alterar a suspensão."); st.caption(str(exc))
 
             with st.expander("Mais ações", expanded=False):
-                st.markdown("##### 🔔 Push individual")
-                if st.button("🔔 Enviar push de teste", use_container_width=True,
-                             key=f"gm_admin_test_private_push_v207_{uid}"):
-                    try:
-                        sent = gm_onesignal_push_user(
-                            uid,
-                            "GM SCORE • Teste individual",
-                            "Push individual confirmado para esta conta.",
-                        )
-                        if sent:
-                            st.success("Push individual enviado somente para este cliente.")
-                        else:
-                            st.error("O OneSignal não confirmou o envio para este cliente.")
-                    except Exception as exc:
-                        st.error("Não foi possível enviar o push individual.")
-                        st.caption(type(exc).__name__)
-
                 st.markdown("##### 📜 Histórico do cliente")
                 history=gm_admin_client_history_v187(uid, 50)
                 if history:
