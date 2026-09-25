@@ -41,7 +41,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-24-v219-unified-compact-analysis"
+GM_BUILD = "2026-09-25-v220-analysis-polish-leverage-fix"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 
@@ -9497,11 +9497,11 @@ def render_core_markets_dashboard(a, b, team_a, team_b, df, probs=None, sample_g
         split_n = goal_split.get("games", 0) if goal_split else 0
         first_status = _gm_market_status(sample_games, available=split_available, specific_sample=split_n)
         second_status = _gm_market_status(sample_games, available=split_available, specific_sample=split_n)
-        _gm_market_card("⏱️ Gols — 1º tempo", first_status,
+        _gm_market_card("⚽ Gols — 1º tempo", first_status,
                         projection=f"{goal_split['first']:.2f}".replace('.', ',') if goal_split else None,
                         lines=_gm_pct_lines(goal_split['first'], [0.5,1.5,2.5]) if goal_split else None,
                         note=(f"Base específica: {split_n} partidas com intervalo disponível · {goal_split.get('source', 'histórico da competição')}." if goal_split else None))
-        _gm_market_card("⏱️ Gols — 2º tempo", second_status,
+        _gm_market_card("⚽ Gols — 2º tempo", second_status,
                         projection=f"{goal_split['second']:.2f}".replace('.', ',') if goal_split else None,
                         lines=_gm_pct_lines(goal_split['second'], [0.5,1.5,2.5]) if goal_split else None,
                         note=(f"Base específica: {split_n} partidas com intervalo disponível · {goal_split.get('source', 'histórico da competição')}." if goal_split else None))
@@ -9510,7 +9510,7 @@ def render_core_markets_dashboard(a, b, team_a, team_b, df, probs=None, sample_g
             rows = [(team_a, f"{g['home']:.2f}".replace('.', ',')), (team_b, f"{g['away']:.2f}".replace('.', ','))]
         else:
             rows = None
-        _gm_market_card("👥 Gols por equipe", g_status, compact_rows=rows,
+        _gm_market_card("⚽ Gols por equipe", g_status, compact_rows=rows,
                         note="Projeção ofensiva de cada equipe ajustada ao contexto da competição." if g else None)
 
         if g:
@@ -9536,21 +9536,21 @@ def render_core_markets_dashboard(a, b, team_a, team_b, df, probs=None, sample_g
         c1_status = _gm_market_status(sample_games, available=c1_total is not None, specific_sample=c1_sample)
         c2_status = _gm_market_status(sample_games, available=c2_total is not None, specific_sample=c2_sample)
         _gm_market_card(
-            "⏱️ Escanteios — 1º tempo", c1_status,
+            "⛳ Escanteios — 1º tempo", c1_status,
             projection=f"{c1_total:.2f}".replace('.', ',') if c1_total is not None else None,
             lines=_gm_pct_lines(c1_total, [2.5,3.5,4.5,5.5,6.5]) if c1_total is not None else None,
             note=(f"Base específica recuperada: {c1_sample} partidas com divisão por tempo." if c1_total is not None
                   else "Separação por tempo não encontrada com cobertura suficiente após a busca complementar."),
         )
         _gm_market_card(
-            "⏱️ Escanteios — 2º tempo", c2_status,
+            "⛳ Escanteios — 2º tempo", c2_status,
             projection=f"{c2_total:.2f}".replace('.', ',') if c2_total is not None else None,
             lines=_gm_pct_lines(c2_total, [2.5,3.5,4.5,5.5,6.5]) if c2_total is not None else None,
             note=(f"Base específica recuperada: {c2_sample} partidas com divisão por tempo." if c2_total is not None
                   else "Separação por tempo não encontrada com cobertura suficiente após a busca complementar."),
         )
         _gm_team_market_card(
-            "👥 Escanteios por equipe", c_status, team_a, team_b,
+            "⛳ Escanteios por equipe", c_status, team_a, team_b,
             home_projection=c['home'] if c else None,
             away_projection=c['away'] if c else None,
             home_lines=_gm_pct_lines(c['home'], [2.5,3.5,4.5,5.5]) if c else None,
@@ -9566,7 +9566,7 @@ def render_core_markets_dashboard(a, b, team_a, team_b, df, probs=None, sample_g
                         lines=_gm_pct_lines(c['total'], [1.5,2.5,3.5,4.5,5.5]) if c else None,
                         note="Cartões são tratados como estimativa estatística; média alta não gera recomendação automaticamente." if c else None)
         _gm_team_market_card(
-            "👥 Cartões por equipe", c_status, team_a, team_b,
+            "🟨 Cartões por equipe", c_status, team_a, team_b,
             home_projection=c['home'] if c else None,
             away_projection=c['away'] if c else None,
             home_lines=_gm_pct_lines(c['home'], [0.5,1.5,2.5,3.5]) if c else None,
@@ -9608,7 +9608,7 @@ def render_core_markets_dashboard(a, b, team_a, team_b, df, probs=None, sample_g
         s_team_status = _gm_market_status(sample_games, available=individual_shots_ok, specific_sample=shot_sample)
         srows=[(team_a,f"{s['home']:.2f}".replace('.',',')),(team_b,f"{s['away']:.2f}".replace('.',','))] if individual_shots_ok else None
         _gm_market_card(
-            "👥 Finalizações por equipe", s_team_status, compact_rows=srows,
+            "🎯 Finalizações por equipe", s_team_status, compact_rows=srows,
             note=(("Projeção individual cruza produção ofensiva e finalizações cedidas pelo adversário.")
                   if individual_shots_ok else
                   ("A fonte atual não oferece cobertura suficiente de produção + concessão para as duas equipes; "
@@ -9618,7 +9618,7 @@ def render_core_markets_dashboard(a, b, team_a, team_b, df, probs=None, sample_g
         t_team_status = _gm_market_status(sample_games, available=individual_sot_ok, specific_sample=sot_sample)
         trows=[(team_a,f"{t['home']:.2f}".replace('.',',')),(team_b,f"{t['away']:.2f}".replace('.',','))] if individual_sot_ok else None
         _gm_market_card(
-            "👥 Finalizações no alvo por equipe", t_team_status, compact_rows=trows,
+            "🥅 Finalizações no alvo por equipe", t_team_status, compact_rows=trows,
             note=(("Projeção individual cruza chutes no alvo produzidos e cedidos pelo adversário.")
                   if individual_sot_ok else
                   ("Cobertura defensiva insuficiente para separar as equipes com segurança; mercado individual mantido Inconclusivo.")) if t else None,
@@ -9678,10 +9678,10 @@ def gm_render_compact_analysis_grid(team_a, team_b, probs, expectations, a, b, d
         .gm-cg-row span{font-size:.69rem;color:#9dacb8;line-height:1.15}.gm-cg-row b{font-size:.94rem;color:#e8eef2;text-align:right;line-height:1.15;margin-top:5px}
         .gm-cg-proj{grid-column:1/-1;background:linear-gradient(90deg,#0b2119,#0d2920);border:1px solid #25835b;min-height:48px;flex-direction:row;align-items:center}
         .gm-cg-proj span{color:#63d7a1;font-size:.72rem;font-weight:800;text-transform:uppercase;letter-spacing:.04em}.gm-cg-proj b{color:#fff;font-size:1.08rem;margin:0}
-        .gm-cg-good{border-color:#1c8659;background:linear-gradient(145deg,#0d211b,#10231f)}.gm-cg-good b{color:#28df88}
-        .gm-cg-hot{border-color:#27e58d;background:linear-gradient(145deg,#0b2b20,#10372a);box-shadow:inset 0 0 0 1px rgba(39,229,141,.12),0 0 14px rgba(39,229,141,.08)}
+        .gm-cg-good{border-color:#25a86f;background:linear-gradient(145deg,#0d281f,#123126);box-shadow:inset 0 0 0 1px rgba(39,229,141,.06)}.gm-cg-good b{color:#28df88}
+        .gm-cg-hot{border-color:#35f39b;background:linear-gradient(145deg,#0a3525,#105039);box-shadow:inset 0 0 0 1px rgba(39,229,141,.12),0 0 14px rgba(39,229,141,.08)}
         .gm-cg-hot b{color:#39f19a;font-size:1.02rem}.gm-cg-hot span{color:#b8d8cb}
-        .gm-cg-soft{opacity:.86}
+        .gm-cg-soft{opacity:1;border-color:#304454;background:linear-gradient(145deg,#101d2a,#122131)}.gm-cg-soft b{color:#dce6ec}.gm-cg-soft span{color:#9fb0bd}
         @media(max-width:760px){.gm-cg-grid{grid-template-columns:1fr}.gm-cg-card{padding:10px}.gm-cg-row{min-height:50px}}
         </style>""", unsafe_allow_html=True)
     st.markdown('<div class="gm-cg-wrap"><div class="gm-cg-note">Projeção GM em faixa própria · probabilidades ≥70% destacadas · análise completa preservada.</div><div class="gm-cg-grid">'+''.join(blocks)+'</div></div>', unsafe_allow_html=True)
@@ -12151,7 +12151,7 @@ def gm_share_market_sections(team_a, team_b, probs, expectations, a, b, df, samp
         rows=[("Projeção GM", f"{g['total']:.2f}".replace('.', ','))]
         rows += [(f"Mais de {str(line).replace('.', ',')}", f"{pct:.0f}%") for line,pct in _gm_pct_lines(g['total'], [0.5,1.5,2.5,3.5,4.5])]
         add("⚽ Gols na partida", rows)
-        add("👥 Gols por equipe", [(team_a, f"{g['home']:.2f}".replace('.', ',')), (team_b, f"{g['away']:.2f}".replace('.', ','))])
+        add("⚽ Gols por equipe", [(team_a, f"{g['home']:.2f}".replace('.', ',')), (team_b, f"{g['away']:.2f}".replace('.', ','))])
         btts=(1-math.exp(-max(g['home'],0.01)))*(1-math.exp(-max(g['away'],0.01)))*100
         add("🤝 Ambas marcam", [("Sim", f"{btts:.0f}%"), ("Não", f"{100-btts:.0f}%")])
 
@@ -12168,7 +12168,7 @@ def gm_share_market_sections(team_a, team_b, probs, expectations, a, b, df, samp
         if goal_split is None:
             goal_split=expected_goals_by_half(team_a,team_b,matches,g['total'])
         if goal_split:
-            for title,key in (("⏱️ Gols — 1º tempo","first"),("⏱️ Gols — 2º tempo","second")):
+            for title,key in (("⚽ Gols — 1º tempo","first"),("⚽ Gols — 2º tempo","second")):
                 val=goal_split[key]
                 rows=[("Projeção GM",f"{val:.2f}".replace('.',','))]
                 rows += [(f"Mais de {str(line).replace('.', ',')}",f"{pct:.0f}%") for line,pct in _gm_pct_lines(val,[0.5,1.5,2.5])]
@@ -12180,7 +12180,7 @@ def gm_share_market_sections(team_a, team_b, probs, expectations, a, b, df, samp
         rows=[("Projeção GM",f"{c['total']:.2f}".replace('.',','))]
         rows += [(f"Mais de {str(line).replace('.', ',')}",f"{pct:.0f}%") for line,pct in _gm_pct_lines(c['total'],[6.5,7.5,8.5,9.5,10.5])]
         add("⛳ Escanteios na partida",rows)
-        for title,metric,lines in (("⏱️ Escanteios — 1º tempo","Escanteios 1T",[2.5,3.5,4.5,5.5,6.5]),("⏱️ Escanteios — 2º tempo","Escanteios 2T",[2.5,3.5,4.5,5.5,6.5])):
+        for title,metric,lines in (("⛳ Escanteios — 1º tempo","Escanteios 1T",[2.5,3.5,4.5,5.5,6.5]),("⛳ Escanteios — 2º tempo","Escanteios 2T",[2.5,3.5,4.5,5.5,6.5])):
             va,vb=metric_value(a,metric),metric_value(b,metric)
             if va is not None and vb is not None:
                 total=va+vb; rr=[("Projeção GM",f"{total:.2f}".replace('.',','))]
@@ -12190,7 +12190,7 @@ def gm_share_market_sections(team_a, team_b, probs, expectations, a, b, df, samp
         for team,val in ((team_a,c['home']),(team_b,c['away'])):
             rr.append((team,f"{val:.2f}".replace('.',',')))
             rr += [(f"{team} +{str(line).replace('.', ',')}",f"{pct:.0f}%") for line,pct in _gm_pct_lines(val,[2.5,3.5,4.5,5.5])]
-        add("👥 Escanteios por equipe",rr)
+        add("⛳ Escanteios por equipe",rr)
 
     # Cartões.
     c=ex.get("Cartões")
@@ -12202,7 +12202,7 @@ def gm_share_market_sections(team_a, team_b, probs, expectations, a, b, df, samp
         for team,val in ((team_a,c['home']),(team_b,c['away'])):
             rr.append((team,f"{val:.2f}".replace('.',',')))
             rr += [(f"{team} +{str(line).replace('.', ',')}",f"{pct:.0f}%") for line,pct in _gm_pct_lines(val,[0.5,1.5,2.5,3.5])]
-        add("👥 Cartões por equipe",rr)
+        add("🟨 Cartões por equipe",rr)
         both1=(prob_over_half_line(c['home'],0.5) or 0)*(prob_over_half_line(c['away'],0.5) or 0)*100
         both2=(prob_over_half_line(c['home'],1.5) or 0)*(prob_over_half_line(c['away'],1.5) or 0)*100
         add("🟨 Cartões — ambas equipes",[("Ambas 1+",f"{both1:.0f}%"),("Ambas 2+",f"{both2:.0f}%")])
@@ -12212,12 +12212,12 @@ def gm_share_market_sections(team_a, team_b, probs, expectations, a, b, df, samp
     if s:
         add("🎯 Finalizações",[("Total da partida",f"{s['total']:.2f}".replace('.',','))])
         if s.get("individual_reliable",False):
-            add("👥 Finalizações por equipe",[(team_a,f"{s['home']:.2f}".replace('.',',')),(team_b,f"{s['away']:.2f}".replace('.',','))])
+            add("🎯 Finalizações por equipe",[(team_a,f"{s['home']:.2f}".replace('.',',')),(team_b,f"{s['away']:.2f}".replace('.',','))])
     t=ex.get("Chutes no alvo")
     if t:
         add("🥅 Finalizações no alvo",[("Total da partida",f"{t['total']:.2f}".replace('.',','))])
         if t.get("individual_reliable",False):
-            add("👥 No alvo por equipe",[(team_a,f"{t['home']:.2f}".replace('.',',')),(team_b,f"{t['away']:.2f}".replace('.',','))])
+            add("🥅 No alvo por equipe",[(team_a,f"{t['home']:.2f}".replace('.',',')),(team_b,f"{t['away']:.2f}".replace('.',','))])
 
     # Outros dados.
     for title,metric,suffix in (("⚪ Posse de bola","Posse (%)","%"),("🚫 Faltas por equipe","Faltas",""),("🚩 Impedimentos por equipe","Impedimentos","")):
@@ -12397,9 +12397,9 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
             const m=String(r[1]).match(/(\d+(?:[.,]\d+)?)%/); const pct=m?parseFloat(m[1].replace(',','.')):null;
             if(isProj){{rr(c,bx,yy,bw,44,10,'#0d2920','#25835b',1.4);}}
             else if(pct!==null&&pct>=85&&pct<100){{rr(c,bx,yy,bw,44,10,'#10372a',C.green,1.6);}}
-            else if(pct!==null&&pct>=70&&pct<100){{rr(c,bx,yy,bw,44,10,'#0d211b','#1c8659',1.3);}}
+            else if(pct!==null&&pct>=70&&pct<100){{rr(c,bx,yy,bw,44,10,'#0d281f','#25a86f',1.4);}} else if(pct!==null){{rr(c,bx,yy,bw,44,10,'#122131','#304454',1.1);}}
             const labelColor=isProj?'#63d7a1':C.muted;
-            const valColor=isProj?C.text:((pct!==null&&pct>=70&&pct<100)?C.green:(pct!==null?C.muted:C.text));
+            const valColor=isProj?C.text:((pct!==null&&pct>=85&&pct<100)?'#45f5a3':((pct!==null&&pct>=70&&pct<100)?C.green:(pct!==null?'#d7e1e7':C.text)));
             fit(c,r[0],bx+10,yy+18,bw-20,12,9,isProj?'800':'650',labelColor,'left');
             fit(c,r[1],bx+bw-10,yy+37,bw-20,(pct!==null&&pct>=85&&pct<100)?18:17,11,'850',valColor,'right');
           }});
@@ -13092,29 +13092,10 @@ def render_analysis():
                     })
                 st.dataframe(pd.DataFrame(_rows), hide_index=True, use_container_width=True)
 
+    # V220: oportunidades continuam calculadas internamente para os motores existentes,
+    # mas o bloco redundante no rodapé da análise foi removido. Os próprios mercados
+    # acima já recebem destaque proporcional à probabilidade.
     opportunities = build_opportunities(a, b, team_a, team_b, df)
-    st.markdown("#### ⭐ Oportunidades GM SCORE")
-    # v24: a mensagem usa a mesma regra do seletor: N específico por mercado.
-    _opp_metric_samples = {
-        "gols": _gm_pair_metric_sample(a, b, ["Gols pró", "Gols contra"], 0),
-        "escanteios": _gm_pair_metric_sample(a, b, ["Escanteios"], 0),
-        "cartões": _gm_pair_metric_sample(a, b, ["Amarelos"], 0),
-    }
-    if max(_opp_metric_samples.values(), default=0) < 8:
-        st.caption("Destaques suspensos nesta partida: nenhum mercado habilitado possui amostra específica consolidada (N ≥ 8). Os mercados continuam visíveis acima conforme a cobertura disponível.")
-    elif analysis_context:
-        st.caption("Cada oportunidade exige amostra específica consolidada (N ≥ 8) no próprio mercado; cobertura de uma métrica não libera outra.")
-    if opportunities:
-        for item in opportunities:
-            c1, c2, c3 = st.columns([4.8, 1.3, 1.5])
-            c1.markdown(f"**{item['Mercado']}**  \n<small>{item['Base']}</small>", unsafe_allow_html=True)
-            chance = item["Chance"]
-            chance_color = "#16a34a" if chance >= 80 else "var(--text-color)"
-            c2.markdown(f'<div style="text-align:center"><div style="font-size:.85rem;color:#6b7280">Chance</div><div style="font-size:1.65rem;font-weight:800;color:{chance_color}">{chance:.0f}%</div></div>', unsafe_allow_html=True)
-            c3.markdown(f"**{item['Leitura']}**")
-            st.divider()
-    else:
-        st.info("🔎 Nenhuma oportunidade atingiu os critérios atuais do GM SCORE para destaque nesta partida.")
 
     st.markdown("### 📲 Compartilhar")
     render_share_button(team_a, team_b, league_name, probs, opportunities, expectations, a, b, df=df, sample_games=comp_sample)
@@ -15062,6 +15043,7 @@ def gm_daily_pick_publish_selected(choice):
             "score": choice.get("score"),
             "direct_bet_url": direct_bet_url,
             **(choice.get("model_meta_bingo") or {}),
+            **(choice.get("model_meta_extra") or {}),
         },
     }
     data = gm_daily_pick_rpc("gm_daily_pick_publish_v2", payload)
@@ -15382,22 +15364,19 @@ def gm_leverage_ensure_today(force_refresh=False, target_date=None):
     return {"ok": True, "reason": "candidate", "choice": diversified[0], "alternatives": diversified, "meta": meta, "eligible": len(eligible), "target_date": target_date.isoformat()}
 
 def gm_leverage_publish_choice(leg, target_date=None):
-    """Publica a Alavancagem escolhida pelo ADM usando a estrutura já existente."""
+    """V220: publica Alavancagem pelo mesmo fluxo validado das Bets, preservando product=alavancagem."""
     today=datetime.now(BRASILIA_TZ).date(); target_date=target_date if isinstance(target_date,date) else today
     odd=float(leg.get("odd") or 0); prob=float(leg.get("probability") or 0)
-    payload={
-        "p_pick_date": target_date.isoformat(), "p_pick_kind": "matadeira", "p_status": "pending",
-        "p_bet_type": "simple", "p_total_odd": round(odd,3),
-        "p_bookmaker": str(leg.get("bookmaker") or "Mercado"), "p_bookmaker_url": None,
-        "p_legs": [leg],
-        "p_model_meta": {"build": GM_BUILD, "pick_kind": "matadeira", "product": "alavancagem",
-            "admin_approved": True, "target_odd_min": 1.25, "target_odd_max": 1.35,
-            "min_probability": 80.0, "model_probability": prob,
-            "selected_at": datetime.now(BRASILIA_TZ).isoformat()},
+    choice={
+        "pick_kind":"matadeira", "bet_type":"simple", "legs":[dict(leg)],
+        "total_odd":round(odd,3), "model_probability":prob, "target_date":target_date.isoformat(),
+        "model_meta_extra":{
+            "product":"alavancagem", "admin_approved":True,
+            "target_odd_min":1.25, "target_odd_max":1.35, "min_probability":80.0,
+            "selected_at":datetime.now(BRASILIA_TZ).isoformat(),
+        },
     }
-    data=gm_daily_pick_rpc("gm_daily_pick_publish_v2",payload)
-    st.session_state.pop("_gm_daily_pick_recent_cache",None)
-    return {"ok": True, "data": data}
+    return gm_daily_pick_publish_selected(choice)
 
 def gm_render_admin_leverage_approval():
     st.markdown("### 📈 Alavancagem — avaliação do ADM")
