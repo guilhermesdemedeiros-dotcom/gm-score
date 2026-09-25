@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-24-v208-pro-private-push"
+GM_BUILD = "2026-09-24-v211-dated-tip-notifications"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -2056,19 +2056,27 @@ def gm_publish_system_news(title, message, category="novidade", featured=True, p
 
 
 def gm_daily_pick_publish_news(kind, opt):
-    labels = {"matadeira": "Matadeira", "dica": "Dica do Dia", "bingo": "Bingo"}
-    label = labels.get(str(kind or "dica"), "Dica do Dia")
-    legs = list((opt or {}).get("legs") or [])
-    odd = _gm_daily_num((opt or {}).get("total_odd")) or 0.0
-    count = len(legs)
-    detail = f"{count} seleção(ões) · odd {odd:.2f}" if count else f"odd {odd:.2f}"
+    """V211: notifica produto + data da aposta, inclusive para aprovações futuras."""
+    kind_key = str(kind or "dica").strip().lower()
+    is_leverage = kind_key in {"alavancagem", "leverage"}
+    label = "Alavancagem" if is_leverage else "Bet do Dia"
+    icon = "📈" if is_leverage else "🎯"
+    try:
+        raw_date = str((opt or {}).get("target_date") or (opt or {}).get("pick_date") or "").strip()
+        bet_day = datetime.fromisoformat(raw_date).date()
+    except Exception:
+        bet_day = datetime.now(BRASILIA_TZ).date()
+    date_short = bet_day.strftime("%d/%m")
+    date_full = bet_day.strftime("%d/%m/%Y")
+    title = f"{icon} Nova {label} aprovada — {date_short}"
+    message = f"Uma nova {label} para {date_full} foi aprovada pelo administrador. Confira no GM SCORE."
     return gm_publish_system_news(
-        f"💡 Nova {label} disponível",
-        f"Uma nova {label} foi publicada · {detail}. Confira em Dicas do Dia.",
+        title,
+        message,
         category="novidade",
         featured=True,
-        push_title="💡 Novas Dicas do Dia disponíveis",
-        push_message="Há uma nova publicação no GM SCORE. Abra o app para conferir.",
+        push_title=title,
+        push_message=message,
     )
 
 
@@ -2736,11 +2744,9 @@ def _gm_daily_pick_option_signature(opt):
             "market_code": str(leg.get("market_code") or "").strip(),
             "market": str(leg.get("market") or "").strip(),
         })
-    payload = {
-        "pick_kind": str(opt.get("pick_kind") or "").strip(),
-        "legs": sorted(legs, key=lambda x: (x["match_id"], x["market_code"], x["market"])),
-        "total_odd": round(float(_gm_daily_num(opt.get("total_odd")) or 0.0), 4),
-    }
+    # V210: identidade é a seleção (fixture + mercado), não a odd nem o produto.
+    # Assim uma mudança de preço não faz a mesma sugestão reaparecer.
+    payload = {"legs": sorted(legs, key=lambda x: (x["match_id"], x["market_code"], x["market"]))}
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
@@ -2777,6 +2783,33 @@ def _gm_daily_pick_discard(opt, day):
     discarded.add(sig)
     st.session_state[key] = discarded
     return True
+
+def _gm_daily_pick_mark_shown(opt, day):
+    """V210: registra a opção como já apresentada ao ADM para nunca reaparecer em nova busca."""
+    sig = _gm_daily_pick_option_signature(opt)
+    if not sig:
+        return False
+    try:
+        gm_daily_pick_rpc("gm_admin_discard_daily_pick_option", {
+            "p_pick_date": day.isoformat(),
+            "p_pick_kind": str(opt.get("pick_kind") or "dica"),
+            "p_option_signature": sig,
+            "p_option_payload": {**opt, "gm_admin_seen": True},
+        })
+        key = _gm_daily_pick_discard_key(day)
+        seen = _gm_daily_pick_load_discarded(day)
+        seen.add(sig)
+        st.session_state[key] = seen
+        return True
+    except Exception:
+        return False
+
+
+def _gm_daily_pick_mark_batch_shown(options, day):
+    for opt in options or []:
+        if isinstance(opt, dict):
+            _gm_daily_pick_mark_shown(opt, day)
+
 
 def _gm_daily_pick_remove_cached_option(cache_key, kind, opt):
     """Remove só o card tratado; mantém odds/probabilidades já preparadas para resposta instantânea."""
@@ -2842,70 +2875,62 @@ def gm_render_admin_daily_pick_history(rows=None, days=10):
 
 
 def gm_render_admin_daily_pick_approval():
-    """V172: fila única e privada de Dicas do Dia para decisão do administrador."""
+    """V210: Bets por data (hoje + 6), sem repetir opção já apresentada ao ADM."""
     st.markdown("### 🎯 Bets do Dia — avaliação do ADM")
-    st.caption("Aqui aparecem as melhores oportunidades disponíveis do dia. Nada desta triagem aparece para o cliente antes da sua aprovação.")
-    today=datetime.now(BRASILIA_TZ).date(); cache_key=f"gm_daily_admin_options_{today.isoformat()}"
-    try:
-        rows=gm_daily_pick_recent(120)
+    today=datetime.now(BRASILIA_TZ).date(); days=[today+timedelta(days=i) for i in range(7)]
+    labels={d: ("Hoje" if d==today else "Amanhã" if d==today+timedelta(days=1) else d.strftime("%d/%m")) for d in days}
+    target=st.selectbox("Data das oportunidades",days,format_func=lambda d:f"{labels[d]} · {d.strftime('%d/%m/%Y')}",key="gm_admin_bets_target_v210")
+    cache_key=f"gm_daily_admin_options_{target.isoformat()}"
+    try: rows=gm_daily_pick_recent(120)
     except Exception: st.warning("As Bets do Dia ainda não estão ativas nesta instalação."); return
-    a1,a2=st.columns(2)
-    has=bool(st.session_state.get(cache_key))
-    if a1.button("🔎 Buscar melhores oportunidades" if not has else "➕ Carregar mais oportunidades",use_container_width=True,key="gm_admin_daily_refresh_candidates"):
+    a1,a2=st.columns(2); has=bool(st.session_state.get(cache_key))
+    if a1.button("🔎 Buscar oportunidades inéditas",use_container_width=True,key=f"gm_admin_daily_refresh_{target.isoformat()}"):
         try:
-            with st.spinner("Analisando jogos, probabilidades e odds reais do dia..."):
-                if has: st.session_state[cache_key]=gm_daily_pick_expand_cached_admin_options(st.session_state.get(cache_key) or {},per_kind=12)
-                else: st.session_state[cache_key]=gm_daily_pick_prepare_admin_options(force_refresh=False,per_kind=10)
+            with st.spinner(f"Analisando {target.strftime('%d/%m')}..."):
+                prepared=gm_daily_pick_prepare_admin_options(force_refresh=False,per_kind=12,target_date=target)
+                opts=list(((prepared.get("options") or {}).get("dica") or []))
+                _gm_daily_pick_mark_batch_shown(opts,target)
+                st.session_state[cache_key]=prepared
             st.rerun()
         except Exception as exc: st.error("Não foi possível preparar as oportunidades agora."); st.caption(type(exc).__name__)
-    if a2.button("✅ Conferir resultados",use_container_width=True,key="gm_admin_daily_settle_now"):
-        try:
-            result=gm_daily_pick_settle_pending(limit=100); st.success(f"Conferência: {result.get('settled',0)} atualizada(s) · {result.get('pending',0)} pendente(s)."); st.rerun()
+    if a2.button("✅ Conferir resultados",use_container_width=True,key=f"gm_admin_daily_settle_{target.isoformat()}"):
+        try: result=gm_daily_pick_settle_pending(limit=100); st.success(f"Conferência: {result.get('settled',0)} atualizada(s) · {result.get('pending',0)} pendente(s)."); st.rerun()
         except Exception as exc: st.error("Não foi possível conferir os resultados agora."); st.caption(type(exc).__name__)
     prepared=st.session_state.get(cache_key) or {}
     if not prepared:
-        st.info("Use **Buscar melhores oportunidades** para montar a fila privada do dia.")
-        gm_render_admin_daily_pick_history(rows, days=10)
-        return
+        st.info("Escolha a data e use **Buscar oportunidades inéditas**."); gm_render_admin_daily_pick_history(rows,days=10); return
     if not prepared.get("ok"):
-        st.warning("A fonte de odds/probabilidades não entregou dados suficientes agora.")
-        gm_render_admin_daily_pick_history(rows, days=10)
-        return
-    opts=[o for o in ((prepared.get("options") or {}).get("dica") or []) if not _gm_daily_pick_is_discarded(o,today)]
+        st.warning("A fonte de odds/probabilidades não entregou dados suficientes para esta data."); gm_render_admin_daily_pick_history(rows,days=10); return
+    opts=list(((prepared.get("options") or {}).get("dica") or []))
+    meta=prepared.get("meta") or {}; candidates=prepared.get("candidates") or []
+    n8=sum(int(c.get("sample_n") or 0)>=8 for c in candidates)
+    odd_ok=sum(int(c.get("sample_n") or 0)>=8 and 1.60<=float(c.get("odd") or 0)<=3.00 for c in candidates)
+    prob_ok=sum(int(c.get("sample_n") or 0)>=8 and 1.60<=float(c.get("odd") or 0)<=3.00 and float(c.get("probability") or 0)>=70 for c in candidates)
+    st.caption(f"Funil {target.strftime('%d/%m')}: jogos {int(meta.get('fixtures') or 0)} · previsões {int(meta.get('predictions') or 0)} · odds {int(meta.get('odds') or 0)} · candidatos {len(candidates)} · N≥8 {n8} · odd 1,60–3,00 {odd_ok} · ≥70% {prob_ok} · inéditas exibidas {len(opts)}")
     if not opts:
-        meta=prepared.get("meta") or {}
-        st.warning("A grade foi consultada, mas nenhuma oportunidade diária com probabilidade estimada de pelo menos 70% e odd real entre 1,60 e 3,00 ficou disponível nesta coleta.")
-        st.caption(f"Partidas oficiais: {int(meta.get('fixtures') or 0)} · previsões: {int(meta.get('predictions') or 0)} · odds: {int(meta.get('odds') or 0)} · candidatos válidos: {int(meta.get('candidates') or 0)}.")
-        st.caption(f"Recuperação dirigida: {int(meta.get('direct_prediction_hits') or 0)} previsão(ões) · {int(meta.get('direct_odds_hits') or 0)} conjunto(s) de odds · excluídos por horário/status: {int(meta.get('excluded_past') or 0) + int(meta.get('excluded_status') or 0)}.")
-        gm_render_admin_daily_pick_history(rows, days=10)
-        return
-    st.markdown(f"#### Oportunidades para avaliar · {len(opts)}")
+        st.warning("Nenhuma oportunidade inédita passou por todos os critérios nesta coleta."); gm_render_admin_daily_pick_history(rows,days=10); return
+    st.markdown(f"#### Oportunidades inéditas · {len(opts)}")
     for idx,opt in enumerate(opts,1):
         legs=_gm_daily_sort_legs(opt.get("legs") or []); odd=_gm_daily_num(opt.get("total_odd")) or 0; prob=_gm_daily_num(opt.get("model_probability")) or 0
-        risk=_gm_daily_confidence_band(prob); official=odd<=3.0
-        stat_label="✅ Conta na estatística oficial" if official else "⚠️ Fora da estatística oficial (odd > 3,00)"
-        special=str(opt.get("opportunity_class") or "")=="high_odd"
-        prefix="🎯 Oportunidade especial" if special else "💡 Dica do Dia"
-        st.markdown(f"**#{idx} · {prefix} · Segurança {risk.lower()} · {prob:.0f}% · odd {odd:.2f}**")
-        st.caption(stat_label)
-        for leg in legs: st.markdown(f"- **{leg.get('market')}** @ {(_gm_daily_num(leg.get('odd')) or 0):.2f} · {(_gm_daily_num(leg.get('probability')) or 0):.0f}% · {leg.get('home')} × {leg.get('away')} · {_gm_daily_time_label(leg.get('time'))}")
-        direct_bet_url,invalid=gm_daily_pick_admin_bet_link("dica",idx,"gm_admin_v172")
+        st.markdown(f"**#{idx} · {prob:.0f}% · odd {odd:.2f}**")
+        for leg in legs: st.markdown(f"- **{leg.get('market')}** @ {(_gm_daily_num(leg.get('odd')) or 0):.2f} · {(_gm_daily_num(leg.get('probability')) or 0):.0f}% · N {int(leg.get('sample_n') or 0)} · {leg.get('home')} × {leg.get('away')} · {_gm_daily_time_label(leg.get('time'))}")
+        direct_bet_url,invalid=gm_daily_pick_admin_bet_link("dica",idx,f"gm_admin_v210_{target.isoformat()}")
         c1,c2=st.columns([2,1])
-        if c1.button("✅ Aprovar e enviar aos clientes",use_container_width=True,type="primary",key=f"gm_admin_approve_dica_{idx}",disabled=invalid):
+        if c1.button("✅ Aprovar e enviar aos clientes",use_container_width=True,type="primary",key=f"gm_admin_approve_{target.isoformat()}_{idx}",disabled=invalid):
             try:
-                publish_opt=dict(opt); publish_opt["pick_kind"]="dica"; publish_opt["direct_bet_url"]=direct_bet_url
+                publish_opt=dict(opt); publish_opt["pick_kind"]="dica"; publish_opt["target_date"]=target.isoformat(); publish_opt["direct_bet_url"]=direct_bet_url
                 result=gm_daily_pick_publish_selected(publish_opt)
                 if result.get("ok"):
                     _gm_daily_pick_remove_cached_option(cache_key,"dica",opt)
                     try: gm_daily_pick_publish_news("dica",publish_opt)
                     except Exception: pass
-                    st.toast("Dica publicada para os clientes.",icon="✅"); st.rerun()
-                else: st.warning("A dica não pôde ser publicada.")
-            except Exception as exc: st.error("Falha ao publicar a dica."); st.caption(type(exc).__name__)
-        if c2.button("✕ Descartar",use_container_width=True,key=f"gm_admin_discard_dica_{idx}"):
-            _gm_daily_pick_discard(opt,today); _gm_daily_pick_remove_cached_option(cache_key,"dica",opt); st.rerun()
+                    st.toast("Bet publicada para a data escolhida.",icon="✅"); st.rerun()
+                else: st.warning(f"A bet não pôde ser publicada: {result.get('reason') or 'validação'}.")
+            except Exception as exc: st.error("Falha ao publicar a bet."); st.caption(type(exc).__name__)
+        if c2.button("✕ Recusar",use_container_width=True,key=f"gm_admin_reject_{target.isoformat()}_{idx}"):
+            _gm_daily_pick_remove_cached_option(cache_key,"dica",opt); st.rerun()
         if idx<len(opts): st.divider()
-    gm_render_admin_daily_pick_history(rows, days=10)
+    gm_render_admin_daily_pick_history(rows,days=10)
 
 def gm_render_admin_vip_manager():
     """V187: gestão compacta em três estados reais: PRO, Grátis e Suspensos."""
@@ -14237,6 +14262,69 @@ def _gm_daily_kickoff_at(target_date, time_value):
         return None
 
 
+def _gm_daily_candidate_sample_map(predictions):
+    """V209: calcula N real sem enriquecimento N-por-partida.
+
+    Carrega no máximo uma base doméstica cacheada por competição e reaproveita-a
+    para todos os fixtures. Para copas continentais, resolve a liga doméstica pelo
+    elenco oficial conhecido. Se não houver base verificável, N=0 e a seleção não
+    pode virar oportunidade.
+    """
+    reverse_ids = {str(v): k for k, v in (GM_APIFOOTBALL_FIXED_LEAGUE_IDS or {}).items()}
+    datasets = {}
+    out = {}
+
+    def domestic_comp(team, league_id):
+        comp = reverse_ids.get(str(league_id or ""))
+        if comp and comp not in CONTEXTUAL_COMPETITIONS and comp != GM_NATIONAL_COMPETITION:
+            return comp
+        wanted = _norm_team(team)
+        for name, roster in (CURRENT_TEAM_ROSTERS or {}).items():
+            if name in CONTEXTUAL_COMPETITIONS or name == GM_NATIONAL_COMPETITION:
+                continue
+            if any(_norm_team(x) == wanted for x in (roster or [])):
+                return name
+        return None
+
+    def team_row(team, league_id):
+        comp = domestic_comp(team, league_id)
+        if not comp:
+            return None
+        if comp not in datasets:
+            try:
+                datasets[comp] = _domestic_dataset(comp, 10)
+            except Exception:
+                datasets[comp] = None
+        df = datasets.get(comp)
+        if df is None or getattr(df, "empty", True):
+            return None
+        try:
+            return _gm_find_team_row(df, team)
+        except Exception:
+            return None
+
+    for pred in predictions or []:
+        if not isinstance(pred, dict):
+            continue
+        mid = str(pred.get("match_id") or "").strip()
+        if not mid:
+            continue
+        league_id = str(pred.get("league_id") or "")
+        home = str(pred.get("match_hometeam_name") or "").strip()
+        away = str(pred.get("match_awayteam_name") or "").strip()
+        rh, ra = team_row(home, league_id), team_row(away, league_id)
+        if rh is None or ra is None:
+            out[mid] = 0
+            continue
+        try:
+            # Todos os mercados atualmente usados nas Bets/Alavancagem dependem
+            # de resultado/gols. Exigimos cobertura real de gols dos dois lados.
+            out[mid] = int(_gm_pair_metric_sample(rh, ra, ["Gols pró", "Gols contra"], 0))
+        except Exception:
+            out[mid] = 0
+    return out
+
+
 def gm_daily_pick_candidates(target_date, cutoff_at=None):
     """Monta candidatos somente entre partidas ainda não iniciadas.
 
@@ -14249,6 +14337,7 @@ def gm_daily_pick_candidates(target_date, cutoff_at=None):
     payload = gm_daily_pick_source_payload(target_iso)
     if payload.get("error"):
         return [], {"error": payload.get("error"), "fixtures": len(payload.get("official_fixture_ids") or []), "predictions": len(payload.get("predictions") or []), "odds": len(payload.get("odds") or []), "direct_prediction_hits": int(payload.get("direct_prediction_hits") or 0), "direct_odds_hits": int(payload.get("direct_odds_hits") or 0)}
+    sample_map = _gm_daily_candidate_sample_map(payload.get("predictions") or [])
     allowed_ids = {str(v) for v in (GM_APIFOOTBALL_FIXED_LEAGUE_IDS or {}).values()}
     odd_map = _gm_daily_pick_bookmaker_rows(payload.get("odds") or [])
     fixture_map = {}
@@ -14339,6 +14428,7 @@ def gm_daily_pick_candidates(target_date, cutoff_at=None):
                 "implied_probability": round(implied, 2), "edge": round(edge, 2), "bookmaker": bookmaker,
                 "market_family": _gm_daily_market_family(code),
                 "confidence_band": _gm_daily_confidence_band(p),
+                "sample_n": int(sample_map.get(mid, 0) or 0),
             })
     return candidates, {
         "error": None, "fixtures": len(payload.get("official_fixture_ids") or []),
@@ -14674,10 +14764,12 @@ def _gm_daily_pick_unified_options(candidates, limit=8, initial_avoid_legs=None)
         except Exception:
             continue
         sig=(str(c.get("match_id") or ""),str(c.get("market_code") or ""))
-        if not sig[0] or not sig[1] or sig in avoid or p < 70.0 or not (1.60 <= odd <= 3.00):
+        sample_n=int(c.get("sample_n") or 0)
+        if not sig[0] or not sig[1] or sig in avoid or sample_n < 8 or p < 70.0 or not (1.60 <= odd <= 3.00):
             continue
-        if edge < -7.0:
-            continue
+        # V209: edge é critério de ordenação/alerta, não uma segunda barreira
+        # arbitrária depois de probabilidade + odd real + N conclusivo.
+        # A coerência com o preço continua refletida no score abaixo.
         fam=_gm_daily_market_family(c.get("market_code"))
         score=p + max(-4.0,min(8.0,edge))*0.55 - abs(odd-1.90)*0.35
         pool.append((score,p,edge,-odd,fam,dict(c)))
@@ -14748,33 +14840,25 @@ def _gm_daily_pick_high_odd_option(candidates, initial_avoid_legs=None):
         if total>3.0: break
     return None
 
-def gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=8):
+def gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=8, target_date=None):
     """V172: prepara uma fila única de Dicas do Dia para avaliação privada do ADM."""
     _perf_started=time.perf_counter()
     profile=gm_auth_get_profile(force=False)
     if (profile or {}).get("role")!="admin": return {"ok":False,"reason":"admin_only"}
     today=datetime.now(BRASILIA_TZ).date()
+    target_date = target_date if isinstance(target_date, date) else today
+    if target_date < today or target_date > today + timedelta(days=6):
+        return {"ok":False,"reason":"date_out_of_range"}
     if force_refresh:
         try: gm_daily_pick_source_payload.clear()
         except Exception: pass
-        _gm_daily_pick_disk_cache_clear(today.isoformat())
+        _gm_daily_pick_disk_cache_clear(target_date.isoformat())
     recent_rows=gm_daily_pick_recent(100)
-    existing_rows=[r for r in recent_rows if str(r.get("pick_date") or "")==today.isoformat()]
-    cutoff_at=datetime.now(BRASILIA_TZ)+timedelta(minutes=2)
+    existing_rows=[r for r in recent_rows if str(r.get("pick_date") or "")==target_date.isoformat()]
+    cutoff_at=(datetime.now(BRASILIA_TZ)+timedelta(minutes=2)) if target_date == today else datetime(target_date.year,target_date.month,target_date.day,0,0,tzinfo=BRASILIA_TZ)
     _source_started=time.perf_counter()
-    candidates,meta=gm_daily_pick_candidates(today,cutoff_at=cutoff_at)
-    # V174: se todos os jogos de hoje já começaram/encerraram, a triagem ADM não
-    # fica vazia por definição. Busca a próxima grade oficial (amanhã), mantendo
-    # a publicação exclusivamente manual. Não rebaixa probabilidade nem inventa odd.
-    _opportunity_date = today
-    if not candidates and not meta.get("error"):
-        _tomorrow = today + timedelta(days=1)
-        _tomorrow_cutoff = datetime(_tomorrow.year, _tomorrow.month, _tomorrow.day, 0, 0, tzinfo=BRASILIA_TZ)
-        _next_candidates, _next_meta = gm_daily_pick_candidates(_tomorrow, cutoff_at=_tomorrow_cutoff)
-        if _next_candidates and not _next_meta.get("error"):
-            candidates, meta = _next_candidates, dict(_next_meta)
-            _opportunity_date = _tomorrow
-            meta["fallback_next_day"] = True
+    candidates,meta=gm_daily_pick_candidates(target_date,cutoff_at=cutoff_at)
+    _opportunity_date = target_date
     _source_seconds=time.perf_counter()-_source_started
     meta=dict(meta or {})
     meta["opportunity_date"] = _opportunity_date.isoformat()
@@ -14784,7 +14868,7 @@ def gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=8):
         for leg in row.get("legs") or []:
             sig=(str((leg or {}).get("match_id") or "").strip(),str((leg or {}).get("market_code") or "").strip())
             if sig!=("",""): published_legs.add(sig)
-    discarded=_gm_daily_pick_load_discarded(today,force=force_refresh)
+    discarded=_gm_daily_pick_load_discarded(target_date,force=force_refresh)
     raw=_gm_daily_pick_unified_options(candidates,limit=max(8,int(per_kind)),initial_avoid_legs=published_legs)
     _reserved_for_high=set(published_legs)
     for _o in raw:
@@ -14793,6 +14877,8 @@ def gm_daily_pick_prepare_admin_options(force_refresh=False, per_kind=8):
     _high=_gm_daily_pick_high_odd_option(candidates,initial_avoid_legs=_reserved_for_high)
     if _high: raw.append(_high)
     accepted=[o for o in raw if _gm_daily_pick_option_signature(o) not in discarded]
+    for o in accepted:
+        o["target_date"] = target_date.isoformat()
     meta=dict(meta or {}); meta["perf_source_seconds"]=round(_source_seconds,3); meta["perf_total_seconds"]=round(time.perf_counter()-_perf_started,3)
     return {"ok":True,"reason":"prepared","options":{"dica":accepted},"meta":meta,"rows":existing_rows,"candidates":candidates}
 
@@ -14826,21 +14912,27 @@ def gm_daily_pick_publish_selected(choice):
     if not isinstance(choice, dict):
         return {"ok": False, "reason": "invalid_choice"}
     today = datetime.now(BRASILIA_TZ).date()
-    if today < GM_DAILY_PICK_RESET_DATE:
+    try:
+        target_date = datetime.fromisoformat(str(choice.get("target_date") or today.isoformat())).date()
+    except Exception:
+        target_date = today
+    if target_date < today or target_date > today + timedelta(days=6) or target_date < GM_DAILY_PICK_RESET_DATE:
         return {"ok": False, "reason": "reset_window"}
     pick_kind = str(choice.get("pick_kind") or "").strip()
     if pick_kind not in {"matadeira", "dica", "bingo"}:
         return {"ok": False, "reason": "invalid_kind"}
     legs = [dict(x) for x in (choice.get("legs") or []) if isinstance(x, dict)]
-    if not legs or any(float(x.get("probability") or 0.0) < 75.0 for x in legs):
-        return {"ok": False, "reason": "probability_floor"}
+    if not legs or any(float(x.get("probability") or 0.0) < 70.0 or int(x.get("sample_n") or 0) < 8 for x in legs):
+        return {"ok": False, "reason": "quality_floor"}
+    if any(str(x.get("market_code") or "").startswith("U") and (float(x.get("probability") or 0.0) < 85.0 or int(x.get("sample_n") or 0) < 10) for x in legs):
+        return {"ok": False, "reason": "under_market_strict_floor"}
     # V124: não bloqueia uma segunda publicação da mesma categoria no mesmo dia.
     # A identidade de cada aposta permanece no registro individual retornado pela RPC.
     direct_bet_url = _gm_daily_valid_direct_bet_url(choice.get("direct_bet_url"))
     if choice.get("direct_bet_url") and not direct_bet_url:
         return {"ok": False, "reason": "invalid_bet_link"}
     payload = {
-        "p_pick_date": today.isoformat(),
+        "p_pick_date": target_date.isoformat(),
         "p_pick_kind": pick_kind,
         "p_status": "pending",
         "p_bet_type": str(choice.get("bet_type") or "none"),
@@ -15112,26 +15204,34 @@ def _gm_is_leverage_row(row):
     return str(meta.get("product") or "").strip().lower() == "alavancagem"
 
 
-def gm_leverage_ensure_today(force_refresh=False):
+def gm_leverage_ensure_today(force_refresh=False, target_date=None):
     """V177: prepara a melhor Alavancagem do dia; publicação exige aprovação do ADM."""
     today = datetime.now(BRASILIA_TZ).date()
+    target_date = target_date if isinstance(target_date, date) else today
+    if target_date < today or target_date > today + timedelta(days=6):
+        return {"ok": False, "reason": "date_out_of_range"}
     try:
         rows = gm_daily_pick_recent(100) or []
     except Exception as exc:
         return {"ok": False, "reason": "recent_unavailable", "error": type(exc).__name__}
-    existing = [r for r in rows if str(r.get("pick_date") or "") == today.isoformat() and _gm_is_leverage_row(r)]
+    existing = [r for r in rows if str(r.get("pick_date") or "") == target_date.isoformat() and _gm_is_leverage_row(r)]
     if existing:
         return {"ok": True, "reason": "exists", "row": existing[0]}
     if force_refresh:
         try: gm_daily_pick_source_payload.clear()
         except Exception: pass
-    cutoff = datetime.now(BRASILIA_TZ) + timedelta(minutes=2)
+    cutoff = (datetime.now(BRASILIA_TZ) + timedelta(minutes=2)) if target_date == today else datetime(target_date.year,target_date.month,target_date.day,0,0,tzinfo=BRASILIA_TZ)
     try:
-        candidates, meta = gm_daily_pick_candidates(today, cutoff_at=cutoff)
+        candidates, meta = gm_daily_pick_candidates(target_date, cutoff_at=cutoff)
     except Exception as exc:
         return {"ok": False, "reason": "source_error", "error": type(exc).__name__}
     if meta.get("error"):
         return {"ok": False, "reason": "source_error", "meta": meta}
+    published_legs=set()
+    for row in rows:
+        if str(row.get("pick_date") or "") != target_date.isoformat(): continue
+        for leg in row.get("legs") or []:
+            published_legs.add((str((leg or {}).get("match_id") or ""),str((leg or {}).get("market_code") or "")))
     eligible=[]
     supported={"1","2","1X","X2","12","O0.5","O1.5","U1.5","O2.5","U2.5","O3.5","U3.5","BTTS_Y","BTTS_N"}
     for c in candidates or []:
@@ -15140,20 +15240,35 @@ def gm_leverage_ensure_today(force_refresh=False):
         except Exception:
             continue
         if str(c.get("market_code") or "") not in supported: continue
+        sample_n=int(c.get("sample_n") or 0); code=str(c.get("market_code") or "")
+        if (str(c.get("match_id") or ""),code) in published_legs: continue
+        if sample_n < 8: continue
         if not (1.25 <= odd <= 1.35): continue
-        if prob < 80.0 or edge < -4.0: continue
+        if prob < 80.0: continue
+        if code.startswith("U") and (prob < 88.0 or sample_n < 10): continue
+        opt={"pick_kind":"matadeira","bet_type":"simple","legs":[dict(c)],"total_odd":odd,"model_probability":prob,"target_date":target_date.isoformat()}
+        if _gm_daily_pick_option_signature(opt) in _gm_daily_pick_load_discarded(target_date): continue
         eligible.append(dict(c))
     if not eligible:
-        return {"ok": True, "reason": "no_quality_pick", "meta": meta, "eligible": 0}
-    eligible.sort(key=lambda c:(float(c.get("probability") or 0), float(c.get("edge") or -999), -abs(float(c.get("odd") or 0)-1.30)), reverse=True)
-    return {"ok": True, "reason": "candidate", "choice": eligible[0], "alternatives": eligible[:8], "meta": meta, "eligible": len(eligible)}
+        diagnostic={"total":len(candidates or []),"n8":sum(int(x.get("sample_n") or 0)>=8 for x in (candidates or [])),"odd":sum(1.25<=float(x.get("odd") or 0)<=1.35 for x in (candidates or [])),"prob80":sum(float(x.get("probability") or 0)>=80.0 for x in (candidates or []))}
+        return {"ok": True, "reason": "no_quality_pick", "meta": meta, "eligible": 0, "diagnostic": diagnostic}
+    eligible.sort(key=lambda c:(float(c.get("probability") or 0), -abs(float(c.get("odd") or 0)-1.30), str(c.get("market_code") or "")), reverse=True)
+    diversified=[]; used_matches=set(); family_counts={}
+    for c in eligible:
+        mid=str(c.get("match_id") or ""); fam=_gm_daily_market_family(c.get("market_code"))
+        if mid in used_matches and len(diversified) < 4: continue
+        if family_counts.get(fam,0) >= 2: continue
+        diversified.append(c); used_matches.add(mid); family_counts[fam]=family_counts.get(fam,0)+1
+        if len(diversified)>=6: break
+    if not diversified: diversified=eligible[:6]
+    return {"ok": True, "reason": "candidate", "choice": diversified[0], "alternatives": diversified, "meta": meta, "eligible": len(eligible), "target_date": target_date.isoformat()}
 
-def gm_leverage_publish_choice(leg):
+def gm_leverage_publish_choice(leg, target_date=None):
     """Publica a Alavancagem escolhida pelo ADM usando a estrutura já existente."""
-    today=datetime.now(BRASILIA_TZ).date()
+    today=datetime.now(BRASILIA_TZ).date(); target_date=target_date if isinstance(target_date,date) else today
     odd=float(leg.get("odd") or 0); prob=float(leg.get("probability") or 0)
     payload={
-        "p_pick_date": today.isoformat(), "p_pick_kind": "matadeira", "p_status": "pending",
+        "p_pick_date": target_date.isoformat(), "p_pick_kind": "matadeira", "p_status": "pending",
         "p_bet_type": "simple", "p_total_odd": round(odd,3),
         "p_bookmaker": str(leg.get("bookmaker") or "Mercado"), "p_bookmaker_url": None,
         "p_legs": [leg],
@@ -15168,38 +15283,53 @@ def gm_leverage_publish_choice(leg):
 
 def gm_render_admin_leverage_approval():
     st.markdown("### 📈 Alavancagem — avaliação do ADM")
-    st.caption("Odds 1,25–1,35 · alta confiança · mín. 80%.")
-    today=datetime.now(BRASILIA_TZ).date(); key=f"gm_leverage_admin_candidate_{today.isoformat()}"
-    try:
-        rows=gm_daily_pick_recent(140) or []
-    except Exception:
-        rows=[]
-    existing=[r for r in rows if str(r.get("pick_date") or "")==today.isoformat() and _gm_is_leverage_row(r)]
-    if existing:
-        st.success("A Alavancagem de hoje já foi aprovada e publicada.")
-    else:
-        if st.button("🔎 Buscar Alavancagem", use_container_width=True, key="gm_admin_leverage_search"):
-            with st.spinner("Buscando a melhor opção de alta confiança..."):
-                st.session_state[key]=gm_leverage_ensure_today(force_refresh=True)
-            st.rerun()
-        prepared=st.session_state.get(key) or {}
-        if prepared.get("reason")=="candidate":
-            leg=prepared.get("choice") or {}; odd=_gm_daily_num(leg.get("odd")) or 0; prob=_gm_daily_num(leg.get("probability")) or 0
-            st.markdown(f"**Melhor opção · {prob:.0f}% · odd {odd:.2f}**")
+    st.caption("Janela de 7 dias · odds 1,25–1,35 · mín. 80% · Under somente em cenário excepcional.")
+    today=datetime.now(BRASILIA_TZ).date(); days=[today+timedelta(days=i) for i in range(7)]
+    target=st.selectbox("Data da Alavancagem",days,format_func=lambda d:("Hoje" if d==today else "Amanhã" if d==today+timedelta(days=1) else d.strftime("%d/%m"))+f" · {d.strftime('%d/%m/%Y')}",key="gm_admin_lev_target_v210")
+    key=f"gm_leverage_admin_candidate_{target.isoformat()}"
+    try: rows=gm_daily_pick_recent(140) or []
+    except Exception: rows=[]
+    existing=[r for r in rows if str(r.get("pick_date") or "")==target.isoformat() and _gm_is_leverage_row(r)]
+    if existing: st.success("Já existe Alavancagem aprovada para esta data.")
+    if st.button("🔎 Buscar Alavancagens inéditas",use_container_width=True,key=f"gm_admin_leverage_search_{target.isoformat()}"):
+        with st.spinner(f"Buscando opções para {target.strftime('%d/%m')}..."):
+            prepared=gm_leverage_ensure_today(force_refresh=True,target_date=target)
+            if prepared.get("reason")=="candidate":
+                opts=[]
+                for leg in prepared.get("alternatives") or []:
+                    opt={"pick_kind":"matadeira","bet_type":"simple","legs":[leg],"total_odd":float(leg.get("odd") or 0),"model_probability":float(leg.get("probability") or 0),"target_date":target.isoformat()}
+                    opts.append(opt)
+                _gm_daily_pick_mark_batch_shown(opts,target)
+                prepared["shown_options"]=opts
+            st.session_state[key]=prepared
+        st.rerun()
+    prepared=st.session_state.get(key) or {}
+    if prepared.get("reason")=="candidate":
+        opts=prepared.get("shown_options") or []
+        st.caption(f"Elegíveis: {int(prepared.get('eligible') or 0)} · inéditas/diversificadas exibidas: {len(opts)}")
+        for idx,opt in enumerate(opts,1):
+            leg=(opt.get("legs") or [{}])[0]; odd=float(leg.get("odd") or 0); prob=float(leg.get("probability") or 0)
+            st.markdown(f"**#{idx} · {prob:.0f}% · odd {odd:.2f} · N {int(leg.get('sample_n') or 0)}**")
             st.markdown(f"- **{leg.get('market')}** · {leg.get('home')} × {leg.get('away')} · {_gm_daily_time_label(leg.get('time'))}")
-            st.caption(f"Opções elegíveis encontradas: {int(prepared.get('eligible') or 0)}")
-            if st.button("✅ Aprovar e publicar Alavancagem", type="primary", use_container_width=True, key="gm_admin_leverage_approve"):
+            c1,c2=st.columns([2,1])
+            if c1.button("✅ Aprovar Alavancagem",type="primary",use_container_width=True,key=f"gm_lev_approve_{target.isoformat()}_{idx}"):
                 try:
-                    gm_leverage_publish_choice(leg); st.session_state.pop(key,None); st.success("Alavancagem publicada."); st.rerun()
-                except Exception as exc:
-                    st.error("Não foi possível publicar a Alavancagem agora."); st.caption(type(exc).__name__)
-        elif prepared.get("reason")=="no_quality_pick":
-            st.info("Nenhuma opção atingiu a faixa 1,25–1,35 e o mínimo de 80% nesta coleta.")
-        elif prepared and not prepared.get("ok"):
-            st.warning("Não foi possível concluir a busca agora.")
-    st.divider()
-    gm_render_leverage_block(rows, auto_generate=False, show_current=False)
-
+                    result = gm_leverage_publish_choice(leg,target)
+                    if result.get("ok"):
+                        notify_opt={"target_date":target.isoformat(),"legs":[leg],"total_odd":odd}
+                        try: gm_daily_pick_publish_news("alavancagem",notify_opt)
+                        except Exception: pass
+                        st.session_state.pop(key,None); st.success("Alavancagem publicada."); st.rerun()
+                    else:
+                        st.warning("A Alavancagem não pôde ser publicada.")
+                except Exception as exc: st.error("Não foi possível publicar."); st.caption(type(exc).__name__)
+            if c2.button("✕ Recusar",use_container_width=True,key=f"gm_lev_reject_{target.isoformat()}_{idx}"):
+                prepared["shown_options"]=[x for j,x in enumerate(opts,1) if j!=idx]; st.session_state[key]=prepared; st.rerun()
+    elif prepared.get("reason")=="no_quality_pick":
+        st.info("Nenhuma opção inédita atingiu N≥8, odd 1,25–1,35 e mínimo de 80% nesta coleta.")
+        d=prepared.get("diagnostic") or {}; st.caption(f"Candidatos: {int(d.get('total') or 0)} · N≥8: {int(d.get('n8') or 0)} · faixa de odd: {int(d.get('odd') or 0)} · ≥80%: {int(d.get('prob80') or 0)}")
+    elif prepared and not prepared.get("ok"): st.warning("Não foi possível concluir a busca agora.")
+    st.divider(); gm_render_leverage_block(rows,auto_generate=False,show_current=False)
 
 def gm_render_leverage_block(rows=None, auto_generate=False, show_current=True):
     """Bloco discreto da Alavancagem + últimos 20 resultados e aproveitamento real."""
@@ -15247,21 +15377,23 @@ def gm_render_leverage_block(rows=None, auto_generate=False, show_current=True):
 
 
 def gm_render_daily_pick_page():
-    """V172: cliente vê somente dicas que o ADM aprovou; nunca vê a triagem administrativa."""
-    st.markdown("## 🎯 Bets do Dia")
-    st.caption("Análises com valor · odds 1,60–3,00.")
-    try:
-        rows=gm_daily_pick_recent(140)
+    """V210: cliente PRO vê Bets aprovadas de hoje até +6 dias."""
+    st.markdown("## 🎯 Bets do Dia"); st.caption("Aprovadas pelo ADM · hoje + próximos 6 dias.")
+    try: rows=gm_daily_pick_recent(140)
     except Exception: st.warning("As Bets do Dia não puderam ser carregadas agora."); return
-    today=datetime.now(BRASILIA_TZ).date(); yesterday=today-timedelta(days=1)
-    def day_rows(day):
-        return [r for r in rows if str(r.get("pick_date") or "")==day.isoformat() and str(r.get("pick_kind") or "dica") in {"matadeira","dica","bingo"} and not _gm_is_leverage_row(r)]
-    current=day_rows(today)
-    if not current: st.info("Ainda não há Bets do Dia aprovadas para hoje.")
-    else:
-        for row in current: _gm_daily_pick_card(row,today)
+    today=datetime.now(BRASILIA_TZ).date()
+    future_days=[today+timedelta(days=i) for i in range(7)]
+    any_future=False
+    for day in future_days:
+        approved=[r for r in rows if str(r.get("pick_date") or "")==day.isoformat() and str(r.get("status") or "")=="pending" and not _gm_is_leverage_row(r)]
+        if not approved: continue
+        any_future=True; label="Hoje" if day==today else "Amanhã" if day==today+timedelta(days=1) else day.strftime("%A").capitalize()
+        st.markdown(f"### 📅 {label} · {day.strftime('%d/%m')}")
+        for row in approved: _gm_daily_pick_card(row,day)
+    if not any_future: st.info("Ainda não há Bets aprovadas para os próximos 7 dias.")
+    yesterday=today-timedelta(days=1)
     with st.expander("📆 Ontem — dicas e resultados",expanded=False):
-        prev=day_rows(yesterday)
+        prev=[r for r in rows if str(r.get("pick_date") or "")==yesterday.isoformat() and not _gm_is_leverage_row(r)]
         if not prev: st.caption("Ainda não há dicas registradas para ontem.")
         for row in prev: _gm_daily_pick_card(row,yesterday)
     settled=[r for r in rows if str(r.get("status") or "") in {"green","red"} and (_gm_daily_num(r.get("total_odd")) or 999)<=3.0 and not _gm_is_leverage_row(r)]
@@ -15272,24 +15404,30 @@ def gm_render_daily_pick_page():
         if len(unique)>=10: break
     perf=[r for r in settled if str(r.get("pick_date") or "") in set(unique)]
     st.markdown("### 📊 Últimos 10 dias · oficial")
-    st.caption("Odd até 3,00 entra no aproveitamento oficial; acima disso fica fora da contagem.")
     if perf:
         g=sum(str(r.get("status"))=="green" for r in perf); red=sum(str(r.get("status"))=="red" for r in perf); a,b,c=st.columns(3); a.metric("Greens",g); b.metric("Reds",red); c.metric("Aproveitamento",f"{100*g/max(1,g+red):.0f}%")
-    else: st.caption("O histórico oficial aparecerá conforme as dicas com odd até 3,00 forem encerradas.")
+    else: st.caption("O histórico oficial aparecerá conforme as dicas forem encerradas.")
 
 def gm_render_leverage_page(is_free=False):
-    try:
-        rows=gm_daily_pick_recent(140) or []
-    except Exception:
-        st.warning("A Alavancagem não pôde ser carregada agora."); return
+    try: rows=gm_daily_pick_recent(140) or []
+    except Exception: st.warning("A Alavancagem não pôde ser carregada agora."); return
+    today=datetime.now(BRASILIA_TZ).date(); days=[today+timedelta(days=i) for i in range(7)]
+    future=[r for r in rows if _gm_is_leverage_row(r) and str(r.get("status") or "")=="pending" and str(r.get("pick_date") or "") in {d.isoformat() for d in days}]
     if is_free:
-        today=datetime.now(BRASILIA_TZ).date()
-        current=[r for r in rows if str(r.get("pick_date") or "")==today.isoformat() and _gm_is_leverage_row(r) and str(r.get("status") or "")=="pending"]
-        if current: st.info("Há uma Alavancagem PRO disponível hoje. Os resultados anteriores são públicos abaixo.")
-        else: st.info("Ainda não há Alavancagem publicada para hoje.")
-        gm_render_leverage_block(rows, auto_generate=False, show_current=False)
-    else:
-        gm_render_leverage_block(rows, auto_generate=False, show_current=True)
+        if future: st.info(f"Há {len(future)} Alavancagem(ns) PRO aprovada(s) nos próximos 7 dias. Os resultados anteriores são públicos abaixo.")
+        else: st.info("Ainda não há Alavancagem publicada para os próximos 7 dias.")
+        gm_render_leverage_block(rows,auto_generate=False,show_current=False); return
+    st.markdown("### 📈 Alavancagem"); st.caption("Aprovadas pelo ADM · hoje + próximos 6 dias.")
+    if not future: st.info("Ainda não há Alavancagem aprovada para os próximos 7 dias.")
+    for day in days:
+        day_rows=[r for r in future if str(r.get("pick_date") or "")==day.isoformat()]
+        if not day_rows: continue
+        label="Hoje" if day==today else "Amanhã" if day==today+timedelta(days=1) else day.strftime("%d/%m")
+        st.markdown(f"#### 📅 {label} · {day.strftime('%d/%m')}")
+        for row in day_rows:
+            for leg in _gm_daily_sort_legs(row.get("legs") or []):
+                st.markdown(f"- **{leg.get('market')}** @ {(_gm_daily_num(leg.get('odd')) or 0):.2f} · {(_gm_daily_num(leg.get('probability')) or 0):.0f}% · {leg.get('home')} × {leg.get('away')} · {_gm_daily_time_label(leg.get('time'))}")
+    gm_render_leverage_block(rows,auto_generate=False,show_current=False)
 
 def gm_render_tips_hub(is_free=False):
     st.markdown("## 💡 Dicas")
