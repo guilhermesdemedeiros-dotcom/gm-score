@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-24-v205-notifications-stable-no-delete-all"
+GM_BUILD = "2026-09-24-v206-onesignal-external-id-safe"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -1923,6 +1923,45 @@ def gm_render_private_notifications_account():
             st.caption(message)
         if validity:
             st.caption(f"Validade: {validity}")
+
+
+def gm_onesignal_bind_external_id(user_id):
+    """V206: associa o navegador OneSignal ao UUID autenticado sem tocar na sessão Streamlit.
+
+    A sincronização é inteiramente client-side, não altera query params, não chama
+    st.rerun e não lê/escreve tokens do Supabase. Chamadas repetidas são idempotentes.
+    """
+    external_id = str(user_id or "").strip()
+    if not re.fullmatch(r"[0-9a-fA-F-]{36}", external_id):
+        return
+    external_json = json.dumps(external_id)
+    components.html(
+        f"""
+        <script>
+        (() => {{
+          const externalId = {external_json};
+          const bind = async (OneSignal) => {{
+            try {{
+              if (!OneSignal || typeof OneSignal.login !== 'function') return;
+              const key = 'gm_onesignal_external_id_v206';
+              let current = '';
+              try {{ current = window.parent.localStorage.getItem(key) || ''; }} catch (e) {{}}
+              if (current === externalId) return;
+              await OneSignal.login(externalId);
+              try {{ window.parent.localStorage.setItem(key, externalId); }} catch (e) {{}}
+            }} catch (e) {{}}
+          }};
+          try {{
+            const p = window.parent;
+            p.OneSignalDeferred = p.OneSignalDeferred || [];
+            p.OneSignalDeferred.push(async function(OneSignal) {{ await bind(OneSignal); }});
+          }} catch (e) {{}}
+        }})();
+        </script>
+        """,
+        height=0,
+        scrolling=False,
+    )
 
 
 def gm_onesignal_push(title, message, launch_url="https://gmscore.com.br"):
@@ -4563,6 +4602,9 @@ except Exception:
 # V130: resolve FREE/PRO/ADM depois do restore/login e aplica o selo na marca já renderizada.
 # Assim o indicador não desaparece após F5 ou reabertura da sessão persistida.
 if _gm_profile_after_gate:
+    # V206: vincula somente o UUID autenticado ao OneSignal. Não altera autenticação,
+    # URL, persistência, navegação ou ciclo de rerun do Streamlit.
+    gm_onesignal_bind_external_id(st.session_state.get("gm_auth_user_id"))
     _gm_runtime_tier = gm_product_tier(_gm_profile_after_gate)
     _gm_runtime_is_admin = str((_gm_profile_after_gate or {}).get("role") or "").lower() == "admin"
     _gm_runtime_badge = "ADM" if _gm_runtime_is_admin else ("PRO" if _gm_runtime_tier == "pro" else "FREE")
