@@ -41,7 +41,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-24-v216-share-scorecard-club-badges"
+GM_BUILD = "2026-09-24-v217-share-compact-scorecard"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 
@@ -12266,9 +12266,14 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
                 continue
             _label, _value = str(_row[0]), str(_row[1])
             _pct = None
-            if _value.strip().endswith("%"):
+            # A porcentagem pode vir sozinha ("78%") ou acompanhada de odd justa.
+            # No compartilhamento, qualquer mercado probabilístico exatamente 100%
+            # é omitido; a análise normal da partida não é alterada.
+            import re as _re
+            _m_pct = _re.search(r"(^|\s)(\d+(?:[.,]\d+)?)%", _value.strip())
+            if _m_pct:
                 try:
-                    _pct = float(_value.strip()[:-1].replace(",", "."))
+                    _pct = float(_m_pct.group(2).replace(",", "."))
                 except Exception:
                     _pct = None
             if _pct is not None and _pct >= 100.0:
@@ -12317,43 +12322,52 @@ def render_share_button(team_a, team_b, league_name, probs, opportunities, expec
     function fit(c,v,x,y,maxW,size=28,min=15,weight='800',color=C.text,align='center'){{let z=size;c.save();while(z>min){{c.font=`${{weight}} ${{z}}px Arial`;if(c.measureText(String(v)).width<=maxW)break;z--;}}c.fillStyle=color;c.font=`${{weight}} ${{z}}px Arial`;c.textAlign=align;c.fillText(String(v),x,y);c.restore();}}
     function wrap(c,v,x,y,maxW,lineH,size=22,weight='700',color=C.text){{c.save();c.fillStyle=color;c.font=`${{weight}} ${{size}}px Arial`;let line='',yy=y;for(const w of String(v).split(' ')){{const t=line+w+' ';if(c.measureText(t).width>maxW&&line){{c.fillText(line.trim(),x,yy);yy+=lineH;line=w+' ';}}else line=t;}}if(line)c.fillText(line.trim(),x,yy);c.restore();return yy;}}
     function loadImg(src){{return new Promise(resolve=>{{if(!src)return resolve(null);const i=new Image();if(/^https?:/i.test(src))i.crossOrigin='anonymous';i.onload=()=>resolve(i);i.onerror=()=>resolve(null);i.src=src;}});}}
-    function sectionHeight(s){{const n=(s.rows||[]).length;return 76 + Math.ceil(n/3)*78 + 20;}}
+    function sectionHeight(s){{const n=(s.rows||[]).length;return 58 + Math.ceil(n/2)*54 + 14;}}
     document.getElementById('shareBtn').onclick=async()=>{{
-      const W=1080, headerH=500, sectionGap=18, footerH=110;
-      const contentH=(D.sections||[]).reduce((sum,s)=>sum+sectionHeight(s)+sectionGap,0);
+      const W=1080, headerH=455, sectionGap=14, footerH=92;
+      const secs=D.sections||[];
+      let leftH=0,rightH=0; for(const s of secs){{const sh=sectionHeight(s)+sectionGap;if(leftH<=rightH)leftH+=sh;else rightH+=sh;}}
+      const contentH=Math.max(leftH,rightH);
       const H=headerH+contentH+footerH, scale=2;
       const canvas=document.createElement('canvas');canvas.width=W*scale;canvas.height=H*scale;const c=canvas.getContext('2d');c.scale(scale,scale);c.fillStyle=C.bg;c.fillRect(0,0,W,H);
       tx(c,'GM',70,72,48,'900','#fff');tx(c,'SCORE',160,72,48,'900',C.green);tx(c,'ANÁLISE COMPLETA',1010,70,20,'800',C.green,'right');
-      rr(c,60,112,960,338,22,C.panel,C.border,2);
+      rr(c,60,104,960,304,22,C.panel,C.border,2);
       const [hi,ai,li]=await Promise.all([loadImg(D.home_logo),loadImg(D.away_logo),loadImg(D.league_logo)]);
       const CX=540;
-      if(li)c.drawImage(li,CX-24,128,48,48);
-      fit(c,String(D.league).toUpperCase(),CX,195,360,19,13,'800',C.muted,'center');
-      tx(c,'×',CX,260,42,'900',C.green,'center');
-      if(D.match_datetime)tx(c,D.match_datetime,CX,294,17,'700',C.muted,'center');
-      if(D.sample)tx(c,`Amostra mínima: ${{D.sample}} jogo(s)`,CX,324,16,'600',C.muted,'center');
-      // Identidade vertical: símbolo/bandeira em cima e nome centralizado abaixo.
-      if(hi)c.drawImage(hi,190,170,110,82);else tx(c,'⚽',245,237,58,'700',C.muted,'center');
-      if(ai)c.drawImage(ai,780,170,110,82);else tx(c,'⚽',835,237,58,'700',C.muted,'center');
-      fit(c,D.home,245,294,300,29,17,'850',C.text,'center');
-      fit(c,D.away,835,294,300,29,17,'850',C.text,'center');
-      if(D.best){{rr(c,170,350,740,72,16,'#0b2119',C.green,2);tx(c,'DESTAQUE ESTATÍSTICO',194,378,14,'900',C.green);fit(c,D.best.label,194,405,520,22,14,'850',C.text,'left');tx(c,`${{Math.round(D.best.chance)}}%`,880,401,30,'900',C.green,'right');}}
-      else tx(c,'Mercados calculados pelo GM SCORE',540,392,16,'700',C.muted,'center');
+      if(li)c.drawImage(li,CX-22,120,44,44);
+      fit(c,String(D.league).toUpperCase(),CX,184,430,18,12,'800',C.muted,'center');
+      if(D.match_datetime)tx(c,D.match_datetime,CX,211,16,'700',C.muted,'center');
+      if(hi)c.drawImage(hi,184,150,118,88);else tx(c,'⚽',243,220,58,'700',C.muted,'center');
+      if(ai)c.drawImage(ai,778,150,118,88);else tx(c,'⚽',837,220,58,'700',C.muted,'center');
+      fit(c,D.home,243,274,310,28,16,'850',C.text,'center');
+      fit(c,D.away,837,274,310,28,16,'850',C.text,'center');
+      tx(c,'×',CX,253,40,'900',C.green,'center');
+      if(D.sample)tx(c,`AMOSTRA ${{D.sample}}`,CX,282,14,'800',C.muted,'center');
+      if(D.best){{rr(c,158,316,764,66,15,'#0b2119',C.green,2);tx(c,'MELHOR SINAL < 100%',184,342,13,'900',C.green);fit(c,D.best.label,184,367,540,20,13,'850',C.text,'left');tx(c,`${{Math.round(D.best.chance)}}%`,892,362,28,'900',C.green,'right');}}
+      else tx(c,'Todos os mercados calculados',540,350,16,'700',C.muted,'center');
 
-      let y=470;
-      for(const s of (D.sections||[])){{
-        const h=sectionHeight(s);rr(c,60,y,960,h,20,C.panel,C.border,1.5);
-        tx(c,s.title,88,y+43,24,'900',C.text);
-        const rows=s.rows||[];let ry=y+66;
-        for(let i=0;i<rows.length;i+=3){{
-          const trio=rows.slice(i,i+3);
-          trio.forEach((r,j)=>{{const x=82+j*312,w=296;rr(c,x,ry,w,64,12,C.card,C.soft,1);fit(c,r[0],x+14,ry+25,w-28,14,10,'650',C.muted,'left');fit(c,r[1],x+w-14,ry+50,w-28,21,13,'850',C.text,'right');}});
-          ry+=78;
+      // Score Card compacto: famílias de mercado em duas colunas, preservando todas as linhas.
+      let ly=430, ry=430; const colW=466, xL=60, xR=554;
+      for(const s of secs){{
+        const h=sectionHeight(s); const useLeft=ly<=ry; const x=useLeft?xL:xR; const y=useLeft?ly:ry;
+        rr(c,x,y,colW,h,17,C.panel,C.border,1.3);
+        fit(c,s.title,x+20,y+35,colW-40,19,12,'900',C.text,'left');
+        const rows=s.rows||[]; let yy=y+50;
+        for(let i=0;i<rows.length;i+=2){{
+          const pair=rows.slice(i,i+2);
+          pair.forEach((r,j)=>{{
+            const bx=x+14+j*222, bw=214; rr(c,bx,yy,bw,44,10,C.card,C.soft,1);
+            fit(c,r[0],bx+10,yy+18,bw-20,12,9,'650',C.muted,'left');
+            const m=String(r[1]).match(/(\d+(?:[.,]\d+)?)%/); const pct=m?parseFloat(m[1].replace(',','.')):null;
+            const valColor=(pct!==null&&pct>=70&&pct<100)?C.green:C.text;
+            fit(c,r[1],bx+bw-10,yy+37,bw-20,17,11,'850',valColor,'right');
+          }});
+          yy+=54;
         }}
-        y+=h+sectionGap;
+        if(useLeft)ly+=h+sectionGap;else ry+=h+sectionGap;
       }}
-      tx(c,'Dados ausentes não são inventados; mercados sem base suficiente permanecem fora do cálculo.',70,H-68,15,'500',C.muted);
-      tx(c,'GM SCORE',1010,H-68,22,'900',C.green,'right');
+      tx(c,'≥70% destacado em verde · 100% omitido somente nesta arte · análise completa permanece inalterada.',70,H-54,14,'600',C.muted);
+      tx(c,'GM SCORE',1010,H-54,22,'900',C.green,'right');
       canvas.toBlob(async blob=>{{const safe=(D.home+'-x-'+D.away).replace(/[^a-z0-9áàãâéêíóôõúç_-]+/gi,'-').replace(/-+/g,'-');const file=new File([blob],`GM-SCORE-${{safe}}.jpg`,{{type:'image/jpeg'}});try{{if(navigator.share&&(!navigator.canShare||navigator.canShare({{files:[file]}}))){{await navigator.share({{title:`GM SCORE — ${{D.title}}`,text:`GM SCORE — ${{D.league}} — ${{D.title}}`,files:[file]}});document.getElementById('msg').innerText='Análise completa criada. Escolha onde compartilhar.';}}else{{const dl=document.createElement('a');dl.href=URL.createObjectURL(blob);dl.download=file.name;dl.click();document.getElementById('msg').innerText='Análise completa criada e salva.';}}}}catch(e){{document.getElementById('msg').innerText='Compartilhamento cancelado.';}}}},'image/jpeg',.94);
     }};
     </script>
