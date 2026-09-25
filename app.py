@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-24-v212-dated-tip-notifications"
+GM_BUILD = "2026-09-24-v213-dated-tip-notifications"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -2889,7 +2889,8 @@ def gm_render_admin_daily_pick_approval():
             with st.spinner(f"Analisando {target.strftime('%d/%m')}..."):
                 prepared=gm_daily_pick_prepare_admin_options(force_refresh=False,per_kind=12,target_date=target)
                 opts=list(((prepared.get("options") or {}).get("dica") or []))
-                _gm_daily_pick_mark_batch_shown(opts,target)
+                # V213: exibir não significa recusar. A opção permanece disponível
+                # até uma decisão explícita do ADM (aprovar ou recusar).
                 st.session_state[cache_key]=prepared
             st.rerun()
         except Exception as exc: st.error("Não foi possível preparar as oportunidades agora."); st.caption(type(exc).__name__)
@@ -2906,7 +2907,9 @@ def gm_render_admin_daily_pick_approval():
     n8=sum(int(c.get("sample_n") or 0)>=8 for c in candidates)
     odd_ok=sum(int(c.get("sample_n") or 0)>=8 and 1.60<=float(c.get("odd") or 0)<=3.00 for c in candidates)
     prob_ok=sum(int(c.get("sample_n") or 0)>=8 and 1.60<=float(c.get("odd") or 0)<=3.00 and float(c.get("probability") or 0)>=70 for c in candidates)
-    st.caption(f"Funil {target.strftime('%d/%m')}: jogos {int(meta.get('fixtures') or 0)} · previsões {int(meta.get('predictions') or 0)} · odds {int(meta.get('odds') or 0)} · candidatos {len(candidates)} · N≥8 {n8} · odd 1,60–3,00 {odd_ok} · ≥70% {prob_ok} · inéditas exibidas {len(opts)}")
+    _bets_odd=[c for c in candidates if int(c.get("sample_n") or 0)>=8 and 1.60<=float(c.get("odd") or 0)<=3.00]
+    _bets_max=max([float(c.get("probability") or 0) for c in _bets_odd],default=0.0)
+    st.caption(f"Funil {target.strftime('%d/%m')}: jogos {int(meta.get('fixtures') or 0)} · previsões {int(meta.get('predictions') or 0)} · odds {int(meta.get('odds') or 0)} · candidatos {len(candidates)} · N≥8 {n8} · N≥8 + odd 1,60–3,00 {odd_ok} · + ≥70% {prob_ok} · maior prob. na faixa {_bets_max:.0f}% · inéditas exibidas {len(opts)}")
     if not opts:
         st.warning("Nenhuma oportunidade inédita passou por todos os critérios nesta coleta."); gm_render_admin_daily_pick_history(rows,days=10); return
     st.markdown(f"#### Oportunidades inéditas · {len(opts)}")
@@ -2921,6 +2924,8 @@ def gm_render_admin_daily_pick_approval():
                 publish_opt=dict(opt); publish_opt["pick_kind"]="dica"; publish_opt["target_date"]=target.isoformat(); publish_opt["direct_bet_url"]=direct_bet_url
                 result=gm_daily_pick_publish_selected(publish_opt)
                 if result.get("ok"):
+                    try: _gm_daily_pick_discard(opt,target)
+                    except Exception: pass
                     _gm_daily_pick_remove_cached_option(cache_key,"dica",opt)
                     try: gm_daily_pick_publish_news("dica",publish_opt)
                     except Exception: pass
@@ -2928,6 +2933,8 @@ def gm_render_admin_daily_pick_approval():
                 else: st.warning(f"A bet não pôde ser publicada: {result.get('reason') or 'validação'}.")
             except Exception as exc: st.error("Falha ao publicar a bet."); st.caption(type(exc).__name__)
         if c2.button("✕ Recusar",use_container_width=True,key=f"gm_admin_reject_{target.isoformat()}_{idx}"):
+            try: _gm_daily_pick_discard(opt,target)
+            except Exception: pass
             _gm_daily_pick_remove_cached_option(cache_key,"dica",opt); st.rerun()
         if idx<len(opts): st.divider()
     gm_render_admin_daily_pick_history(rows,days=10)
@@ -15249,7 +15256,12 @@ def gm_leverage_ensure_today(force_refresh=False, target_date=None):
         if _gm_daily_pick_option_signature(opt) in _gm_daily_pick_load_discarded(target_date): continue
         eligible.append(dict(c))
     if not eligible:
-        diagnostic={"total":len(candidates or []),"n8":sum(int(x.get("sample_n") or 0)>=8 for x in (candidates or [])),"odd":sum(1.25<=float(x.get("odd") or 0)<=1.35 for x in (candidates or [])),"prob80":sum(float(x.get("probability") or 0)>=80.0 for x in (candidates or []))}
+        _all=list(candidates or [])
+        _n8=[x for x in _all if int(x.get("sample_n") or 0)>=8]
+        _odd=[x for x in _n8 if 1.25<=float(x.get("odd") or 0)<=1.35]
+        _prob=[x for x in _odd if float(x.get("probability") or 0)>=80.0]
+        _final=[x for x in _prob if not (str(x.get("market_code") or "").startswith("U") and (float(x.get("probability") or 0)<88.0 or int(x.get("sample_n") or 0)<10))]
+        diagnostic={"total":len(_all),"n8":len(_n8),"odd":len(_odd),"prob80":len(_prob),"final":len(_final),"max_prob_in_odd":max([float(x.get("probability") or 0) for x in _odd],default=0.0)}
         return {"ok": True, "reason": "no_quality_pick", "meta": meta, "eligible": 0, "diagnostic": diagnostic}
     eligible.sort(key=lambda c:(float(c.get("probability") or 0), -abs(float(c.get("odd") or 0)-1.30), str(c.get("market_code") or "")), reverse=True)
     diversified=[]; used_matches=set(); family_counts={}
@@ -15298,7 +15310,7 @@ def gm_render_admin_leverage_approval():
                 for leg in prepared.get("alternatives") or []:
                     opt={"pick_kind":"matadeira","bet_type":"simple","legs":[leg],"total_odd":float(leg.get("odd") or 0),"model_probability":float(leg.get("probability") or 0),"target_date":target.isoformat()}
                     opts.append(opt)
-                _gm_daily_pick_mark_batch_shown(opts,target)
+                # V213: não persiste descarte ao apenas mostrar os cards.
                 prepared["shown_options"]=opts
             st.session_state[key]=prepared
         st.rerun()
@@ -15315,6 +15327,8 @@ def gm_render_admin_leverage_approval():
                 try:
                     result = gm_leverage_publish_choice(leg,target)
                     if result.get("ok"):
+                        try: _gm_daily_pick_discard(opt,target)
+                        except Exception: pass
                         notify_opt={"target_date":target.isoformat(),"legs":[leg],"total_odd":odd}
                         try: gm_daily_pick_publish_news("alavancagem",notify_opt)
                         except Exception: pass
@@ -15323,10 +15337,12 @@ def gm_render_admin_leverage_approval():
                         st.warning("A Alavancagem não pôde ser publicada.")
                 except Exception as exc: st.error("Não foi possível publicar."); st.caption(type(exc).__name__)
             if c2.button("✕ Recusar",use_container_width=True,key=f"gm_lev_reject_{target.isoformat()}_{idx}"):
+                try: _gm_daily_pick_discard(opt,target)
+                except Exception: pass
                 prepared["shown_options"]=[x for j,x in enumerate(opts,1) if j!=idx]; st.session_state[key]=prepared; st.rerun()
     elif prepared.get("reason")=="no_quality_pick":
         st.info("Nenhuma opção inédita atingiu N≥8, odd 1,25–1,35 e mínimo de 80% nesta coleta.")
-        d=prepared.get("diagnostic") or {}; st.caption(f"Candidatos: {int(d.get('total') or 0)} · N≥8: {int(d.get('n8') or 0)} · faixa de odd: {int(d.get('odd') or 0)} · ≥80%: {int(d.get('prob80') or 0)}")
+        d=prepared.get("diagnostic") or {}; st.caption(f"Funil real: candidatos {int(d.get('total') or 0)} · N≥8 {int(d.get('n8') or 0)} · N≥8 + odd 1,25–1,35 {int(d.get('odd') or 0)} · + ≥80% {int(d.get('prob80') or 0)} · finais {int(d.get('final') or 0)} · maior prob. na faixa {float(d.get('max_prob_in_odd') or 0):.0f}%")
     elif prepared and not prepared.get("ok"): st.warning("Não foi possível concluir a busca agora.")
     st.divider(); gm_render_leverage_block(rows,auto_generate=False,show_current=False)
 
