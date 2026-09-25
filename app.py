@@ -40,7 +40,7 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-24-v211-dated-tip-notifications"
+GM_BUILD = "2026-09-24-v212-dated-tip-notifications"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 # IDs auditados das 21 competições.
@@ -14263,7 +14263,7 @@ def _gm_daily_kickoff_at(target_date, time_value):
 
 
 def _gm_daily_candidate_sample_map(predictions):
-    """V209: calcula N real sem enriquecimento N-por-partida.
+    """V212: calcula N real sem enriquecimento N-por-partida.
 
     Carrega no máximo uma base doméstica cacheada por competição e reaproveita-a
     para todos os fixtures. Para copas continentais, resolve a liga doméstica pelo
@@ -14299,7 +14299,7 @@ def _gm_daily_candidate_sample_map(predictions):
         if df is None or getattr(df, "empty", True):
             return None
         try:
-            return _gm_find_team_row(df, team)
+            return _find_team_in_df(team, df)
         except Exception:
             return None
 
@@ -14798,7 +14798,6 @@ def _gm_daily_pick_unified_options(candidates, limit=8, initial_avoid_legs=None)
         for score,p,edge,negodd,fam,c in pool:
             sig=(str(c.get("match_id") or ""),str(c.get("market_code") or "")); code=sig[1]
             if sig in used: continue
-            if code_counts.get(code,0)>=2: continue
             opt=_gm_daily_combo_payload([c],"simple","dica")
             opt["pick_kind"]="dica"; opt["official_stats"]=True; opt["risk_label"]=_gm_daily_confidence_band(p); opt["opportunity_class"]="daily"
             out.append(opt); used.add(sig); code_counts[code]=code_counts.get(code,0)+1
