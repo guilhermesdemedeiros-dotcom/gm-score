@@ -13,6 +13,7 @@ import itertools
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
+from contextlib import contextmanager
 from html.parser import HTMLParser
 from urllib.parse import quote, urlencode
 from datetime import datetime, date, timedelta, timezone
@@ -40,8 +41,32 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-24-v213-dated-tip-notifications"
+GM_BUILD = "2026-09-24-v214-global-loading-overlay"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
+
+
+@contextmanager
+def gm_loading_overlay(title="Carregando...", subtitle="Preparando as informações do GM SCORE.", icon="⚽"):
+    """V214: overlay visual único para operações que podem levar alguns segundos."""
+    slot = st.empty()
+    safe_title = html.escape(str(title or "Carregando..."))
+    safe_subtitle = html.escape(str(subtitle or ""))
+    safe_icon = html.escape(str(icon or "⚽"))
+    slot.markdown(
+        f"""<div style="position:fixed;inset:0;z-index:999998;background:rgba(7,13,18,.86);display:flex;align-items:center;justify-content:center;backdrop-filter:blur(3px)">
+        <div style="text-align:center;padding:28px 30px;border:1px solid rgba(31,209,119,.35);border-radius:18px;background:#0b1419;box-shadow:0 18px 60px rgba(0,0,0,.45);max-width:360px;width:calc(100% - 48px)">
+        <div style="font-size:38px;line-height:1;margin-bottom:14px">{safe_icon}</div>
+        <div style="font-size:20px;font-weight:800;color:#fff">{safe_title}</div>
+        <div style="font-size:13px;color:#b7c3ca;margin-top:8px">{safe_subtitle}</div>
+        <div style="height:5px;background:#16252c;border-radius:999px;overflow:hidden;margin-top:18px"><div class="gm-load-runner-v214"></div></div>
+        </div></div>
+        <style>@keyframes gmLoadMoveV214{{0%{{transform:translateX(-100%)}}100%{{transform:translateX(360%)}}}}.gm-load-runner-v214{{width:28%;height:100%;background:#1fd177;border-radius:999px;animation:gmLoadMoveV214 1.05s ease-in-out infinite}}</style>""",
+        unsafe_allow_html=True,
+    )
+    try:
+        yield
+    finally:
+        slot.empty()
 
 # IDs auditados das 21 competições.
 # v45: definidos no início do runtime porque a agenda pode ser executada antes
@@ -703,7 +728,7 @@ def gm_render_apifootball_coverage_probe():
     st.markdown("---")
     st.markdown("### 🧪 Diagnóstico APIfootball • Union Berlin × Schalke 04")
     st.caption("Teste temporário de manutenção. A chave da API nunca é exibida.")
-    with st.spinner("Validando partidas históricas e estatísticas reais…"):
+    with gm_loading_overlay("Validando histórico...", "Conferindo partidas e estatísticas reais."):
         probe = gm_apifootball_team_coverage("Union Berlin", "Schalke 04", 10)
 
     if probe.get("error") and not probe.get("teams"):
@@ -2886,7 +2911,7 @@ def gm_render_admin_daily_pick_approval():
     a1,a2=st.columns(2); has=bool(st.session_state.get(cache_key))
     if a1.button("🔎 Buscar oportunidades inéditas",use_container_width=True,key=f"gm_admin_daily_refresh_{target.isoformat()}"):
         try:
-            with st.spinner(f"Analisando {target.strftime('%d/%m')}..."):
+            with gm_loading_overlay(f"Buscando Bets de {target.strftime('%d/%m')}...", "Analisando jogos, probabilidades, amostras e odds.", "🎯"):
                 prepared=gm_daily_pick_prepare_admin_options(force_refresh=False,per_kind=12,target_date=target)
                 opts=list(((prepared.get("options") or {}).get("dica") or []))
                 # V213: exibir não significa recusar. A opção permanece disponível
@@ -3488,7 +3513,7 @@ def gm_render_admin_panel(profile):
         st.caption("Um único comando limpa os caches operacionais, reconstrói a agenda de hoje e executa a calibração automática disponível.")
         if st.button("🔄 ATUALIZAR / SINCRONIZAR SISTEMA", type="primary", use_container_width=True, key="gm_admin_sync_all_v171"):
             _steps = []
-            with st.spinner("Atualizando o GM SCORE..."):
+            with gm_loading_overlay("Atualizando GM SCORE...", "Sincronizando as informações mais recentes.", "🔄"):
                 cache_names = (
                     "load_apifootball_prediction_fixtures_for_date",
                     "load_apifootball_competition_fixtures_for_date",
@@ -3795,7 +3820,7 @@ def gm_checkout_button(plan, payment_method, label, primary=False, key_scope="")
 
     if st.button(label, key=key, type="primary" if primary else "secondary", use_container_width=True):
         try:
-            with st.spinner("Criando checkout seguro no Mercado Pago..."):
+            with gm_loading_overlay("Preparando pagamento...", "Criando seu checkout seguro.", "💳"):
                 checkout = gm_create_checkout(plan["plan_code"], payment_method)
             st.session_state[checkout_state_key] = checkout
         except Exception as exc:
@@ -12494,7 +12519,7 @@ def render_analysis():
         st.session_state.loaded_away = None
         st.session_state.loaded_competition = league_name
 
-    with st.spinner("Carregando a temporada atual..."):
+    with gm_loading_overlay("Carregando temporada...", "Preparando competições, equipes e partidas."):
         try:
             df = validate_current_data(load_current_season(), config["season"], league_name)
         except Exception as exc:
@@ -13261,7 +13286,7 @@ def gm_render_apifootball_league_audit():
         st.caption("Consulta a cobertura disponível para a chave/plano ativos. Não altera ligas nem equipes automaticamente e nunca exibe a API key.")
         if not st.button("🔎 Verificar todas as ligas e equipes", key="gm_run_full_api_league_audit", use_container_width=True):
             return
-        with st.spinner("Conferindo as 21 competições e as equipes na APIfootball..."):
+        with gm_loading_overlay("Conferindo competições...", "Validando ligas e equipes do GM SCORE.", "🔎"):
             leagues, err = gm_apifootball_all_leagues()
             if err or not leagues:
                 st.error("A APIfootball não retornou a lista de competições disponível para esta chave.")
@@ -15303,7 +15328,7 @@ def gm_render_admin_leverage_approval():
     existing=[r for r in rows if str(r.get("pick_date") or "")==target.isoformat() and _gm_is_leverage_row(r)]
     if existing: st.success("Já existe Alavancagem aprovada para esta data.")
     if st.button("🔎 Buscar Alavancagens inéditas",use_container_width=True,key=f"gm_admin_leverage_search_{target.isoformat()}"):
-        with st.spinner(f"Buscando opções para {target.strftime('%d/%m')}..."):
+        with gm_loading_overlay(f"Buscando Alavancagens de {target.strftime('%d/%m')}...", "Analisando jogos, probabilidades, amostras e odds.", "📈"):
             prepared=gm_leverage_ensure_today(force_refresh=True,target_date=target)
             if prepared.get("reason")=="candidate":
                 opts=[]
@@ -15608,7 +15633,7 @@ def gm_render_games_page():
             except Exception: pass
         st.rerun()
     try:
-        with st.spinner("Carregando jogos do dia..."):
+        with gm_loading_overlay("Carregando jogos...", "Buscando e organizando as partidas desta data."):
             safe = gm_games_prepared_fixtures(target_date) or []
     except Exception:
         safe = []
@@ -16300,21 +16325,11 @@ else:
         gm_render_apifootball_stat_audit()
         gm_render_calibration_dashboard()
     if _gm_caps["analysis_intelligence"]:
-        _gm_loading_slot = st.empty()
         if _gm_games_direct_analysis:
-            _gm_loading_slot.markdown(
-                """<div style="position:fixed;inset:0;z-index:999998;background:rgba(7,13,18,.86);display:flex;align-items:center;justify-content:center;backdrop-filter:blur(3px)">
-                <div style="text-align:center;padding:28px 30px;border:1px solid rgba(31,209,119,.35);border-radius:18px;background:#0b1419;box-shadow:0 18px 60px rgba(0,0,0,.45);max-width:360px;width:calc(100% - 48px)">
-                <div style="font-size:38px;line-height:1;margin-bottom:14px">⚽</div>
-                <div style="font-size:20px;font-weight:800;color:#fff">Carregando partida...</div>
-                <div style="font-size:13px;color:#b7c3ca;margin-top:8px">Preparando estatísticas, probabilidades e mercados.</div>
-                <div style="height:5px;background:#16252c;border-radius:999px;overflow:hidden;margin-top:18px"><div class="gm-load-runner"></div></div>
-                </div></div>
-                <style>@keyframes gmLoadMove{0%{transform:translateX(-100%)}100%{transform:translateX(360%)}}.gm-load-runner{width:28%;height:100%;background:#1fd177;border-radius:999px;animation:gmLoadMove 1.05s ease-in-out infinite}</style>""",
-                unsafe_allow_html=True,
-            )
-        render_analysis()
-        _gm_loading_slot.empty()
+            with gm_loading_overlay("Carregando partida...", "Preparando estatísticas, probabilidades e mercados."):
+                render_analysis()
+        else:
+            render_analysis()
         gm_force_analysis_scroll_top_after_render()
     else:
         _free_match = st.session_state.get("gm_games_direct_match") if isinstance(st.session_state.get("gm_games_direct_match"), dict) else {}
