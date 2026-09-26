@@ -41,7 +41,9 @@ except Exception:
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-GM_BUILD = "2026-09-25-v223-leverage-rpc-diagnostic"
+GM_BUILD = "2026-09-26-v225-bets-national-pause"
+GM_BETS_PAUSE_MODE = True
+GM_BETS_PAUSE_SINCE = "25/09/2026"
 GM_DAILY_PICK_RESET_DATE = date(2026, 9, 16)  # novo ciclo: Matadeira, Dica Principal e Bingo
 
 
@@ -4347,6 +4349,53 @@ def gm_render_email_confirmation_notice():
     return True
 
 
+def gm_render_bets_pause_notice(profile=None, public=False):
+    """Aviso operacional durante a proibição nacional das apostas de quota fixa."""
+    profile = profile or {}
+    is_pro = str(profile.get("vip_status") or "").lower() == "active"
+    st.markdown(
+        """
+<div style="margin:.35rem 0 1rem;padding:1.05rem 1rem;border:1px solid rgba(255,193,7,.55);border-radius:18px;background:linear-gradient(145deg,rgba(255,193,7,.12),rgba(10,18,20,.96));box-shadow:0 12px 30px rgba(0,0,0,.22)">
+  <div style="font-size:.76rem;font-weight:950;letter-spacing:.08em;color:#ffd45a">⚠️ AVISO IMPORTANTE</div>
+  <div style="margin-top:.4rem;font-size:1.28rem;line-height:1.18;font-weight:950;color:#f8fafc">Apostas de quota fixa estão proibidas no Brasil neste momento</div>
+  <div style="margin-top:.65rem;color:#d6dee8;line-height:1.55">Em razão da <b>Medida Provisória nº 1.394/2026</b>, que proibiu a exploração, oferta e intermediação das chamadas bets no território nacional, o <b>GM SCORE entrou temporariamente em modo de pausa</b>.</div>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.info("O GM SCORE tem como finalidade principal apoiar análises para apostas esportivas. Por isso, manteremos os recursos de apostas pausados enquanto acompanhamos os desdobramentos da medida.")
+    if is_pro:
+        remaining_label = None
+        try:
+            data = gm_admin_rpc("gm_my_subscription_pause_v225")
+            row = data[0] if isinstance(data, list) and data else (data if isinstance(data, dict) else {})
+            seconds = int(float((row or {}).get("remaining_seconds") or 0))
+            if seconds > 0:
+                mins = max(1, (seconds + 59) // 60)
+                days, rem = divmod(mins, 1440)
+                hours, minutes = divmod(rem, 60)
+                remaining_label = f"{days}d {hours}h {minutes}min" if days else f"{hours}h {minutes}min"
+        except Exception:
+            pass
+        st.success("⏸️ Sua assinatura PRO está PAUSADA — nenhum dia do seu plano será perdido durante este período.")
+        if remaining_label:
+            st.markdown(f"**Saldo preservado do seu PRO:** {remaining_label}")
+        st.caption("Quando o serviço for retomado, seu prazo restante continuará de onde parou. Não é necessário comprar ou renovar plano durante a pausa.")
+    elif not public:
+        st.info("Sua conta continua ativa. Novas ativações, testes e assinaturas PRO ficam temporariamente indisponíveis durante a pausa.")
+    st.markdown("**O que permanece disponível:** acesso à conta, comunicados e suporte. Os recursos de análise para apostas serão reativados quando houver condição para retomada do serviço.")
+    st.link_button("✈️ Suporte pelo Telegram", "https://t.me/suport_gm", use_container_width=True)
+
+
+def gm_render_pause_client_screen(profile):
+    gm_render_bets_pause_notice(profile, public=False)
+    st.markdown("---")
+    if st.button("🚪 Sair", use_container_width=True, key="gm_pause_logout"):
+        gm_auth_sign_out()
+        st.session_state.pop("gm_main_view", None)
+        st.rerun()
+
+
 def gm_render_public_portal():
     """Retorna True somente quando o usuário pode acessar o app completo."""
     user_id = st.session_state.get("gm_auth_user_id")
@@ -4366,6 +4415,9 @@ def gm_render_public_portal():
             return False
 
         state = gm_auth_access_state(profile)
+        if GM_BETS_PAUSE_MODE and profile.get("role") != "admin" and state not in {"blocked", "anonymous"}:
+            gm_render_pause_client_screen(profile)
+            return False
         if state not in {"blocked", "anonymous"}:
             # A regra de 1 sessão ativa é exclusiva das contas VIP de clientes.
             # O administrador precisa conseguir entrar de qualquer navegador/dispositivo
@@ -4576,6 +4628,15 @@ def gm_render_public_portal():
     # Se existiam tokens inválidos/expirados, limpa a sessão antes de mostrar o portal.
     if user_id and not profile:
         gm_auth_clear_local_session()
+
+    if GM_BETS_PAUSE_MODE:
+        gm_render_bets_pause_notice(public=True)
+        with st.container(border=True):
+            st.markdown("### 🔐 Clientes GM SCORE")
+            st.caption("Entre para consultar o status da sua conta e da sua assinatura.")
+            gm_render_login_form("gm_pause_public_login")
+        st.caption("Novos cadastros, testes PRO e pagamentos estão temporariamente pausados.")
+        return False
 
     # V192: ponte dos CTAs HTML da landing para o login real do Streamlit.
     # O link inferior usa ?gm_access=login; aqui convertemos isso em estado da sessão.
@@ -16328,10 +16389,11 @@ div[class*="st-key-gm_games_analyze_"] button{width:auto!important;min-width:7.8
 
 # Sincronização leve e silenciosa. Em uso normal verifica no máximo 2 pendências
 # a cada 30 minutos por sessão; o administrador pode forçar uma sincronização maior.
-try:
-    gm_calibration_auto_settle(limit=2, force=False)
-except Exception:
-    pass
+if not GM_BETS_PAUSE_MODE:
+    try:
+        gm_calibration_auto_settle(limit=2, force=False)
+    except Exception:
+        pass
 
 # V170: a conta com role=admin é um workspace administrativo dedicado.
 # Após autenticar, entra direto no backoffice e não carrega navegação/recursos do cliente.
