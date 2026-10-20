@@ -4389,6 +4389,9 @@ def gm_render_bets_pause_notice(profile=None, public=False):
 
 def gm_render_pause_client_screen(profile):
     gm_render_bets_pause_notice(profile, public=False)
+    st.markdown("### 💚 Conheça o GM SCORE")
+    st.caption("A plataforma permanece em apresentação. As funcionalidades operacionais estão temporariamente pausadas.")
+    gm_render_public_intro()
     st.markdown("---")
     if st.button("🚪 Sair", use_container_width=True, key="gm_pause_logout"):
         gm_auth_sign_out()
@@ -4632,10 +4635,14 @@ def gm_render_public_portal():
     if GM_BETS_PAUSE_MODE:
         gm_render_bets_pause_notice(public=True)
         with st.container(border=True):
-            st.markdown("### 🔐 Clientes GM SCORE")
-            st.caption("Entre para consultar o status da sua conta e da sua assinatura.")
+            st.markdown("### 🔐 Já é cliente? Entre na sua conta")
+            st.caption("Consulte sua situação e o saldo PRO preservado durante a pausa.")
             gm_render_login_form("gm_pause_public_login")
-        st.caption("Novos cadastros, testes PRO e pagamentos estão temporariamente pausados.")
+        st.markdown("### 💚 Conheça o GM SCORE")
+        st.caption("Veja a apresentação original da plataforma e os recursos oferecidos quando o serviço está em operação.")
+        gm_render_public_intro()
+        st.info("⏸️ Esta é uma apresentação da plataforma. Análises, apostas, novas contas, testes e assinaturas permanecem indisponíveis durante a pausa.")
+        st.link_button("✈️ Suporte pelo Telegram", "https://t.me/suport_gm", use_container_width=True)
         return False
 
     # V192: ponte dos CTAs HTML da landing para o login real do Streamlit.
